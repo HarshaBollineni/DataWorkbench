@@ -1,0 +1,34 @@
+# Only backend/ belongs in the image — keep everything else out.
+
+# Secrets — the OpenAI key is injected as a Container App secret, never baked in.
+**/.env
+**/.env.*
+!**/.env.example
+
+# Mutable state — lives on the mounted Azure File Share, not in the image.
+**/system_state.db
+**/system_state.db-*
+
+# Python caches / virtualenvs
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.venv/
+**/.pytest_cache/
+
+# Frontend — deployed separately to Static Web Apps.
+ui/
+node_modules/
+
+# Docs, archives, scripts, and design assets are not runtime dependencies.
+docs/history/pre-0.4.0-guide/
+*.7z
+*.docx
+*.pptx
+*.pdf
+*.vsdx
+*.xlsx
+*.md
+*.ps1
+.git/
+.claude/

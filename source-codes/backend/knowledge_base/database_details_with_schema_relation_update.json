@@ -1,0 +1,443 @@
+{
+  "databases": [
+    {
+      "logical_db": "retail_fraud_db",
+      "display_name": "Retail Fraud & AML",
+      "description": "Retail customers, accounts and card transactions for fraud / AML monitoring.",
+      "access_role": "Credit Risk",
+      "table_count": 3,
+      "tables": [
+        {
+          "table": "customers",
+          "pk": "customer_id",
+          "date_col": "onboarding_date",
+          "row_count": 25000,
+          "col_count": 8,
+          "columns": [
+            "customer_id",
+            "onboarding_date",
+            "age",
+            "region",
+            "channel",
+            "segment",
+            "income",
+            "tenure_months"
+          ],
+          "datatypes": {
+            "customer_id": "integer (PK)",
+            "onboarding_date": "date",
+            "age": "integer",
+            "region": "text",
+            "channel": "text",
+            "segment": "text",
+            "income": "real",
+            "tenure_months": "integer"
+          },
+          "descriptions": {
+            "customer_id": "Unique customer identifier",
+            "onboarding_date": "Date the customer was first onboarded; floor for all of that customer's child records",
+            "age": "Customer age in years (21\u201379)",
+            "region": "Geography: North / South / East / West",
+            "channel": "Acquisition channel: Branch / Online / Broker",
+            "segment": "Wealth segment: Mass / Affluent / Private",
+            "income": "Stated annual income (currency units, ~8k\u2013600k)",
+            "tenure_months": "Months between\u00a0onboarding_date\u00a0and the dataset as-of date (derived, \u22650)"
+          }
+        },
+        {
+          "table": "retail_accounts",
+          "pk": "account_id",
+          "date_col": "open_date",
+          "row_count": 25000,
+          "col_count": 15,
+          "columns": [
+            "account_id",
+            "customer_id",
+            "product",
+            "open_date",
+            "bureau_score",
+            "credit_limit",
+            "balance",
+            "utilization",
+            "dpd_count",
+            "ifrs9_stage",
+            "recovery_rate",
+            "collections_contact_flag",
+            "default_flag",
+            "region",
+            "channel"
+          ],
+          "datatypes": {
+            "account_id": "integer (PK)",
+            "customer_id": "integer (FK\u2192customers)",
+            "product": "text",
+            "open_date": "date",
+            "bureau_score": "real",
+            "credit_limit": "real",
+            "balance": "real",
+            "utilization": "real",
+            "dpd_count": "integer",
+            "ifrs9_stage": "integer",
+            "recovery_rate": "real",
+            "collections_contact_flag": "integer (0/1)",
+            "default_flag": "integer (0/1)",
+            "region": "text",
+            "channel": "text"
+          },
+          "descriptions": {
+            "account_id": "Unique account identifier",
+            "customer_id": "Owning customer",
+            "product": "Product type: card / personal_loan / auto_loan",
+            "open_date": "Account opening date (\u2265 customer onboarding_date)",
+            "bureau_score": "Credit bureau score at origination (~350\u2013900)",
+            "credit_limit": "Approved credit limit (derived from income)",
+            "balance": "Current outstanding balance (derived from income \u00d7 utilisation)",
+            "utilization": "Balance-to-limit ratio (0\u20131)",
+            "dpd_count": "Count of days-past-due events",
+            "ifrs9_stage": "IFRS9 impairment stage 1/2/3 (3 if defaulted, 2 if high utilisation, else 1)",
+            "recovery_rate": "Fraction recovered post-default (0 if not defaulted) \u2014\u00a0post-outcome",
+            "collections_contact_flag": "Whether collections contacted the account \u2014\u00a0post-outcome",
+            "default_flag": "Target\u00a0for credit-risk use cases: defaulted within window",
+            "region": "Copied from the owning customer (denormalised, consistent)",
+            "channel": "Copied from the owning customer (denormalised, consistent)"
+          }
+        },
+        {
+          "table": "transactions",
+          "pk": "txn_id",
+          "date_col": "txn_datetime",
+          "row_count": 200000,
+          "col_count": 9,
+          "columns": [
+            "txn_id",
+            "customer_id",
+            "txn_datetime",
+            "amount",
+            "mcc",
+            "is_foreign",
+            "hour_of_day",
+            "investigation_flag",
+            "fraud_flag"
+          ],
+          "datatypes": {
+            "txn_id": "integer (PK)",
+            "customer_id": "integer (FK\u2192customers)",
+            "txn_datetime": "date",
+            "amount": "real",
+            "mcc": "text",
+            "is_foreign": "integer (0/1)",
+            "hour_of_day": "integer",
+            "investigation_flag": "integer (0/1)",
+            "fraud_flag": "integer (0/1)"
+          },
+          "descriptions": {
+            "txn_id": "Unique transaction identifier",
+            "customer_id": "Transacting customer",
+            "txn_datetime": "Transaction date (\u2265 customer onboarding_date)",
+            "amount": "Transaction amount (currency units, ~1\u201350,000)",
+            "mcc": "Merchant category: grocery / fuel / travel / electronics / cash / gambling / dining",
+            "is_foreign": "Cross-border transaction flag",
+            "hour_of_day": "Hour the transaction occurred (0\u201323)",
+            "investigation_flag": "Whether the transaction was investigated \u2014\u00a0post-outcome",
+            "fraud_flag": "Target\u00a0for fraud/AML: confirmed fraudulent"
+          }
+        }
+      ],
+      "relationships": [
+        {
+          "left_table": "retail_accounts",
+          "right_table": "customers",
+          "join_type": "left_join",
+          "relationship_type": "many_to_one",
+          "description": "Link retail accounts with customers using customer_id",
+          "data_quality_rules": [
+            "retail_accounts.customer_id must exist in customers.customer_id",
+            "open_date must be greater than or equal to onboarding_date"
+          ]
+        },
+        {
+          "left_table": "transactions",
+          "right_table": "customers",
+          "join_type": "left_join",
+          "relationship_type": "many_to_one",
+          "description": "Link transactions with customers using customer_id",
+          "data_quality_rules": [
+            "transactions.customer_id must exist in customers.customer_id",
+            "txn_datetime must be greater than or equal to onboarding_date"
+          ]
+        },
+        {
+          "left_table": "retail_accounts",
+          "right_table": "transactions",
+          "join_type": "left_join",
+          "relationship_type": "many_to_many",
+          "description": "Link retail accounts with transactions indirectly through the shared customer_id on the customers table",
+          "data_quality_rules": [
+            "retail_accounts and transactions should only be connected through customers.customer_id",
+            "joining retail_accounts directly to transactions may create duplication when one customer has multiple accounts and multiple transactions"
+          ]
+        }
+      ]
+    },
+    {
+      "logical_db": "wholesale_irb_db",
+      "display_name": "Wholesale IRB",
+      "description": "Corporate obligors and macro scenarios for IRB / wholesale credit risk.",
+      "access_role": "Credit Risk",
+      "table_count": 2,
+      "tables": [
+        {
+          "table": "obligors",
+          "pk": "obligor_id",
+          "date_col": "reporting_date",
+          "row_count": 3000,
+          "col_count": 10,
+          "columns": [
+            "obligor_id",
+            "sector",
+            "country",
+            "rating",
+            "rating_num",
+            "reporting_date",
+            "revenue",
+            "leverage",
+            "interest_coverage",
+            "default_flag"
+          ],
+          "datatypes": {
+            "obligor_id": "integer (PK)",
+            "sector": "text",
+            "country": "text",
+            "rating": "text",
+            "rating_num": "integer",
+            "reporting_date": "date",
+            "revenue": "real",
+            "leverage": "real",
+            "interest_coverage": "real",
+            "default_flag": "integer (0/1)"
+          },
+          "descriptions": {
+            "obligor_id": "Unique obligor identifier",
+            "sector": "Industry: Manufacturing / Retail / RealEstate / Energy / Tech / Healthcare",
+            "country": "Domicile: UK / US / DE / FR / HK / SG",
+            "rating": "Credit rating grade: AAA \u2026 CCC",
+            "rating_num": "Numeric rating (1=AAA \u2026 7=CCC) \u2014 worse rating = higher number",
+            "reporting_date": "Financial reporting date",
+            "revenue": "Annual revenue (currency units)",
+            "leverage": "Debt-to-equity / leverage ratio (worsens with rating)",
+            "interest_coverage": "Interest coverage ratio (improves with better rating)",
+            "default_flag": "Target\u00a0for wholesale IRB: obligor default (low-default ~3\u20136%)"
+          }
+        },
+        {
+          "table": "macro_scenarios",
+          "pk": "month",
+          "date_col": "month",
+          "row_count": 72,
+          "col_count": 5,
+          "columns": [
+            "month",
+            "gdp_growth",
+            "unemployment",
+            "hpi_index",
+            "regime"
+          ],
+          "datatypes": {
+            "month": "date (PK)",
+            "gdp_growth": "real",
+            "unemployment": "real",
+            "hpi_index": "real",
+            "regime": "text"
+          },
+          "descriptions": {
+            "month": "First of month",
+            "gdp_growth": "Monthly GDP growth (%), lower in downturn",
+            "unemployment": "Unemployment rate (%), higher in downturn",
+            "hpi_index": "House-price index level",
+            "regime": "benign / downturn (downturn = Mar\u2013Dec 2020)"
+          }
+        }
+      ],
+      "relationships": [
+        {
+          "left_table": "obligors",
+          "right_table": "macro_scenarios",
+          "join_type": "left_join",
+          "relationship_type": "many_to_one",
+          "description": "Link obligor financial snapshots with macroeconomic conditions by reporting month",
+          "data_quality_rules": [
+            "macro_scenarios.month must be unique",
+            "reporting_date should align to macro month granularity"
+          ]
+        }
+      ]
+    },
+    {
+      "logical_db": "retail_risk_db",
+      "display_name": "Retail Risk",
+      "description": "Retail accounts, customers and macro scenarios for credit-risk model validation.",
+      "access_role": "Credit Risk",
+      "table_count": 3,
+      "tables": [
+        {
+          "table": "retail_accounts",
+          "pk": "account_id",
+          "date_col": "open_date",
+          "row_count": 25000,
+          "col_count": 15,
+          "columns": [
+            "account_id",
+            "customer_id",
+            "product",
+            "open_date",
+            "bureau_score",
+            "credit_limit",
+            "balance",
+            "utilization",
+            "dpd_count",
+            "ifrs9_stage",
+            "recovery_rate",
+            "collections_contact_flag",
+            "default_flag",
+            "region",
+            "channel"
+          ],
+          "datatypes": {
+            "account_id": "integer (PK)",
+            "customer_id": "integer (FK\u2192customers)",
+            "product": "text",
+            "open_date": "date",
+            "bureau_score": "real",
+            "credit_limit": "real",
+            "balance": "real",
+            "utilization": "real",
+            "dpd_count": "integer",
+            "ifrs9_stage": "integer",
+            "recovery_rate": "real",
+            "collections_contact_flag": "integer (0/1)",
+            "default_flag": "integer (0/1)",
+            "region": "text",
+            "channel": "text"
+          },
+          "descriptions": {
+            "account_id": "Unique account identifier",
+            "customer_id": "Owning customer",
+            "product": "Product type: card / personal_loan / auto_loan",
+            "open_date": "Account opening date (\u2265 customer onboarding_date)",
+            "bureau_score": "Credit bureau score at origination (~350\u2013900)",
+            "credit_limit": "Approved credit limit (derived from income)",
+            "balance": "Current outstanding balance (derived from income \u00d7 utilisation)",
+            "utilization": "Balance-to-limit ratio (0\u20131)",
+            "dpd_count": "Count of days-past-due events",
+            "ifrs9_stage": "IFRS9 impairment stage 1/2/3 (3 if defaulted, 2 if high utilisation, else 1)",
+            "recovery_rate": "Fraction recovered post-default (0 if not defaulted) \u2014\u00a0post-outcome",
+            "collections_contact_flag": "Whether collections contacted the account \u2014\u00a0post-outcome",
+            "default_flag": "Target\u00a0for credit-risk use cases: defaulted within window",
+            "region": "Copied from the owning customer (denormalised, consistent)",
+            "channel": "Copied from the owning customer (denormalised, consistent)"
+          }
+        },
+        {
+          "table": "customers",
+          "pk": "customer_id",
+          "date_col": "onboarding_date",
+          "row_count": 25000,
+          "col_count": 8,
+          "columns": [
+            "customer_id",
+            "onboarding_date",
+            "age",
+            "region",
+            "channel",
+            "segment",
+            "income",
+            "tenure_months"
+          ],
+          "datatypes": {
+            "customer_id": "integer (PK)",
+            "onboarding_date": "date",
+            "age": "integer",
+            "region": "text",
+            "channel": "text",
+            "segment": "text",
+            "income": "real",
+            "tenure_months": "integer"
+          },
+          "descriptions": {
+            "customer_id": "Unique customer identifier",
+            "onboarding_date": "Date the customer was first onboarded; floor for all of that customer's child records",
+            "age": "Customer age in years (21\u201379)",
+            "region": "Geography: North / South / East / West",
+            "channel": "Acquisition channel: Branch / Online / Broker",
+            "segment": "Wealth segment: Mass / Affluent / Private",
+            "income": "Stated annual income (currency units, ~8k\u2013600k)",
+            "tenure_months": "Months between\u00a0onboarding_date\u00a0and the dataset as-of date (derived, \u22650)"
+          }
+        },
+        {
+          "table": "macro_scenarios",
+          "pk": "month",
+          "date_col": "month",
+          "row_count": 72,
+          "col_count": 5,
+          "columns": [
+            "month",
+            "gdp_growth",
+            "unemployment",
+            "hpi_index",
+            "regime"
+          ],
+          "datatypes": {
+            "month": "date (PK)",
+            "gdp_growth": "real",
+            "unemployment": "real",
+            "hpi_index": "real",
+            "regime": "text"
+          },
+          "descriptions": {
+            "month": "First of month",
+            "gdp_growth": "Monthly GDP growth (%), lower in downturn",
+            "unemployment": "Unemployment rate (%), higher in downturn",
+            "hpi_index": "House-price index level",
+            "regime": "benign / downturn (downturn = Mar\u2013Dec 2020)"
+          }
+        }
+      ],
+      "relationships": [
+        {
+          "left_table": "retail_accounts",
+          "right_table": "customers",
+          "join_type": "left_join",
+          "relationship_type": "many_to_one",
+          "description": "Link retail accounts with customers using customer_id",
+          "data_quality_rules": [
+            "retail_accounts.customer_id must exist in customers.customer_id",
+            "open_date must be greater than or equal to onboarding_date"
+          ]
+        },
+        {
+          "left_table": "retail_accounts",
+          "right_table": "macro_scenarios",
+          "join_type": "left_join",
+          "relationship_type": "many_to_one",
+          "description": "Link retail account records with macroeconomic conditions by account opening month",
+          "data_quality_rules": [
+            "macro_scenarios.month must be unique",
+            "open_date should align to macro month granularity"
+          ]
+        },
+        {
+          "left_table": "customers",
+          "right_table": "macro_scenarios",
+          "join_type": "left_join",
+          "relationship_type": "many_to_one",
+          "description": "Link customer onboarding records with macroeconomic conditions by onboarding month",
+          "data_quality_rules": [
+            "macro_scenarios.month must be unique",
+            "onboarding_date should align to macro month granularity"
+          ]
+        }
+      ]
+    }
+  ]
+}

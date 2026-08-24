@@ -1,0 +1,13 @@
+I am looking for a product spec doc which will serve as (a) Business Requirements, (b) Feature Specifications, and (c) Technical Specifications.
+Scope is the Aegis Labs product which has been deployed on Azure.
+You are model claude-fable-5, named "Master". Create these three components in the document. Create subsections within the same. Create expectations of each sections.
+Delegate to sub-agent model claude-sonnet-5, called, "Explorer". Explorer will read the codes as required. Give Explorer pointed instructions. 
+Create another sub-agent model claude-opus-5, called, "Writer". Explorer will share its findings, not the entire output, but a pointed summary, to Writer.
+Writer will write the document sections.
+You, Master, will read the document after Writer writes it. If you are satisfied with the output at a section / sub-section level / paragraph level, you will pass it. In case you fail any unit, give pointed rework instructions to Writer or Explorer as per the need. The key is to give pointed instructions and small tasks to them.
+Do not iterate more than thrice for a unit of the document. 
+
+Purpose of this document: this document will be handed over to my colleague who is developing a similar product. He will get the good things from Aegis Labs and integrate in his product.
+It is important to capture product names, and brand guidelines on UI / UX and assets too.
+
+I am token-sensitive. Keep the handovers extremely pointed ensuring zero context bloat. 

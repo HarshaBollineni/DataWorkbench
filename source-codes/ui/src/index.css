@@ -1,0 +1,115 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme {
+  /* Brand colors */
+  --color-dq-dark: #181C23;
+  --color-dq-purple: #FFAD28;
+
+  /* Chart palette (used by recharts on Dashboards) */
+  --color-chart-1: #FFAD28;
+  --color-chart-2: #10b981;
+  --color-chart-3: #3b82f6;
+  --color-chart-4: #FF4F59;
+  --color-chart-5: #6D706B;
+
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 240 10% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 3.9%;
+    --primary: 38 100% 58%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 240 4.8% 95.9%;
+    --secondary-foreground: 240 5.9% 10%;
+    --muted: 240 4.8% 95.9%;
+    --muted-foreground: 240 3.8% 46.1%;
+    --accent: 240 4.8% 95.9%;
+    --accent-foreground: 240 5.9% 10%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 5.9% 90%;
+    --input: 240 5.9% 90%;
+    --ring: 38 100% 58%;
+    --radius: 0.5rem;
+  }
+}
+
+body {
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+/* ── Agentic Skills org-chart connectors (Plan 7) ───────────────────────
+   Measurement-free CSS tree. Connector colour = the wrapper's `color`
+   (set per-division via a Tailwind text-* class), so lines pick up the
+   division accent. Standard first/last-child trimming keeps the
+   horizontal rail flush with the outer member centres. */
+.aoc-lead-line { width: 2px; height: 1.6rem; background: currentColor; border-radius: 2px; }
+.aoc-members { display: flex; justify-content: center; align-items: flex-start; gap: 1.5rem; }
+.aoc-member { position: relative; padding-top: 1.6rem; display: flex; flex-direction: column; align-items: center; }
+.aoc-member::before { content: ""; position: absolute; top: 0; left: 50%; width: 2px; height: 1.6rem; background: currentColor; border-radius: 2px; transform: translateX(-1px); }
+.aoc-member::after { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: currentColor; border-radius: 2px; }
+.aoc-member:first-child::after { left: 50%; }
+.aoc-member:last-child::after { right: 50%; }
+.aoc-member:only-child::after { display: none; }
+
+/* Compact column "command chain": reports hang off a vertical spine.
+   Spine colour = the wrapper's `color` (per-division text-* accent). */
+.aoc-spine-item { position: relative; padding-left: 1.4rem; }
+.aoc-spine-item::before { content: ""; position: absolute; left: .45rem; top: 0; bottom: 0; width: 2px; background: currentColor; border-radius: 2px; }
+.aoc-spine-item:last-child::before { bottom: auto; height: 1.45rem; }
+.aoc-spine-item::after { content: ""; position: absolute; left: .45rem; top: 1.45rem; width: .85rem; height: 2px; background: currentColor; border-radius: 2px; }
+
+/* Lineage dimming: faded nodes recede, focused lineage stays crisp. */
+.aoc-dim { opacity: 0.28; filter: saturate(0.6); transition: opacity .25s ease, filter .25s ease; }
+.aoc-lit { transition: opacity .25s ease, transform .25s ease; }
+
+@keyframes aoc-pulse { 0%,100% { box-shadow: 0 0 0 0 var(--aoc-glow); } 50% { box-shadow: 0 0 0 6px transparent; } }
+
+/* Slow light sheen sweeping across department banners (demo wow factor). */
+@keyframes aoc-sheen { 0% { transform: translateX(-160%) skewX(-18deg); } 100% { transform: translateX(420%) skewX(-18deg); } }
+.aoc-sheen { position: absolute; top: 0; bottom: 0; width: 28%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.35), transparent); animation: aoc-sheen 5.5s ease-in-out infinite; }
+
+/* Diagnostic #2 evidence workspace, aligned with the reference implementation. */
+.dq-tree-section,.dq-bin-workspace{overflow:hidden;border:1px solid #dce3dd;border-radius:8px;background:#fffdf8}.dq-tree-section>summary,.dq-bin-workspace>summary{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 16px;cursor:pointer;list-style:none;color:#365a60;background:#f2f4ef}.dq-tree-section>summary::-webkit-details-marker,.dq-bin-workspace>summary::-webkit-details-marker{display:none}.dq-tree-section>summary>span{display:flex;align-items:center;gap:9px}.dq-tree-section>summary span span,.dq-bin-workspace>summary>span:first-child{display:grid;gap:2px}.dq-tree-section>summary svg,.dq-bin-workspace summary svg{width:17px;height:17px}.dq-tree-section>summary small,.dq-bin-workspace>summary em{color:#718285;font-size:11px;font-style:normal;font-weight:400}.dq-tree-section>summary>svg{transition:transform .18s}.dq-tree-section[open]>summary>svg{transform:rotate(180deg)}
+.dq-tree-toolbar{min-height:44px;padding:7px 13px;display:flex;align-items:center;justify-content:flex-end;gap:12px;color:#708286;border-top:1px solid #e2e7e2;border-bottom:1px solid #e2e7e2}.dq-tree-toolbar>span{font-size:11px}.dq-tree-toolbar>div{display:flex;overflow:hidden;border:1px solid #cbd7d0;border-radius:7px}.dq-tree-toolbar button{min-width:38px;height:30px;padding:0 9px;display:grid;place-items:center;background:white;border:0;border-left:1px solid #d8e0da;font-size:11px;font-weight:700}.dq-tree-toolbar button:first-child{border-left:0}.dq-tree-toolbar button.active,.dq-tree-toolbar button:hover{color:white;background:#0f766e}.dq-tree-toolbar button:disabled{opacity:.38}.dq-tree-toolbar svg{width:14px}.dq-tree-scroll{max-width:100%;overflow:auto;background-color:#fbfcf8;background-image:radial-gradient(#d7e2db .8px,transparent .8px);background-size:18px 18px}.dq-tree-canvas{display:block;margin-inline:auto}.dq-tree-connectors path{fill:none;stroke:#78928a;stroke-width:1.5}.dq-tree-connectors marker path{fill:#78928a}.dq-tree-connectors rect{fill:#fffdf8;stroke:#c9d7cf}.dq-tree-connectors text{fill:#40645d;font:700 10px sans-serif;text-anchor:middle}.dq-tree-split{width:100%;height:100%;padding:9px 11px;display:grid;align-content:center;gap:5px;text-align:center;background:#fffdf8;border:1.5px solid #8eb1a3;border-radius:8px;box-shadow:0 7px 18px rgba(26,54,58,.10)}.dq-tree-split>span{color:#74878a;font-size:8px;font-weight:700;text-transform:uppercase}.dq-tree-split>strong{overflow-wrap:anywhere;color:#172b32;font-size:12px}.dq-tree-split small{display:flex;justify-content:center;flex-wrap:wrap;gap:3px 6px;font-size:8px}.dq-tree-split small b{color:#0f766e}.dq-tree-split small em{color:#8a6224;font-style:normal}.dq-tree-leaf{width:100%;height:100%;padding:10px;display:grid;grid-template-rows:auto auto auto auto 1fr;gap:7px;color:#35545a;background:rgba(217,111,87,var(--leaf-tint));border:1.5px solid #b9cfc4;border-radius:8px;box-shadow:0 9px 22px rgba(26,54,58,.11)}.dq-tree-leaf>div{display:flex;justify-content:space-between;padding-bottom:5px;border-bottom:1px solid rgba(92,122,116,.18)}.dq-tree-leaf>div span,.dq-tree-leaf label,.dq-tree-leaf footer span{color:#718285;font-size:7px;font-weight:700;text-transform:uppercase}.dq-tree-leaf>div strong{color:#0f766e;font-size:13px}.dq-tree-leaf section{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}.dq-tree-leaf section.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.dq-tree-leaf label{display:grid;gap:3px;padding:5px;background:rgba(255,255,255,.76);border:1px solid rgba(159,184,173,.55);border-radius:6px}.dq-tree-leaf label b{color:#0f766e;font-size:11px}.dq-tree-leaf>small{color:#8a6224;font-size:7px;font-weight:700}.dq-tree-leaf footer{align-self:end;padding-top:5px;display:flex;justify-content:space-between;gap:7px;border-top:1px solid rgba(92,122,116,.18)}.dq-tree-leaf footer b{overflow:hidden;font-size:8px;text-overflow:ellipsis;white-space:nowrap}
+.dq-bin-workspace>summary{padding:18px}.dq-bin-workspace>summary small{color:#0f766e;font-size:10px;font-weight:800;letter-spacing:.12em;text-transform:uppercase}.dq-bin-workspace>summary strong{font-size:18px}.dq-bin-workspace>summary>span:last-child{display:flex;align-items:center;gap:10px}.dq-bin-workspace>summary>span:last-child b{padding:7px 11px;color:#315e73;background:#e2eef4;border-radius:999px;font-size:10px;text-transform:uppercase}.dq-bin-workspace>summary>span:last-child svg{transition:transform .18s}.dq-bin-workspace[open]>summary>span:last-child svg{transform:rotate(90deg)}.dq-bin-workspace .content>.profile{margin:14px;padding:11px;display:flex;align-items:center;gap:8px;color:#396c60;background:#e9f4ee;border:1px solid #d5e8dd;border-radius:7px;font-size:11px}.dq-bin-workspace .profile svg,.dq-bin-workspace .warning svg{width:14px;height:14px;flex:none}.dq-bin-workspace .warning{margin:12px;padding:10px;display:flex;gap:7px;color:#9a4a2d;background:#fff0eb;border:1px solid #f0cec3;border-radius:7px;font-size:11px}.dq-bin-workspace .content>details{border-top:1px solid #dce3dd}.dq-bin-workspace .content>details>summary{padding:12px 14px;cursor:pointer;color:#365a60;background:#f1f4ef;font-size:11px;font-weight:700}.dq-bin-chart{margin:16px;padding:14px;overflow:auto;background:#f8faf6;border:1px solid #dce3dd;border-radius:8px}.dq-bin-chart>div{display:flex;justify-content:space-between;gap:14px}.dq-bin-chart>div span:first-child{display:grid}.dq-bin-chart small{color:#718285;font-size:9px}.dq-bin-chart svg{display:block;min-width:700px;width:100%}.dq-bin-chart .axis{stroke:#9aaca5}.dq-bin-chart .zero{stroke:#d7ded9;stroke-dasharray:4 4}.dq-bin-chart .bar{fill:#3c8d88}.dq-bin-chart .bar.protected{fill:#d8b16d;stroke:#8a672e;stroke-dasharray:4 3}.dq-bin-chart .line{fill:none;stroke:#d9912f;stroke-width:3}.dq-bin-chart circle{fill:#ca614c;stroke:#fff;stroke-width:2}.dq-bin-chart circle.protected{stroke:#76531d;stroke-width:3}.dq-bin-chart .label{fill:#5b7274;font-size:9px;text-anchor:middle}.dq-bin-workspace .editor{padding:16px}.dq-bin-workspace .governance{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:13px;border-bottom:1px solid #e1e6e1}.dq-bin-workspace .governance>span{display:flex;gap:6px}.dq-bin-workspace .governance label{display:flex;align-items:center;gap:7px;color:#718285;font-size:10px}.dq-bin-workspace .governance select{height:34px;padding:0 8px;border:1px solid #cbd7d0;border-radius:6px;background:white}.dq-bin-workspace .iv-values b{padding:5px 7px;color:#315e73;background:#edf5f3;border-radius:5px;font-size:9px}.protected-panel{margin:16px 0;padding:12px;display:grid;gap:5px;background:#f7f2e7;border:1px solid #eadbbb;border-radius:8px}.protected-panel>small{color:#816d4e;font-size:9px}.protected-panel>span{display:flex;flex-wrap:wrap;gap:7px}.protected-panel article{min-width:210px;padding:8px 10px;display:grid;background:#fffdf8;border:1px solid #e5d5b4;border-radius:7px}.protected-panel article small{color:#786a52;font-size:8px}.dq-coarse-table{margin-inline:-16px}.dq-coarse-table .head,.dq-coarse-table .row{display:grid;grid-template-columns:42px minmax(180px,1.4fr) repeat(6,minmax(80px,1fr));align-items:center;gap:8px;padding:11px 16px}.dq-coarse-table .head{color:#5f7679;background:#edf2ee;font-size:9px;font-weight:800;text-transform:uppercase}.dq-coarse-table .coarse{border-bottom:1px solid #e3e8e4}.dq-coarse-table .row>button{width:30px;height:30px;display:grid;place-items:center;border:1px solid #cbd7d0;border-radius:6px}.dq-coarse-table .row>button svg{width:14px}.dq-coarse-table .row>span:nth-child(2){display:grid;gap:3px}.dq-coarse-table .row small{color:#7a8a8d;font-size:9px}.dq-coarse-table .row .h-8{width:max-content}.dq-coarse-table .fine{padding:12px 16px 16px 58px;background:#f8faf8}.dq-coarse-table .fine>div{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:7px;margin-bottom:10px}.dq-coarse-table .fine label{padding:8px;display:flex;gap:8px;background:white;border:1px solid #dce3dd;border-radius:6px}.dq-coarse-table .fine label span{display:grid}.dq-coarse-table .fine label small{white-space:normal}
+@media(max-width:900px){.dq-bin-workspace .governance{align-items:flex-start;flex-direction:column}.dq-coarse-table{overflow-x:auto}.dq-coarse-table .head,.dq-coarse-table .row{min-width:920px}.dq-tree-section>summary,.dq-bin-workspace>summary{align-items:flex-start}.dq-bin-chart>div{align-items:flex-start;flex-direction:column}}
+.dq-bin-workspace .governance{flex-wrap:wrap}
+.dq-bin-workspace .draft-note{margin:10px 0 0;padding:8px 10px;color:#8a6224;background:#fff8e8;border:1px solid #ead7a8;border-radius:6px;font-size:10px;font-weight:700}

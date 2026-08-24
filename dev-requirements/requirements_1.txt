@@ -1,0 +1,16 @@
+# Cross-Field Business Rule Engine — Python dependencies
+# Python 3.9+ recommended.  Install with:  pip install -r requirements.txt
+
+# --- Core (required) ---
+pandas>=2.0            # data loading and row/table handling
+openpyxl>=3.1          # Excel (.xlsx/.xlsm) reading via pandas.ExcelFile
+
+# --- Optional: LLM column-verification layer (--verify-llm) ---
+# Only needed if you wire a real provider inside _llm_call() and set
+# the CFR_LLM_API_KEY environment variable. The engine runs fully
+# without this; leave commented unless enabling LLM verification.
+# anthropic>=0.40
+
+# Everything else the engine uses is Python standard library:
+#   argparse, difflib, glob, json, re, os, sys, dataclasses,
+#   datetime, typing, collections

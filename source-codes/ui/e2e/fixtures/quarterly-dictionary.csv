@@ -1,0 +1,4 @@
+Field Name,Meaning,Data Format,Requirement,Notes
+reporting_period,Calendar quarter,period,period,Quarterly IFRS 9 reporting for CRE
+default_flag,Observed default outcome,binary,target,IFRS 9 target
+exposure,Commercial real estate exposure,numeric,feature,CRE portfolio

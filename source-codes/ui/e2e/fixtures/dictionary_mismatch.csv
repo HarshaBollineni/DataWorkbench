@@ -1,0 +1,9 @@
+column,definition,declared_type
+facility_id,Unique facility identifier,string
+default_flag,Observed default outcome,integer
+pd,Probability of default,decimal
+origination_date,Facility origination date,date
+maturity_date,Facility maturity date,date
+outstanding_balance,Current outstanding balance,text
+loan_limit,Approved loan limit,decimal
+credit_score,Applicant credit score,integer

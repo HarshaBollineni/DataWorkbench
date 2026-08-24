@@ -1,0 +1,113 @@
+{
+  "order": {
+    "yourWork": [
+      "assets", "connected databases", "uploaded files", "uploaded tables",
+      "variables and their profiles", "tags", "issues", "RCA cases",
+      "knowledge-base documents", "test results and findings",
+      "saved workflow context", "scheduled tasks and alerts",
+      "background activity records", "support requests"
+    ],
+    "platform": [
+      "agent skills", "framework and diagnostics reference data",
+      "thresholds and settings", "tenancy configuration",
+      "taxonomy reference data"
+    ]
+  },
+
+  "exact": {
+    "dq_items": { "label": "assets", "group": "yourWork" },
+    "dq_assets": { "label": "assets", "group": "yourWork" },
+
+    "ingested_databases": { "label": "connected databases", "group": "yourWork" },
+    "table_metadata": { "label": "connected databases", "group": "yourWork" },
+
+    "dq_item_files": { "label": "uploaded files", "group": "yourWork" },
+    "dq_asset_versions": { "label": "assets", "group": "yourWork" },
+    "dq_asset_dictionaries": { "label": "variables and their profiles", "group": "yourWork" },
+    "dq_asset_events": { "label": "background activity records", "group": "yourWork" },
+    "id_sequences": { "label": "background activity records", "group": "yourWork" },
+
+    "dq_item_tables": { "label": "uploaded tables", "group": "yourWork" },
+
+    "variable_inventory": { "label": "variables and their profiles", "group": "yourWork" },
+    "dq_item_mappings": { "label": "variables and their profiles", "group": "yourWork" },
+    "dq_item_warnings": { "label": "variables and their profiles", "group": "yourWork" },
+    "dq_snapshot_fingerprints": { "label": "variables and their profiles", "group": "yourWork" },
+
+    "tag_assignments": { "label": "tags", "group": "yourWork" },
+
+    "issues_v2": { "label": "issues", "group": "yourWork" },
+    "tracked_issues_v2": { "label": "issues", "group": "yourWork" },
+
+    "kb_documents": { "label": "knowledge-base documents", "group": "yourWork" },
+    "kb_document_versions": { "label": "knowledge-base documents", "group": "yourWork" },
+    "kb_sections": { "label": "knowledge-base documents", "group": "yourWork" },
+    "kb_rules": { "label": "knowledge-base documents", "group": "yourWork" },
+    "kb_retrieval_manifests": { "label": "knowledge-base documents", "group": "yourWork" },
+
+    "plan_v2": { "label": "test results and findings", "group": "yourWork" },
+    "results_v2": { "label": "test results and findings", "group": "yourWork" },
+    "scores_v2": { "label": "test results and findings", "group": "yourWork" },
+    "run_results": { "label": "test results and findings", "group": "yourWork" },
+    "health_scores": { "label": "test results and findings", "group": "yourWork" },
+    "diag_runs": { "label": "test results and findings", "group": "yourWork" },
+    "diag_run_decisions": { "label": "test results and findings", "group": "yourWork" },
+    "diag_results": { "label": "test results and findings", "group": "yourWork" },
+    "diag_findings": { "label": "test results and findings", "group": "yourWork" },
+    "diag_dispositions": { "label": "test results and findings", "group": "yourWork" },
+    "diag_inference_events": { "label": "test results and findings", "group": "yourWork" },
+    "analysis_artifacts": { "label": "test results and findings", "group": "yourWork" },
+    "analysis_artifact_events": { "label": "test results and findings", "group": "yourWork" },
+    "analysis_artifact_sources": { "label": "test results and findings", "group": "yourWork" },
+    "diag_binning_revisions": { "label": "test results and findings", "group": "yourWork" },
+    "analysis_manifests": { "label": "test results and findings", "group": "yourWork" },
+    "analysis_observations": { "label": "test results and findings", "group": "yourWork" },
+    "analysis_observation_dispositions": { "label": "test results and findings", "group": "yourWork" },
+    "test_plan": { "label": "test results and findings", "group": "yourWork" },
+    "test_db_links": { "label": "test results and findings", "group": "yourWork" },
+    "test_dossiers": { "label": "test results and findings", "group": "yourWork" },
+    "test_versions": { "label": "test results and findings", "group": "yourWork" },
+    "design_workbench": { "label": "test results and findings", "group": "yourWork" },
+    "hitl_decisions": { "label": "test results and findings", "group": "yourWork" },
+
+    "object_contexts": { "label": "saved workflow context", "group": "yourWork" },
+    "context_links": { "label": "saved workflow context", "group": "yourWork" },
+    "app_fsm": { "label": "saved workflow context", "group": "yourWork" },
+    "context_memory": { "label": "saved workflow context", "group": "yourWork" },
+
+    "schedules": { "label": "scheduled tasks and alerts", "group": "yourWork" },
+    "notifications": { "label": "scheduled tasks and alerts", "group": "yourWork" },
+
+    "monitoring": { "label": "background activity records", "group": "yourWork" },
+
+    "tickets": { "label": "support requests", "group": "yourWork" },
+
+    "agent_skills": { "label": "agent skills", "group": "platform" },
+
+    "test_library": { "label": "framework and diagnostics reference data", "group": "platform" },
+    "fw_areas": { "label": "framework and diagnostics reference data", "group": "platform" },
+    "fw_tests": { "label": "framework and diagnostics reference data", "group": "platform" },
+    "fw_family_weights": { "label": "framework and diagnostics reference data", "group": "platform" },
+    "dq_framework_areas": { "label": "framework and diagnostics reference data", "group": "platform" },
+    "dq_framework_families": { "label": "framework and diagnostics reference data", "group": "platform" },
+    "diagnostic_register": { "label": "framework and diagnostics reference data", "group": "platform" },
+    "framework_taxonomy": { "label": "framework and diagnostics reference data", "group": "platform" },
+    "framework_test_areas": { "label": "framework and diagnostics reference data", "group": "platform" },
+    "dq_framework": { "label": "framework and diagnostics reference data", "group": "platform" },
+    "framework_register": { "label": "framework and diagnostics reference data", "group": "platform" },
+
+    "threshold_settings": { "label": "thresholds and settings", "group": "platform" },
+
+    "tenants": { "label": "tenancy configuration", "group": "platform" },
+
+    "tag_dimensions": { "label": "taxonomy reference data", "group": "platform" },
+    "tag_values": { "label": "taxonomy reference data", "group": "platform" },
+    "tag_aliases": { "label": "taxonomy reference data", "group": "platform" },
+    "tag_taxonomy_versions": { "label": "taxonomy reference data", "group": "platform" },
+    "platform_and_taxonomy": { "label": "taxonomy reference data", "group": "platform" }
+  },
+
+  "prefixes": {
+    "rca_": { "label": "RCA cases", "group": "yourWork" }
+  }
+}

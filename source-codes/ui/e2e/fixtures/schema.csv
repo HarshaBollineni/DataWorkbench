@@ -1,0 +1,8 @@
+table,column,type
+assessment,facility_id,string
+assessment,default_flag,integer
+assessment,pd,decimal
+assessment,origination_date,date
+assessment,maturity_date,date
+assessment,outstanding_balance,decimal
+assessment,loan_limit,decimal

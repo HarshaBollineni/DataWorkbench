@@ -1,0 +1,17 @@
+{
+  "users": [
+    {
+      "username": "anirban",
+      "password": "dqstudio",
+      "name": "Anirban Naskar",
+      "email": "anirban.naskar@genpact.com",
+      "function": "Model Development",
+      "role": "Credit Risk",
+      "salutation": "Mr.",
+      "call_name": "Anirban",
+      "ai_personality": "professional",
+      "theme": "minimalist",
+      "authz_roles": ["user", "admin", "kb_editor", "kb_reviewer"]
+    }
+  ]
+}

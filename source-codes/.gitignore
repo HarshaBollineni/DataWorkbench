@@ -1,0 +1,61 @@
+# ─────────────────────────────────────────────────────────────
+#  Aegis Labs — git ignore rules
+#  Mirrors .dockerignore where it matters; adds local-dev cruft.
+# ─────────────────────────────────────────────────────────────
+
+# ── Secrets — never commit. The OpenAI key lives in backend/.env
+#    locally and as a Container App secret in Azure. ─────────────
+**/.env
+**/.env.*
+!**/.env.example
+
+# ── Mutable runtime state (in prod this lives on the Azure File
+#    Share at /data, restored on boot — see system_db.py). ───────
+**/system_state.db
+**/system_state.db-*
+**/system_state.db.bak
+**/*.bak.tmp
+backend/uploads/
+backend/kb_storage/
+backend/analysis_artifacts/
+
+# ── Python ────────────────────────────────────────────────────
+.venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/pytest-cache-files-*/
+.pytest-runtime-*/
+.pytest-state/
+**/*.stackdump
+.tmp-version-diff.db
+.tmp-version-diff-uploads/
+.tmp-version-diff-itemdbs/
+
+# ── Node / Vite frontend build ────────────────────────────────
+node_modules/
+ui/dist/
+ui/.vite/
+ui/playwright-report/
+ui/test-results/
+.e2e/
+
+# ── Large binaries & backups — OneDrive already holds these;
+#    keeping them out of git avoids a bloated, slow repo. ────────
+*.7z
+# Legacy/unused warehouses (37M+36M) — superseded by demo-db's 3 split .db files.
+demo-db/portfolio_alt_master.db
+
+# ── Deploy tooling installed locally (swa CLI etc.) — not source ─
+.deploy-tools/
+deployment.local.psd1
+.runtime/
+
+# ── OS / editor cruft ─────────────────────────────────────────
+Thumbs.db
+.DS_Store
+
+# Feedback prompt doc kept open in Word (file-locked; commit later if wanted)
+
+# Claude Code session/worktree data — not source
+.claude/

@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "contract_version": 1,
+  "diagnostic_id": 6,
+  "document_id": "kbdoc_t2d6_row_completeness",
+  "version_id": "kbver_t2d6_row_completeness_v1",
+  "version_seq": 1,
+  "methodology_version": "row-completeness-observed-span-v1",
+  "diagnostic": {
+    "name": "Row-completeness reconciliation",
+    "area": "T2",
+    "mode": "hard",
+    "what_it_computes": "Are facility-period rows present between each facility's first and last observed reporting periods?",
+    "metric": "continuity coverage = received required facility-period pairs / required pairs within observed spans",
+    "threshold_based": "Yes - one continuity floor",
+    "threshold_rule_default": "continuity coverage below 95% flags a gap; segment analysis is optional",
+    "det_stat": "Deterministic",
+    "decision_type": "verdict",
+    "stage": "Stage 1",
+    "kb_dependency": "HIGH",
+    "workflow_status": "executable",
+    "l2_areas": ["L2-10"],
+    "enabled_by": "T2D6 governed knowledge package v1"
+  },
+  "methodology": "Assess whether rows can be assigned to facility-period keys, whether the observed panel calendar is continuous, whether required rows are present by period and facility, whether facility-period pairs are unique, and, when a segment is bound, whether segment-period cells are complete. Expected periods are only those between the observed first and last periods for the applicable population. Verdict calculation is deterministic; KB content never supplies executable code.",
+  "configuration": {
+    "default_reporting_grain": "monthly",
+    "default_continuity_floor": 0.95,
+    "continuity_floor_label": "Required row coverage",
+    "continuity_floor_help": "The minimum share of required facility-period rows that must be present. The same floor applies wherever a coverage-based rule is evaluated.",
+    "segment_optional": true
+  },
+  "rules": [
+    {
+      "rule_id": "T2D6-01",
+      "display_order": 1,
+      "title": "Facility-period key assignability",
+      "user_help": "Checks that every row can be assigned to both a facility and a valid reporting period.",
+      "severity": "CRITICAL",
+      "primitive": "key_assignability",
+      "uses_continuity_floor": false,
+      "required_roles": ["facility_id", "period"],
+      "optional": false,
+      "next_step": "Correct or quarantine rows with a missing facility identifier or invalid reporting period."
+    },
+    {
+      "rule_id": "T2D6-02",
+      "display_order": 2,
+      "title": "Panel calendar continuity",
+      "user_help": "Checks that no complete reporting period is absent between the first and last periods observed in the table.",
+      "severity": "MATERIAL",
+      "primitive": "panel_calendar_continuity",
+      "uses_continuity_floor": false,
+      "required_roles": ["period"],
+      "optional": false,
+      "next_step": "Confirm whether every completely absent period is a source-delivery gap or a valid reporting exception."
+    },
+    {
+      "rule_id": "T2D6-03",
+      "display_order": 3,
+      "title": "Period-level row coverage",
+      "user_help": "Checks whether each observed reporting period contains the required share of facility rows.",
+      "severity": "MATERIAL",
+      "primitive": "period_level_coverage",
+      "uses_continuity_floor": true,
+      "required_roles": ["facility_id", "period"],
+      "optional": false,
+      "next_step": "Investigate reporting periods below the configured row-coverage floor."
+    },
+    {
+      "rule_id": "T2D6-04",
+      "display_order": 4,
+      "title": "Duplicate facility-period pairs",
+      "user_help": "Finds facility-period keys that occur more than once and distinguishes exact from conflicting records.",
+      "severity": "CRITICAL",
+      "primitive": "duplicate_facility_period_pairs",
+      "uses_continuity_floor": false,
+      "required_roles": ["facility_id", "period"],
+      "optional": false,
+      "next_step": "Resolve duplicate keys, prioritising pairs whose non-key values conflict."
+    },
+    {
+      "rule_id": "T2D6-05",
+      "display_order": 5,
+      "title": "Facility-period row coverage",
+      "user_help": "Checks for missing periods inside each facility's own first-to-last observed reporting span.",
+      "severity": "MATERIAL",
+      "primitive": "facility_period_coverage",
+      "uses_continuity_floor": true,
+      "required_roles": ["facility_id", "period"],
+      "optional": false,
+      "next_step": "Investigate facilities whose rows fall below the configured coverage floor within their observed lifespan."
+    },
+    {
+      "rule_id": "T2D6-06",
+      "display_order": 6,
+      "title": "Segment-period row coverage",
+      "user_help": "When a segment column is selected, checks required facility rows within each stable segment and reporting period.",
+      "severity": "MATERIAL",
+      "primitive": "segment_period_coverage",
+      "uses_continuity_floor": true,
+      "required_roles": ["facility_id", "period", "segment"],
+      "optional": true,
+      "next_step": "Investigate segment-period cells below the configured coverage floor; bind a segment only when it is meaningful and stable."
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+# RCA synthetic Knowledge Base package. TEST-ONLY.
+#
+# Never loaded during normal product startup — see
+# backend/seeds/synthetic_kb_seed.py:load_synthetic_kb(), which is never
+# called from main.py or seed_all(). It exists so browser UAT and unit tests
+# can exercise expiry, challenge, quarantine, and blame-back without ever
+# becoming production seed knowledge (docs/rca/00-contracts.md §6,
+# migration plan §6).
+test_only: true
+package: rca-synthetic-kb
+
+documents:
+  - file: credit-retail-mortgage.md
+    category_hint: domain_fact
+    rules:
+      # Rule state directives — the loader sets these directly (not through
+      # the normal draft->submit->publish UI flow) so demonstration states
+      # like "expired" don't require literally waiting 12 months.
+      "Delinquency chronology": {category: domain_fact, trust_level: human_confirmed, lifecycle_state: published, shelf_life_months: 12, last_confirmed_months_ago: 1}
+      "Origination chronology": {category: domain_fact, trust_level: inferred, lifecycle_state: published, shelf_life_months: 12}
+      "Outcome leakage": {category: domain_fact, trust_level: human_confirmed, lifecycle_state: published, shelf_life_months: 12, last_confirmed_months_ago: 18}  # deliberately expired
+
+  - file: credit-retail-credit-card.md
+    category_hint: domain_fact
+    rules:
+      "Utilization ceiling": {category: domain_fact, trust_level: human_confirmed, lifecycle_state: published, shelf_life_months: 6, last_confirmed_months_ago: 9}  # deliberately stale (shelf life 6mo, unconfirmed for 9)
+      "Minimum payment floor": {category: domain_fact, trust_level: human_confirmed, lifecycle_state: published, shelf_life_months: 12, last_confirmed_months_ago: 1}
+
+  - file: liquidity-deposit-runoff.md
+    category_hint: domain_fact
+    rules:
+      "Balance decline": {category: domain_fact, trust_level: human_confirmed, lifecycle_state: published, shelf_life_months: 12, last_confirmed_months_ago: 1}
+      "Lifecycle": {category: case_history, trust_level: human_confirmed, lifecycle_state: published, shelf_life_months: 12, last_confirmed_months_ago: 1, under_suspicion: true, under_suspicion_reason: "synthetic demonstration of blame-back after an Unresolved case"}
+
+  - file: operational-data-lineage.md
+    category_hint: lineage
+    rules:
+      "Upstream feed": {category: lineage, trust_level: human_confirmed, lifecycle_state: published, shelf_life_months: 12, last_confirmed_months_ago: 1}
+      "Join key": {category: lineage, trust_level: human_confirmed, lifecycle_state: published, shelf_life_months: 12, last_confirmed_months_ago: 1}
+
+  - file: ownership-rules.md
+    category_hint: ownership
+    rules:
+      "Retail mortgage table owner": {category: ownership, trust_level: human_confirmed, lifecycle_state: published, shelf_life_months: 24, last_confirmed_months_ago: 1}
+      "Draft note": {category: ownership, trust_level: inferred, lifecycle_state: draft}  # deliberately left as draft — never enters retrieval

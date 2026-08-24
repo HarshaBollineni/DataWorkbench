@@ -1,0 +1,60 @@
+# Secrets and machine-local configuration
+**/.env
+**/.env.*
+!**/.env.example
+**/deployment.local.psd1
+*.pem
+*.key
+
+# Python
+**/.venv/
+**/venv/
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.coverage
+**/htmlcov/
+
+# Node / frontend builds
+**/node_modules/
+**/dist/
+**/dist-ssr/
+**/.vite/
+**/playwright-report/
+**/test-results/
+
+# Generated runtime and test data
+**/.runtime/
+**/.e2e/
+**/localSandbox/
+verify-*/
+**/logs/
+*.log
+*.stackdump
+**/system_state*.db*
+**/uploads/
+**/kb_storage/
+**/analysis_artifacts/
+**/*.bak.tmp
+
+# Local tools and generated artifacts
+**/.deploy-tools/
+*.7z
+*.tmp
+*.local
+
+# Editors and operating systems
+.vscode/*
+!.vscode/extensions.json
+**/.idea/
+**/.claude/
+**/.codex/
+**/.agents/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.suo
+*.user
+*.sw?

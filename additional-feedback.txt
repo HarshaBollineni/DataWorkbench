@@ -1,0 +1,10 @@
+Defect ID	Comments
+Data_Sourcing_7	"For Dataset workflow: Error: The ""Reporting period column (optional)"" dropdown is empty — no columns listed.
+Required: Populate it with the column names from the uploaded dataset (same source the other column dropdowns use). Keep ""None / Not applicable"" as the default option."
+Data_Sourcing_8	"For Dataset workflow: Error: The upload placeholder for the data dictionary has been removed.
+Required: Restore the optional data-dictionary upload control on the same screen, accepting CSV/XLSX, with file-name display and a remove option."
+Data_Sourcing_9	"For Dataset workflow: Error: Clicking Step 6 does nothing — no feedback, no visible action.
+Required: On click, trigger the storage process and show a progress bar with status text. On success, show a confirmation message; on failure, show an error message with the reason. Disable the button while running."
+Data_Sourcing_10	"For Dataset workflow: Wrong: After the storage process completes, there is no way to proceed.
+Required: Show a ""Go to Test Lab"" button once Step 6 completes successfully. Keep it hidden or disabled until then."
+Required: Restore both fields, mandatory before proceeding, and carry the selected values through to the diagnostics and storage steps."

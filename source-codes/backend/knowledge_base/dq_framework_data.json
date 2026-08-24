@@ -1,0 +1,546 @@
+{
+  "version": "0.4.0",
+  "_source": "docs/0.4.0/00-framework.md — S8 MVP_Test Plan_DA.xlsx (re-issued 30 Jul 2026), transcribed verbatim (FWK-01..FWK-05, FWK-17, FWK-18, D-17). The framework is what we test; the KB (C-37) is domain truth we test against — this file ships with the product.",
+  "l1_themes": [
+    "Sample & Representativeness",
+    "Target & Outcome Integrity",
+    "Feature & Predictor Quality",
+    "Dataset Stability & Monitoring",
+    "Upstream Dataset & Pipeline Integrity",
+    "Third party data quality and controls"
+  ],
+  "l2_areas": [
+    {
+      "l2_id": "L2-01",
+      "l1_theme": "Sample & Representativeness",
+      "name": "Portfolio Representativeness & Selection Bias",
+      "objective": "Ensure datasets appropriately represent intended analytical populations across segments, vintages, channels and geographies.",
+      "why_it_matters": "Non-representative datasets create biased calibration, weak generalization and unstable analytical outcomes."
+    },
+    {
+      "l2_id": "L2-02",
+      "l1_theme": "Sample & Representativeness",
+      "name": "Historical Depth, Observation Windows & Censoring",
+      "objective": "Ensure sufficient historical depth, seasoning and observable outcomes for intended analytical usage.",
+      "why_it_matters": "Insufficient history or incomplete observation windows weaken long-horizon analytics and forecasting."
+    },
+    {
+      "l2_id": "L2-03",
+      "l1_theme": "Sample & Representativeness",
+      "name": "Downturn & Regime Coverage",
+      "objective": "Ensure stressed and structurally different economic regimes are represented.",
+      "why_it_matters": "Datasets concentrated in benign periods fail under stress conditions."
+    },
+    {
+      "l2_id": "L2-04",
+      "l1_theme": "Target & Outcome Integrity",
+      "name": "Target Definition & Label Consistency",
+      "objective": "Ensure analytical targets and outcomes are consistently defined across systems and time.",
+      "why_it_matters": "Inconsistent targets create artificial shifts and unstable analytical behavior."
+    },
+    {
+      "l2_id": "L2-05",
+      "l1_theme": "Feature & Predictor Quality",
+      "name": "Missingness Mechanism & Data Availability",
+      "objective": "Assess the analytical implications of missing data beyond completeness.",
+      "why_it_matters": "Non-random missingness materially impacts segmentation and calibration."
+    },
+    {
+      "l2_id": "L2-06",
+      "l1_theme": "Feature & Predictor Quality",
+      "name": "Outliers, Extreme Values & Plausibility",
+      "objective": "Assess whether extremes represent genuine behavior or data defects.",
+      "why_it_matters": "Incorrect handling of extremes distorts analytical relationships."
+    },
+    {
+      "l2_id": "L2-07",
+      "l1_theme": "Feature & Predictor Quality",
+      "name": "Temporal Integrity & Feature Leakage",
+      "objective": "Ensure predictors are temporally aligned and free from future-information leakage.",
+      "why_it_matters": "Leakage artificially inflates analytical and model performance."
+    },
+    {
+      "l2_id": "L2-08",
+      "l1_theme": "Feature & Predictor Quality",
+      "name": "Feature Stability & Behavioral Consistency",
+      "objective": "Assess whether predictor behavior remains stable across time and regimes.",
+      "why_it_matters": "Unstable features reduce analytical reliability and model robustness."
+    },
+    {
+      "l2_id": "L2-09",
+      "l1_theme": "Dataset Stability & Monitoring",
+      "name": "Dataset Drift & Degradation Monitoring",
+      "objective": "Monitor whether datasets remain representative and fit-for-purpose over time.",
+      "why_it_matters": "Analytical datasets degrade due to portfolio, operational and macro changes."
+    },
+    {
+      "l2_id": "L2-10",
+      "l1_theme": "Upstream Dataset & Pipeline Integrity",
+      "name": "Pipeline Stability & Schema Consistency",
+      "objective": "Assess whether ingestion and transformation processes remain stable.",
+      "why_it_matters": "Operational changes silently degrade analytical datasets."
+    },
+    {
+      "l2_id": "L2-11",
+      "l1_theme": "Third party data quality and controls",
+      "name": "External / vendor data robustness & change control",
+      "objective": "Verifies if external/ vendor data samples are sourced from approved parties with necessary controls and governance",
+      "why_it_matters": "Lack of robust data quality and control testing in leveraged third party data leads to spurious outcomes and serious operational errors"
+    }
+  ],
+  "test_areas": [
+    {
+      "area_id": "T1",
+      "name": "Feature-to-target leakage",
+      "stage": "Stage 2",
+      "kb_dependency": "Low",
+      "plan_a_dimensions": "Temporal Integrity & Leakage"
+    },
+    {
+      "area_id": "T2",
+      "name": "KB-driven data validation (rules, distributional & relationship)",
+      "stage": "Both",
+      "kb_dependency": "HIGH",
+      "plan_a_dimensions": "Pipeline & Schema Stability; Outliers & Plausibility; Monotonicity & Directional Consistency"
+    },
+    {
+      "area_id": "T3",
+      "name": "Target definition & label consistency",
+      "stage": "Both",
+      "kb_dependency": "Medium",
+      "plan_a_dimensions": "Target Definition & Label Consistency"
+    },
+    {
+      "area_id": "T4",
+      "name": "Portfolio / population representativeness",
+      "stage": "Stage 2",
+      "kb_dependency": "Low-Med",
+      "plan_a_dimensions": "Portfolio Representativeness"
+    },
+    {
+      "area_id": "T5",
+      "name": "Outcome window / censoring completeness (incl. seasoning/maturity)",
+      "stage": "Stage 2",
+      "kb_dependency": "Medium",
+      "plan_a_dimensions": "Outcome Window Consistency; Historical Depth & Censoring"
+    },
+    {
+      "area_id": "T6",
+      "name": "KB relationship set (SME generated + AI proposed, SME validated)",
+      "stage": "Both",
+      "kb_dependency": "Reads & writes",
+      "plan_a_dimensions": "AI-proposal layer (any dimension)"
+    }
+  ],
+  "register": [
+    {
+      "diagnostic_id": 2,
+      "area": "T1",
+      "mode": "statistical",
+      "name": "Single-feature target separation",
+      "what_it_computes": "How strongly does each feature separate the target alone?",
+      "metric": "univariate AUC; Information Value (alt: mutual information)",
+      "threshold_based": "Yes - tunable",
+      "threshold_rule_default": "AUC > 0.90 OR IV > 0.5 → 'too good to be true' flag / AUC < 0.60 OR IV < 0.05 → 'poor discrimination' flag",
+      "det_stat": "Statistical",
+      "decision_type": "candidate_flag",
+      "stage": "Stage 2",
+      "kb_dependency": "Low",
+      "workflow_status": "executable",
+      "l2_areas": [
+        "L2-07"
+      ],
+      "enabled_by": "Phase 1B Slice 4 acceptance gate: governed manifest, partial outcomes, reusable artifacts, candidate review and controlled issue hand-off"
+    },
+    {
+      "diagnostic_id": 4,
+      "area": "T2",
+      "mode": "hard",
+      "name": "Cross-field business rule",
+      "what_it_computes": "Does each row satisfy a hard cross-field rule (with exceptions)?",
+      "metric": "violation count / rate",
+      "threshold_based": "No - deterministic rule",
+      "threshold_rule_default": "violation rate > ~0 after exceptions → flag",
+      "det_stat": "Deterministic",
+      "decision_type": "verdict",
+      "stage": "Both",
+      "kb_dependency": "HIGH",
+      "workflow_status": "executable",
+      "l2_areas": [
+        "L2-06",
+        "L2-10"
+      ],
+      "enabled_by": "D-15 (30 Jul 2026)"
+    },
+    {
+      "diagnostic_id": 6,
+      "area": "T2",
+      "mode": "hard",
+      "name": "Row-completeness reconciliation",
+      "what_it_computes": "Are facility-period rows present between each facility's first and last observed reporting periods?",
+      "metric": "continuity coverage = received required facility-period pairs / required pairs within observed spans",
+      "threshold_based": "Yes - one continuity floor",
+      "threshold_rule_default": "continuity coverage below 95% flags a gap; segment analysis is optional",
+      "det_stat": "Deterministic",
+      "decision_type": "verdict",
+      "stage": "Stage 1",
+      "kb_dependency": "HIGH",
+      "workflow_status": "executable",
+      "l2_areas": [
+        "L2-10"
+      ],
+      "enabled_by": "T2D6 backend execution contract (24 Aug 2026)"
+    },
+    {
+      "diagnostic_id": 8,
+      "area": "T2",
+      "mode": "hard",
+      "name": "Value-semantics classification",
+      "what_it_computes": "Classify each field/null as valid / missing / censored / stale / N-A",
+      "metric": "rule-based classification vs KB",
+      "threshold_based": "No - classification",
+      "threshold_rule_default": "tag per KB rule (no cutoff) — OUTPUT other tests consume",
+      "det_stat": "Deterministic",
+      "decision_type": "classification_output",
+      "stage": "Stage 1",
+      "kb_dependency": "HIGH",
+      "workflow_status": "workflow_pending",
+      "l2_areas": [
+        "L2-10"
+      ],
+      "enabled_by": null,
+      "_next_to_enable": "DIA-01"
+    },
+    {
+      "diagnostic_id": 11,
+      "area": "T2",
+      "mode": "relational",
+      "name": "Directional / monotonic consistency (segmented)",
+      "what_it_computes": "Do two variables relate in the expected direction, by segment?",
+      "metric": "Spearman rank corr; group-band median trend",
+      "threshold_based": "Yes - tunable",
+      "threshold_rule_default": "wrong sign, OR |corr| < floor, OR inversions > allowed (per segment; min-sample guard)",
+      "det_stat": "Statistical",
+      "decision_type": "contextual",
+      "stage": "Both",
+      "kb_dependency": "HIGH",
+      "workflow_status": "workflow_pending",
+      "l2_areas": [
+        "L2-06"
+      ],
+      "enabled_by": null
+    },
+    {
+      "diagnostic_id": 12,
+      "area": "T3",
+      "mode": "hard",
+      "name": "Label-consistency rule",
+      "what_it_computes": "Are label fields internally consistent by process?",
+      "metric": "violation count",
+      "threshold_based": "No - deterministic rule",
+      "threshold_rule_default": "violation rate > ~0 → flag",
+      "det_stat": "Deterministic",
+      "decision_type": "verdict",
+      "stage": "Both",
+      "kb_dependency": "Medium",
+      "workflow_status": "workflow_pending",
+      "l2_areas": [
+        "L2-04"
+      ],
+      "enabled_by": null
+    },
+    {
+      "diagnostic_id": 14,
+      "area": "T4",
+      "mode": "statistical",
+      "name": "Population Stability Index (PSI)",
+      "what_it_computes": "Sample distribution vs scoring/reference population",
+      "metric": "PSI per feature & segment (alt: JS divergence, Wasserstein)",
+      "threshold_based": "Yes - tunable",
+      "threshold_rule_default": "PSI > 0.10 watch; > 0.25 investigate",
+      "det_stat": "Statistical",
+      "decision_type": "contextual",
+      "stage": "Stage 2",
+      "kb_dependency": "Low-Med",
+      "workflow_status": "executable",
+      "l2_areas": [
+        "L2-01"
+      ],
+      "enabled_by": "D-22 / DX-06 (19 Aug 2026): PSI acceptance gate",
+      "_raw_decision_type": "threshold+SME"
+    },
+    {
+      "diagnostic_id": 17,
+      "area": "T5",
+      "mode": "statistical",
+      "name": "Resolution / maturity rate by vintage",
+      "what_it_computes": "Share of outcomes resolved vs open, per vintage",
+      "metric": "resolved count / total by vintage",
+      "threshold_based": "Yes - tunable",
+      "threshold_rule_default": "resolution rate < X% for a vintage → flag censoring",
+      "det_stat": "Statistical",
+      "decision_type": "contextual",
+      "stage": "Stage 2",
+      "kb_dependency": "Medium",
+      "workflow_status": "workflow_pending",
+      "l2_areas": [
+        "L2-02"
+      ],
+      "enabled_by": null
+    },
+    {
+      "diagnostic_id": 20,
+      "area": "T6",
+      "mode": "loop",
+      "name": "AI-proposal workflow",
+      "what_it_computes": "AI profiles the data and proposes KB-absent candidate relationships; SME validates; accepted ones run as new test-2-mode checks (a workflow, not a computation — no test-6 executor)",
+      "metric": "confidence score (ranking only) — no data metric",
+      "threshold_based": "No - human gate/workflow",
+      "threshold_rule_default": "confidence above surface-cutoff → present to SME; the SME decision is the gate",
+      "det_stat": "n/a (workflow)",
+      "decision_type": "sme_gate",
+      "stage": "Both",
+      "kb_dependency": "Reads & writes",
+      "workflow_status": "workflow_pending",
+      "l2_areas": [],
+      "enabled_by": null,
+      "_l2_note": "any dimension — reads/writes the KB across areas; not counted in area coverage"
+    }
+  ],
+  "coverage": [
+    {
+      "l2_id": "L2-01",
+      "status": "covered_thin",
+      "diagnostics": [
+        14
+      ],
+      "reason": "#14 (defer rows #15 KS, #16 segment coverage out of scope)"
+    },
+    {
+      "l2_id": "L2-02",
+      "status": "covered_thin",
+      "diagnostics": [
+        17
+      ],
+      "reason": "#17 (defer rows #18, #19 out of scope)"
+    },
+    {
+      "l2_id": "L2-03",
+      "status": "gap",
+      "diagnostics": [],
+      "reason": "candidate diagnostic is OOS-06 (downturn identification — judgement-laden, out of product scope)"
+    },
+    {
+      "l2_id": "L2-04",
+      "status": "covered_thin",
+      "diagnostics": [
+        12
+      ],
+      "reason": "#12 (defer row #13 target-rate break out of scope)"
+    },
+    {
+      "l2_id": "L2-05",
+      "status": "gap",
+      "diagnostics": [],
+      "reason": "candidate diagnostics are S8-deferred MCAR/MNAR (OOS-05 — must run only after value-semantics tagging)"
+    },
+    {
+      "l2_id": "L2-06",
+      "status": "covered_thin",
+      "diagnostics": [
+        4,
+        11
+      ],
+      "reason": "#4 (domain/bound rules), #11 (defer rows #9 robust-Z, #10 boundary pile-up out of scope)"
+    },
+    {
+      "l2_id": "L2-07",
+      "status": "covered_thin",
+      "diagnostics": [
+        2
+      ],
+      "reason": "#2 (defer rows #1 post-outcome, #3 categorical leakage out of scope, D-14)"
+    },
+    {
+      "l2_id": "L2-08",
+      "status": "gap",
+      "diagnostics": [],
+      "reason": "requires multi-upload (Plan B — D-11, out of scope)"
+    },
+    {
+      "l2_id": "L2-09",
+      "status": "gap",
+      "diagnostics": [],
+      "reason": "requires multi-upload (Plan B — D-11, out of scope)"
+    },
+    {
+      "l2_id": "L2-10",
+      "status": "covered_thin",
+      "diagnostics": [
+        4,
+        6,
+        8
+      ],
+      "reason": "#4, #6, #8 (defer rows #5 derivation identity, #7 disguised-missing out of scope)"
+    },
+    {
+      "l2_id": "L2-11",
+      "status": "gap",
+      "diagnostics": [],
+      "reason": "third-party theme — no diagnostic by design (FWK-01)"
+    }
+  ],
+  "threshold_defaults": [
+    {
+      "diagnostic_id": 2,
+      "key": "suspicious_auc",
+      "value": 0.9
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "strong_auc",
+      "value": 0.7
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "medium_auc",
+      "value": 0.55
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "suspicious_iv",
+      "value": 0.5
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "strong_iv",
+      "value": 0.3
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "medium_iv",
+      "value": 0.05
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "leakage_auc",
+      "value": 0.9
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "leakage_iv",
+      "value": 0.5
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "poor_auc",
+      "value": 0.6
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "poor_iv",
+      "value": 0.05
+    },
+    {
+      "diagnostic_id": 4,
+      "key": "tolerance",
+      "value": 0.0
+    },
+    {
+      "diagnostic_id": 4,
+      "key": "cluster_lift",
+      "value": 3.0
+    },
+    {
+      "diagnostic_id": 4,
+      "key": "cluster_coverage",
+      "value": 0.5
+    },
+    {
+      "diagnostic_id": 4,
+      "key": "grain_role",
+      "value": "facility_id"
+    },
+    {
+      "diagnostic_id": 4,
+      "key": "segment_role",
+      "value": "region"
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "auc_high",
+      "value": 0.9
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "iv_high",
+      "value": 0.5
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "auc_low",
+      "value": 0.6
+    },
+    {
+      "diagnostic_id": 2,
+      "key": "iv_low",
+      "value": 0.05
+    },
+    {
+      "diagnostic_id": 6,
+      "key": "continuity_floor",
+      "value": 0.95
+    },
+    {
+      "diagnostic_id": 11,
+      "key": "corr_floor",
+      "value": 0.2
+    },
+    {
+      "diagnostic_id": 11,
+      "key": "inversions_allowed",
+      "value": 0
+    },
+    {
+      "diagnostic_id": 11,
+      "key": "min_sample",
+      "value": 30
+    },
+    {
+      "diagnostic_id": 12,
+      "key": "tolerance",
+      "value": 0.0
+    },
+    {
+      "diagnostic_id": 14,
+      "key": "psi_watch",
+      "value": 0.1
+    },
+    {
+      "diagnostic_id": 14,
+      "key": "psi_investigate",
+      "value": 0.25
+    },
+    {
+      "diagnostic_id": 17,
+      "key": "resolution_rate_floor",
+      "value": 0.75
+    }
+  ],
+  "scoring_weights": {
+    "basis": "equal weight per registered diagnostic within its test area; areas weighted equally — recorded for FWK-16, consumed when the score panel lands (P6)",
+    "per_diagnostic": {
+      "2": 0.16666667,
+      "4": 0.04166667,
+      "6": 0.04166667,
+      "8": 0.04166667,
+      "11": 0.04166667,
+      "12": 0.16666667,
+      "14": 0.16666667,
+      "17": 0.16666667,
+      "20": 0.16666667
+    },
+    "coverage_statement": "FWK-16 coverage honesty: a score must state what it covers. Four of 9 registered diagnostics are executable (#2 feature-target separation, #4 cross-field, #6 row completeness, and #14 population stability); the score panel names executable, run, not-run, and workflow-pending diagnostics and does not present this partial coverage as a weighted health score.",
+    "superseded_scheme_note": "The retired scheme weighted 14 tests by area criticality (fw_family_weights, WEIGHTS Critical=5/High=3/Medium=1). Fixture delta: the old roll-up scored a 3-result fixture (2 units, passed_fraction 0.5 and 1.0) as ~75 'health' while silently covering only the retired registry; the new scheme refuses a headline number under partial 4/9 executable coverage and reports the split instead."
+  }
+}
