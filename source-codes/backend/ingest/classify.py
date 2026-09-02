@@ -44,6 +44,7 @@ _IDENTIFIER_MIN_ROWS = 5
 _CATEGORICAL_MAX_UNIQUE = 30
 _DATETIME_PARSE_SAMPLE = 200
 _DATETIME_PARSE_SUCCESS_FLOOR = 0.9
+_BOOLEAN_TEXT_VALUES = {"true", "false", "0", "1", "yes", "no", "y", "n", "t", "f"}
 
 
 def looks_like_datetime(series: pd.Series) -> bool:
@@ -90,6 +91,24 @@ def looks_like_identifier(series: pd.Series) -> bool:
     return ratio >= _IDENTIFIER_UNIQUE_RATIO
 
 
+def looks_like_binary(series: pd.Series) -> bool:
+    """Return true only for genuinely boolean-shaped values.
+
+    Cardinality alone is not enough: a two-level segment such as
+    ``Retail``/``Commercial`` is categorical, not a boolean that should be
+    parsed as true/false.
+    """
+    clean = series.dropna()
+    if clean.empty or clean.nunique() > 2:
+        return False
+    if pd.api.types.is_bool_dtype(clean):
+        return True
+    if pd.api.types.is_numeric_dtype(clean):
+        return set(clean.unique()).issubset({0, 1})
+    normalized = {str(value).strip().casefold() for value in clean.unique()}
+    return normalized.issubset(_BOOLEAN_TEXT_VALUES)
+
+
 def classify(series: pd.Series, *, is_target: bool = False,
              declared: str | None = None, kb_role: str | None = None) -> str:
     """Return one generic classification for ``series``.
@@ -110,12 +129,11 @@ def classify(series: pd.Series, *, is_target: bool = False,
     if pd.api.types.is_numeric_dtype(series):
         if looks_like_identifier(series):
             return "identifier"
-        distinct = series.dropna().unique()
-        if len(distinct) <= 2:
+        if looks_like_binary(series):
             return "binary"
         return "numerical"
     nunique = series.nunique(dropna=True)
-    if nunique <= 2:
+    if looks_like_binary(series):
         return "binary"
     if looks_like_identifier(series):
         return "identifier"

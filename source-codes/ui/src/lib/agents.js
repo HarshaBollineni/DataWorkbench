@@ -38,7 +38,7 @@ const V2_AGENT_NAMES = {
   rca: "RCA Agent",
   report: "Report Builder",
   // Phase 6 (0.4.0) — the cross-field diagnostic's SSE `agent` field
-  // (dq_diagnostics/runner_cross_field.py).
+  // (domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/runner.py).
   cross_field_engine: "Cross-Field Engine",
 }
 

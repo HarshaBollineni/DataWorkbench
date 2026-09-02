@@ -35,7 +35,7 @@ os.environ.pop("SYSTEM_DB_BACKUP_PATH", None)
 import system_db as s  # noqa: E402
 from ai.v2 import service  # noqa: E402
 from dq_diagnostics import delivery  # noqa: E402
-from ingest import dictionary_state, mapping  # noqa: E402
+from ingest import classify as ingest_classify, dictionary_state, mapping, warnings as ingest_warnings  # noqa: E402
 from ingest.errors import IngestCorruptionError  # noqa: E402
 
 s.init_schema()
@@ -233,6 +233,19 @@ class DictionaryStateTests(unittest.TestCase):
         self.assertTrue(inv)
         self.assertTrue(all(row["provisional"] for row in inv),
                         "every column is provisional when there is no dictionary at all")
+
+    def test_step3_review_confirms_an_inferred_definition(self):
+        item_id = _upload_dataset(_name())
+        service.profile_item(item_id)
+        row = service.get_inventory(item_id)[0]
+        self.assertTrue(row["provisional"])
+
+        saved = service.put_inventory(item_id, [row])
+
+        reviewed = next(item for item in saved
+                        if item["table_name"] == row["table_name"]
+                        and item["column_name"] == row["column_name"])
+        self.assertFalse(reviewed["provisional"])
 
     def test_dictionary_naming_every_column_but_unresolved_types_is_thin(self):
         """Exact rule under test (ingest/dictionary_state.py): a dictionary
@@ -608,6 +621,21 @@ class ReuploadDeliveryTests(unittest.TestCase):
 
 # ── 4-T8 — source-inspection: no schema/domain literal from the deleted
 #    TYPE_PRIORITY table survives in the code this phase owns ───────────────
+class BinaryClassificationTests(unittest.TestCase):
+    def test_two_named_segments_are_categorical_without_a_parse_warning(self):
+        values = pd.Series(["Retail", "Commercial", "Retail", "Commercial"])
+
+        observed = ingest_classify.classify(values)
+
+        self.assertEqual(observed, "categorical")
+        self.assertIsNone(ingest_warnings.column_parse_failure_warning(
+            "segment", values, observed))
+
+    def test_boolean_text_and_zero_one_remain_binary(self):
+        self.assertEqual(ingest_classify.classify(pd.Series(["Yes", "No", "Yes"])), "binary")
+        self.assertEqual(ingest_classify.classify(pd.Series([0, 1, 0, 1])), "binary")
+
+
 class SourceInspectionTests(unittest.TestCase):
     """TYPE_PRIORITY itself (ai/v2/service.py:40-48 pre-Phase-4) is gone —
     checked at whole-file scope for the fragment that is UNIQUELY tied to it

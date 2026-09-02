@@ -413,7 +413,7 @@ def get_issue(issue_row_id: str) -> dict:
             # same projection or it incorrectly reports that retained detail
             # is unavailable even though the artifacts are active.
             if diagnostic_result.get("diagnostic_id") == 2:
-                from dq_diagnostics.binning_reviews import hydrate_result
+                from domains.test_lab.diagnostics.t1_d02_feature_target_separation.binning_reviews import hydrate_result
 
                 diagnostic_result = hydrate_result(diagnostic_result)
             diagnostic_metrics = _loads(diagnostic_result.get("metrics_json"), {})
@@ -434,7 +434,7 @@ def get_issue(issue_row_id: str) -> dict:
                        or next(iter(out.get("columns") or []), None))
             if feature:
                 try:
-                    from analysis_runtime.artifacts import AnalysisArtifactRepository
+                    from domains.aar.repository import AnalysisArtifactRepository
 
                     repository = AnalysisArtifactRepository()
                     profiles = repository.list(

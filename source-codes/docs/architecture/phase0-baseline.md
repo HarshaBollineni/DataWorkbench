@@ -26,9 +26,9 @@ the running code, not the historical plans.
 | File ingestion and variable profiling | Active | `backend/routers/sourcing.py`, `backend/ai/v2/service.py`, `backend/ingest/` |
 | Dictionary attachment and type review | Active, limited | Data Sourcing and variable inventory |
 | DQ framework/register | Active | `backend/routers/framework.py`, `backend/dq_diagnostics/register.py` |
-| Cross-field business rules | Executable | `backend/dq_diagnostics/engines/cross_field/` |
+| Cross-field business rules | Executable | `backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/` |
 | Findings, dispositions and reports | Active | `backend/routers/diagnostics.py` and diagnostic runners |
-| Issue Management and RCA | Active | `backend/routers/issues.py`, `backend/ai/v2/issues.py`, `backend/rca.py` |
+| Issue Management and RCA | Active | `backend/ai/v2/issues.py`, `backend/domains/rca/` |
 | Knowledge Base rule governance | Active | `backend/kb.py`, `/api/v3/knowledge/*` |
 | Target separation, completeness, PSI and maturity diagnostics | Registered, workflow pending | No executable product path |
 
@@ -55,7 +55,7 @@ authoritative endpoint contract.
 
 ## Persistence boundaries
 
-- `backend/system_state.db` is mutable local runtime data. It may contain users,
+- `backend/.runtime/system_state.db` is mutable local runtime data. It may contain users,
   assets, snapshots, KB records, findings and RCA state. It is ignored by source
   control and must not be deleted by cleanup scripts.
 - `backend/uploads/` contains durable uploaded sources in local development.
@@ -86,7 +86,7 @@ cd ../backend
 
 Backend gates must point `SYSTEM_DB_PATH` at a throwaway database, as
 `ci-local.ps1` already does. Verification must never mutate the developer's
-local `system_state.db`.
+local `.runtime/system_state.db`.
 
 ## Out of scope for Phase 0
 

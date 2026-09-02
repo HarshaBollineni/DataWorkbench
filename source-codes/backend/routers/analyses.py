@@ -8,9 +8,9 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 import system_db as db
-from analysis_runtime.artifact_types import list_artifact_types
-from analysis_runtime.artifacts import AnalysisArtifactRepository, ArtifactIntegrityError
-from analysis_runtime.data_sourcing_artifacts import persist_snapshot_profile_artifacts
+from domains.aar.types import list_artifact_types
+from domains.aar.repository import AnalysisArtifactRepository, ArtifactIntegrityError
+from domains.aar.data_sourcing import persist_snapshot_profile_artifacts
 from analysis_runtime.capabilities import list_capabilities
 from analysis_runtime import runs
 from analysis_runtime.snapshots import SnapshotLoader, SnapshotNotReadyError

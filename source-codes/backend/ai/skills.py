@@ -179,7 +179,7 @@ _DEFAULT_SOURCES = {
     "poincare": ("ai.agents.relationship_discovery", "_SYSTEM"),
     "fermat": ("ai.agents.relationship_validation", "_SYSTEM"),
     "euler": ("ai.agents.global_consistency", "_SYSTEM"),
-    "noether": ("ai.rca_checker", "_SYSTEM"),
+    "noether": ("domains.rca.effective_challenge", "_SYSTEM"),
     "newton": ("ai.db_understanding", "_SYSTEM"),
     "merton": ("ai.credit_risk_domain", "_SYSTEM"),
     "codd": ("ai.agents.relationship_join", "_SYSTEM"),

@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from gx import metrics as _m
-from ai.rca_helpers import HELPERS as _RCA_HELPERS
+from domains.rca.analysis_helpers import HELPERS as _RCA_HELPERS
 from ai._helper_log import logged_call
 
 
@@ -178,7 +178,7 @@ for _hid, _h in _RCA_HELPERS.items():
         inputs=f"df (DataFrame) plus: {_h.param_schema}",
         outputs="RCA result dict: summary/metrics/evidence_rows/"
                 "interpretation_hints/recommended_followups (see "
-                "ai.rca_helpers.OUTPUT_SCHEMA).",
+                "domains.rca.analysis_helpers.OUTPUT_SCHEMA).",
         failure_modes="Raises ValueError on missing/invalid columns or params — "
                       "see the probe's own docstring in ai/rca_helpers.py.",
         version="1.0",
@@ -196,7 +196,7 @@ del _hid, _h
 #    returns a row predicate returning True / False / None, where None means
 #    "missing or censored — skipped, never a violation" (CFR-07).
 # ---------------------------------------------------------------------------
-from dq_diagnostics.engines.cross_field import primitives as _cf  # noqa: E402
+from domains.test_lab.diagnostics.t2_d04_cross_field_business_rule import primitives as _cf  # noqa: E402
 
 _CF_KIND = "cross_field_primitive"
 _CF_TRISTATE = ("Row predicate returning True (holds) / False (violated) / "

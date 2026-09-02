@@ -1,0 +1,175 @@
+{
+  "kb_id": "completeness",
+  "diagnostic": "Row-completeness reconciliation",
+  "pipeline_test": "Test 2 - KB-driven data validation, pipeline and schema stability",
+  "what_this_kb_checks": "Whether the rows that should be present are present, and present only once. It builds the expected shape of the panel independently and compares it against what arrived.",
+  "what_a_violation_means": "Rows are missing from the extract or duplicated in it. A feed or pipeline fault, not a credit fault, but everything downstream inherits it: every other rule reads the rows that arrived and finds them perfectly correct.",
+  "what_this_kb_does_not_check": [
+    "whether values inside the rows that arrived are correct - every other KB",
+    "whether individual fields are populated; this KB counts rows, not cells",
+    "whether a gap was legitimate, unless a closure marker is present"
+  ],
+  "single_sheet": "All facility attributes sit on panel rows. There are no joins to a facility master.",
+  "structural_blind_spot": "A facility absent from the panel entirely cannot be detected by any rule here. Its origination date lives on its own rows, so it never enters the expected grid. Detecting those requires a facility list from outside the panel.",
+  "declared_at_upload": [
+    "product",
+    "as-of date"
+  ],
+  "uploads_are_single_product": true,
+  "floors": {
+    "portfolio_coverage_floor": "0.99. Applies to the whole extract in aggregate",
+    "cell_coverage_floor": "0.95. Applies to one partition in one period. Deliberately looser than the portfolio floor because a single cell is a much smaller and noisier population",
+    "note": "These are two distinct parameters measuring different populations, not one parameter with two candidate values"
+  },
+  "shared_guards": {
+    "CG1 PRE-GRAIN": "grain and period semantics must be declared before any expected count is built. Else NOT-APPLICABLE",
+    "CG2 as-of sanity": "warn if as-of precedes the last period in the extract, or follows it by more than one period gap. Warn only, do not block",
+    "CG3 granularity": "detect the modal gap between consecutive periods. Where no label holds for at least 80% of gaps, granularity is IRREGULAR and expected counts cannot be built; NOT-APPLICABLE. A quarterly panel is not a failed monthly panel",
+    "CG4 no tolerance": "where a floor or tolerance is unsupplied, compute and report the measure and return NO-VERDICT. Never substitute a default"
+  },
+  "guard_config": {
+    "grain": "grid",
+    "shared": [
+      {
+        "code": "CG1 PRE-GRAIN",
+        "primitive": "period_required",
+        "params": {
+          "message": "no period role bound; expected counts cannot be built"
+        }
+      },
+      {
+        "code": "CG3 granularity",
+        "primitive": "granularity",
+        "params": {
+          "threshold": 0.8
+        }
+      },
+      {
+        "code": "CG2 as-of",
+        "primitive": "as_of_sanity"
+      },
+      {
+        "code": "CG5 run-off",
+        "primitive": "runoff_convention",
+        "params": {
+          "message": "run-off convention undeclared; window_end falls back to each facility's last row. Right-edge truncation is UNDETECTABLE and every coverage result below is stamped boundary-approximate"
+        }
+      }
+    ]
+  },
+  "verdicts": {
+    "PASS": "measure within the floor or tolerance",
+    "FAIL": "measure outside it",
+    "NOT-APPLICABLE": "a required input is unbound, or a guard failed",
+    "NOT-ASSESSABLE": "population below the minimum count",
+    "NO-VERDICT": "measure computed and reported, but no floor supplied to judge it against"
+  },
+  "severity_status": "unassigned across every rule in this KB; must be set before output can be ordered",
+  "rules": [
+    {
+      "id": "CMG-01",
+      "status": "FINAL",
+      "use_case": [
+        "IFRS9",
+        "IRB"
+      ],
+      "product": [
+        "CRE",
+        "MORTGAGE"
+      ],
+      "look_at": "facility id, period, origination date, closure marker where present",
+      "check": "Every facility must have exactly one row for every period in its expected window. The window starts at origination and ends according to the declared run-off convention. Interior gaps, left-edge shortfall and right-edge stops are reported as three separate findings.",
+      "expression": "window_start = max(origination date, panel start); window_end per run-off convention; expected = periods at the detected granularity between the two; coverage = count(rows) / count(expected) against the portfolio floor. Interior gap = an expected period between the facility's first and last row with no row",
+      "scope": "every facility present in the panel",
+      "count_unit": "facility-period",
+      "if_it_breaks": "under-coverage; rows missing from the extract",
+      "rca": "Check whether missing periods cluster on one calendar month across many facilities; that is a load failure, not attrition. If spread evenly, check for concentration in one partition or origination era. Shortfall at both edges with clean interiors points to a truncated extract window rather than missing data.",
+      "asked_once_per_database": [
+        "the run-off convention: do redeemed facilities disappear from the panel, or keep appearing with a closed status or zero balance",
+        "which column marks a facility closed, where the convention is persist"
+      ],
+      "asked_once_per_product": "portfolio coverage floor; 0.99",
+      "config_not_shown": "none",
+      "guards": {
+        "inherits": "CG1 to CG4",
+        "CG5 convention undeclared": "window_end falls back to the facility's last row. Interior gaps are still detected; right-edge truncation becomes undetectable. Every result stamped boundary-approximate",
+        "CG6 origination absent": "the window starts at the facility's first row and the left-edge check returns NOT-APPLICABLE for that facility, counted",
+        "CG7 origination after first row": "a contradiction; report it and use the first row. Never extend the window backwards",
+        "CG8 convention mismatch": "convention declared persist but facilities stop before as-of carrying no closure marker. Report the count and the stop-month distribution rather than failing each facility"
+      },
+      "not_counted_as_a_failure": [
+        "periods before origination",
+        "periods after a marked closure",
+        "facilities with a single period; there is no interior to check",
+        "right-edge stops where the convention is disappear"
+      ],
+      "always_reported": "expected, received and coverage, per facility and in aggregate. Plus interior gap count and the periods affected; left-edge shortfall count and months; right-edge stop count with the distribution of stop months; the granularity detected; the convention applied and any boundary-approximate stamp",
+      "watch_out_for": "Under the disappear convention the right edge is undetectable per facility, but a cluster of facilities stopping in the same month remains visible in the distribution and is almost always a load failure rather than run-off"
+    },
+    {
+      "id": "CMG-02",
+      "status": "FINAL",
+      "use_case": [
+        "IFRS9",
+        "IRB"
+      ],
+      "product": [
+        "CRE",
+        "MORTGAGE"
+      ],
+      "look_at": "facility id, period",
+      "check": "No facility and period pair appears more than once.",
+      "expression": "group by facility id, period having count(*) > 1",
+      "scope": "every row in the panel",
+      "count_unit": "facility-period pair",
+      "if_it_breaks": "over-coverage; duplicated rows",
+      "rca": "Compare the duplicated rows value by value. Exact copies point to a double load; rows differing in any value point to a restatement where the superseded row was never removed. Check whether duplicates cluster on one load date, one period, or one partition.",
+      "asked_once_per_database": "none",
+      "asked_once_per_product": "none",
+      "config_not_shown": "none",
+      "guards": {
+        "inherits": "CG1",
+        "CG9 exact versus differing": "report the two separately. An exact duplicate is a load fault; a differing duplicate is a restatement fault. They need different fixes"
+      },
+      "not_counted_as_a_failure": [],
+      "always_reported": "duplicate pair count, rows affected, the split between exact and differing, and the distribution across periods and partitions",
+      "watch_out_for": "CMG-01 can report full coverage while duplicates inflate every downstream count. Both rules must run; neither implies the other"
+    },
+    {
+      "id": "CMU-01",
+      "status": "FINAL",
+      "use_case": [
+        "IFRS9",
+        "IRB"
+      ],
+      "product": [
+        "CRE",
+        "MORTGAGE"
+      ],
+      "look_at": "facility id, period, origination date, partition column",
+      "check": "For each partition and period, coverage must sit within the peer tolerance of the median of the other partitions, and must also reach the absolute cell floor. Both tests run; each is blind where the other sees.",
+      "expression": "for each partition P and period T with at least minimum_cell_facilities: coverage(P,T) >= median(coverage of other partitions in T) - peer_tolerance AND coverage(P,T) >= cell_coverage_floor",
+      "scope": "every partition and period cell meeting the minimum facility count",
+      "count_unit": "facility-period within a cell",
+      "if_it_breaks": "localised under-coverage",
+      "rca": "A single partition thin across every period points to one feed or one system. One partition thin in one period points to a load failure for that batch. Every partition thin in the same period is portfolio-wide and will be caught by the absolute floor rather than the peer test. Confirm the partition definition did not change mid-history before treating it as a fault.",
+      "asked_once_per_database": "which column is the partition; region for a mortgage book, sector or asset type for CRE",
+      "asked_once_per_product": "cell coverage floor 0.95, and peer tolerance 2 percentage points",
+      "config_not_shown": "minimum facilities per cell; unsupplied, no default proposed",
+      "guards": {
+        "inherits": "CG1 to CG4",
+        "CG10 thin cell": "cells below the minimum facility count return NOT-ASSESSABLE and are listed. Never a pass",
+        "CG11 too few peers": "with fewer than three comparable partitions in a period the peer test is not attempted; only the absolute floor applies, and the result is stamped floor-only",
+        "CG12 partition changed mid-history": "a partition absent for part of the panel is stamped partial, not failed",
+        "CG13 no minimum declared": "with no minimum cell size supplied, report every cell and return NO-VERDICT. Thin cells would otherwise dominate the findings"
+      },
+      "not_counted_as_a_failure": [
+        "cells below the minimum facility count",
+        "partitions that did not exist across the whole panel"
+      ],
+      "always_reported": "per cell: facilities, expected, received, coverage, peer median, and which of the two tests it failed. Plus the partition column used, both thresholds, the count of cells stamped floor-only, and the count NOT-ASSESSABLE",
+      "watch_out_for": "The peer test cannot see portfolio-wide thinning; if every partition loses rows together the median moves with them and all look normal. That is what the absolute floor is for, and why the two run side by side"
+    }
+  ],
+  "rule_count": 6
+}

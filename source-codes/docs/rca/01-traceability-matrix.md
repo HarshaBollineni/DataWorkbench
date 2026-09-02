@@ -862,7 +862,7 @@ the end; every slice-1 row below is landed and points to a local test file that 
 
 | ID | Phase | Target path | Behavioural test | Status |
 |---|---|---|---|---|
-| CFR-01 | 6 | `dq_diagnostics/engines/cross_field/` via API | `ui/e2e/testlab-diagnostics.spec.js` | done |
+| CFR-01 | 6 | `domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/` via API | `ui/e2e/testlab-diagnostics.spec.js` | done |
 | CFR-02 | 6 | five rule types and three severities | `backend/tests/test_cross_field_binder.py` | done |
 | CFR-03 | 6 | rules only from `kb.list_eligible_rules` | `backend/tests/test_cross_field_binder.py`, `backend/tests/test_testlab_diagnostics.py` | done |
 | CFR-04 | 6 | zero rules → NOT-APPLICABLE never PASS | `backend/tests/test_testlab_diagnostics.py`, `backend/tests/test_cross_field_engine.py` | done |

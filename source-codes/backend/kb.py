@@ -29,6 +29,7 @@ KNOWLEDGE_CATEGORIES = {"structure", "lineage", "domain_fact", "ownership", "cas
 TRUST_LEVELS = {"human_confirmed", "inferred"}
 LIFECYCLE_STATES = {"draft", "pending_review", "published", "expired", "superseded",
                     "under_suspicion", "archived"}
+LEARNING_CANDIDATE_SOURCES = {"case_closure", "diagnostic_proposal"}
 
 # contracts.md §5 — enforced server-side in list_eligible_rules(), not by
 # agent self-restraint. Extended as later stages add more requesting agents;
@@ -155,7 +156,7 @@ def list_documents(tenant_id: str, include_synthetic: bool = False) -> list[dict
         versions = s.query("kb_document_versions", order_by="version_seq DESC", document_id=d["document_id"])
         latest = versions[0] if versions else None
         report = (latest or {}).get("conversion_report_json") or {}
-        if report.get("source") == "case_closure":
+        if report.get("source") in LEARNING_CANDIDATE_SOURCES:
             candidate_rules, _ = _rules_for_version(latest["version_id"])
             if not any(rule.get("lifecycle_state") == "published" for rule in candidate_rules):
                 continue
@@ -170,7 +171,8 @@ def learning_candidate_version_ids(tenant_id: str, pending_only: bool = False) -
     for version in s.query("kb_document_versions"):
         if version["document_id"] not in document_ids:
             continue
-        if (version.get("conversion_report_json") or {}).get("source") != "case_closure":
+        if ((version.get("conversion_report_json") or {}).get("source")
+                not in LEARNING_CANDIDATE_SOURCES):
             continue
         if pending_only:
             rules, _ = _rules_for_version(version["version_id"])
@@ -188,6 +190,10 @@ def list_learning_candidates(tenant_id: str) -> list[dict]:
         report = version.get("conversion_report_json") or {}
         rules, _ = _rules_for_version(version_id)
         for rule in rules:
+            proposal_evidence = s.query(
+                "kb_rule_proposal_evidence", rule_id=rule["rule_id"],
+                order_by="created_at DESC",
+            )
             candidates.append({
                 "candidate_id": rule["rule_id"], "case_id": report.get("case_id"),
                 "proposal": report.get("proposal") or {}, "document_id": document["document_id"],
@@ -196,6 +202,7 @@ def list_learning_candidates(tenant_id: str) -> list[dict]:
                 "lifecycle_state": rule["lifecycle_state"],
                 "binding_status": rule.get("binding_status"),
                 "related_tables": rule.get("related_tables_json") or [],
+                "proposal_evidence": proposal_evidence,
                 "created_by": version.get("created_by"), "created_at": version.get("created_at"),
             })
     candidates.sort(key=lambda row: row.get("created_at") or "", reverse=True)
@@ -608,11 +615,6 @@ def publish_rule(tenant_id: str, rule_id: str, actor: str, roles: list[str],
                  trust_level: str = "human_confirmed",
                  shelf_life_months: int | None = None, owner: str | None = None) -> dict:
     _require_role(roles, "kb_reviewer")
-    rule = s.query_one("kb_rules", rule_id=rule_id)
-    if not rule or rule["tenant_id"] != tenant_id:
-        raise KeyError("Unknown knowledge rule")
-    if rule["lifecycle_state"] not in {"draft", "pending_review"}:
-        raise KbError(f"Cannot publish a rule in lifecycle state {rule['lifecycle_state']!r}.")
     if category not in KNOWLEDGE_CATEGORIES:
         raise ValueError(f"Invalid knowledge category: {category!r}")
     if trust_level not in TRUST_LEVELS:
@@ -620,16 +622,68 @@ def publish_rule(tenant_id: str, rule_id: str, actor: str, roles: list[str],
     now = s.now_ist()
     related_tables = related_tables or []
     hashes = {t: _table_schema_hash(t) for t in related_tables}
-    s.update("kb_rules", {"rule_id": rule_id}, {
-        "category": category, "trust_level": trust_level, "lifecycle_state": "published",
-        "effective_date": now, "last_confirmed_date": now,
-        "shelf_life_months": shelf_life_months or _shelf_life_for(category),
-        "owner": owner, "reviewer": actor, "approver": actor,
-        "related_tables_json": related_tables, "related_columns_json": related_columns or [],
-        "related_tables_schema_hash_json": hashes, "updated_at": now,
-    })
-    s.insert("transaction_log", {"ts": now, "actor": actor, "event": "knowledge_publish",
-                                 "payload": {"rule_id": rule_id, "tenant_id": tenant_id}})
+    with s.get_conn() as conn:
+        rule = s.query_one("kb_rules", conn=conn, rule_id=rule_id)
+        if not rule or rule["tenant_id"] != tenant_id:
+            raise KeyError("Unknown knowledge rule")
+        if rule["lifecycle_state"] not in {"draft", "pending_review"}:
+            raise KbError(
+                f"Cannot publish a rule in lifecycle state {rule['lifecycle_state']!r}."
+            )
+
+        predecessor = None
+        based_on_rule_id = rule.get("based_on_rule_id")
+        if based_on_rule_id:
+            predecessor = s.query_one("kb_rules", conn=conn, rule_id=based_on_rule_id)
+            if not predecessor or predecessor["tenant_id"] != tenant_id:
+                raise KbError("Linked predecessor is not available in this tenant.")
+            if predecessor["lifecycle_state"] not in {"published", "archived"}:
+                raise KbError("Linked predecessor must be published or archived.")
+            if (not rule.get("proposal_kind") or not rule.get("proposal_subject_key")
+                    or predecessor.get("proposal_kind") != rule["proposal_kind"]
+                    or predecessor.get("proposal_subject_key")
+                    != rule["proposal_subject_key"]):
+                raise KbError(
+                    "Linked revision and predecessor must have the same proposal subject."
+                )
+
+        changed = s.update("kb_rules", {
+            "rule_id": rule_id, "lifecycle_state": rule["lifecycle_state"],
+        }, {
+            "category": category, "trust_level": trust_level,
+            "lifecycle_state": "published", "effective_date": now,
+            "last_confirmed_date": now,
+            "shelf_life_months": shelf_life_months or _shelf_life_for(category),
+            "owner": owner, "reviewer": actor, "approver": actor,
+            "related_tables_json": related_tables,
+            "related_columns_json": related_columns or [],
+            "related_tables_schema_hash_json": hashes, "updated_at": now,
+        }, conn=conn)
+        if changed != 1:
+            raise KbError("Knowledge rule lifecycle changed while it was being published.")
+        s.insert("transaction_log", {
+            "ts": now, "actor": actor, "event": "knowledge_publish",
+            "payload": {"rule_id": rule_id, "tenant_id": tenant_id},
+        }, conn=conn)
+
+        if predecessor and predecessor["lifecycle_state"] == "published":
+            changed = s.update("kb_rules", {
+                "rule_id": predecessor["rule_id"], "lifecycle_state": "published",
+            }, {
+                "lifecycle_state": "superseded", "superseded_by_rule_id": rule_id,
+                "updated_at": now,
+            }, conn=conn)
+            if changed != 1:
+                raise KbError(
+                    "Linked predecessor changed while the revision was being published."
+                )
+            s.insert("transaction_log", {
+                "ts": now, "actor": actor, "event": "knowledge_superseded",
+                "payload": {"rule_id": predecessor["rule_id"],
+                            "superseded_by_rule_id": rule_id,
+                            "tenant_id": tenant_id},
+            }, conn=conn)
+        conn.commit()
     _attempt_binding(rule_id, actor)
     return s.query_one("kb_rules", rule_id=rule_id)
 
@@ -644,7 +698,7 @@ def _attempt_binding(rule_id: str, actor: str) -> None:
     honestly non-executable; that is not an error here, so any exception
     from the binder is swallowed after being logged, never surfaced to
     the publishing user as a publish failure."""
-    from dq_diagnostics.engines.cross_field import binder  # noqa: PLC0415 — avoid a light-import-surface cost in kb.py for every caller
+    from domains.test_lab.diagnostics.t2_d04_cross_field_business_rule import binder  # noqa: PLC0415 — avoid a light-import-surface cost in kb.py for every caller
     try:
         rule = s.query_one("kb_rules", rule_id=rule_id)
         if not rule or rule.get("parse_hazards_json"):
@@ -663,12 +717,24 @@ def archive_rule(tenant_id: str, rule_id: str, actor: str, roles: list[str], rea
     _require_role(roles, "kb_reviewer")
     if not (reason or "").strip():
         raise ValueError("A reason is required to archive a rule.")
-    rule = s.query_one("kb_rules", rule_id=rule_id)
-    if not rule or rule["tenant_id"] != tenant_id:
-        raise KeyError("Unknown knowledge rule")
-    s.update("kb_rules", {"rule_id": rule_id}, {"lifecycle_state": "archived", "updated_at": s.now_ist()})
-    s.insert("transaction_log", {"ts": s.now_ist(), "actor": actor, "event": "knowledge_archive",
-                                 "payload": {"rule_id": rule_id, "reason": reason.strip()}})
+    now = s.now_ist()
+    with s.get_conn() as conn:
+        rule = s.query_one("kb_rules", conn=conn, rule_id=rule_id)
+        if not rule or rule["tenant_id"] != tenant_id:
+            raise KeyError("Unknown knowledge rule")
+        changed = s.update(
+            "kb_rules", {
+                "rule_id": rule_id, "lifecycle_state": rule["lifecycle_state"],
+            }, {"lifecycle_state": "archived", "updated_at": now}, conn=conn,
+        )
+        if changed != 1:
+            raise KbError("Knowledge rule lifecycle changed while it was being archived.")
+        s.insert("transaction_log", {
+            "ts": now, "actor": actor, "event": "knowledge_archive",
+            "payload": {"rule_id": rule_id, "tenant_id": tenant_id,
+                        "reason": reason.strip()},
+        }, conn=conn)
+        conn.commit()
     return s.query_one("kb_rules", rule_id=rule_id)
 
 
@@ -746,48 +812,102 @@ def check_schema_invalidation(tenant_id: str) -> int:
 
 def draft_rule_from_case_closure(tenant_id: str, category: str, rule_text: str,
                                  related_tables: list[str] | None, source_case_id: str,
-                                 actor: str, proposal_metadata: dict | None = None) -> dict:
+                                 actor: str, proposal_metadata: dict | None = None, *,
+                                 conn=None) -> dict:
     if category not in KNOWLEDGE_CATEGORIES:
         raise ValueError(f"Invalid knowledge category: {category!r}")
+    if conn is None:
+        with s.get_conn() as owned_conn:
+            result = draft_rule_from_case_closure(
+                tenant_id, category, rule_text, related_tables, source_case_id,
+                actor, proposal_metadata, conn=owned_conn,
+            )
+            owned_conn.commit()
+            return result
+    return _insert_case_closure_hierarchy(
+        conn, tenant_id, category, rule_text, related_tables,
+        source_case_id, actor, proposal_metadata,
+    )
+
+
+def _insert_case_closure_hierarchy(conn, tenant_id: str, category: str,
+                                   rule_text: str, related_tables: list[str] | None,
+                                   source_case_id: str, actor: str,
+                                   proposal_metadata: dict | None) -> dict:
+    """Create one proposal hierarchy behind a rollback-safe savepoint.
+
+    The savepoint matters when a caller supplies a wider transaction and
+    deliberately catches the open-subject unique-index error: only this losing
+    hierarchy is rolled back, while the caller can continue using its outer
+    transaction.
+    """
+    if not conn.in_transaction:
+        # A top-level SAVEPOINT commits when released.  Start an explicit
+        # outer transaction so a caller-supplied connection always retains
+        # ownership of the final commit/rollback boundary.
+        conn.execute("BEGIN")
+    savepoint = f"kb_proposal_{uuid.uuid4().hex}"
+    conn.execute(f"SAVEPOINT {savepoint}")
     now = s.now_ist()
-    document_id = _id("kbdoc")
-    s.insert("kb_documents", {
-        "document_id": document_id, "tenant_id": tenant_id,
-        "title": f"Reusable knowledge proposal ({source_case_id})", "category_hint": category,
-        "is_synthetic": 0, "created_by": actor, "created_at": now,
-    })
-    version_id = _id("kbver")
-    s.insert("kb_document_versions", {
-        "version_id": version_id, "document_id": document_id, "version_seq": 1,
-        "original_filename": None, "original_media_type": "text/markdown",
-        "original_sha256": None, "original_bytes_ref": None, "original_size": len(rule_text),
-        "converted_markdown": rule_text, "converted_markdown_sha256": hashlib.sha256(rule_text.encode("utf-8")).hexdigest(),
-        "converter_name": "case-closure", "converter_version": "1", "conversion_warnings_json": [],
-        "conversion_report_json": {"source": "case_closure", "case_id": source_case_id,
-                                   "proposal": proposal_metadata or {}},
-        "review_state": "pending_review", "reviewer": None, "reviewed_at": None,
-        "created_by": actor, "created_at": now,
-    })
-    section_id = _id("kbsec")
-    s.insert("kb_sections", {
-        "section_id": section_id, "version_id": version_id,
-        "heading": "Reusable knowledge candidate", "body_markdown": rule_text, "order_seq": 0,
-    })
-    rule_id = _id("kbrule")
-    s.insert("kb_rules", {
-        "rule_id": rule_id, "section_id": section_id, "tenant_id": tenant_id,
-        "document_id": document_id, "version_id": version_id,
-        "rule_hash": hashlib.sha256(rule_text.encode("utf-8")).hexdigest(),
-        "rule_text": rule_text, "category": category,
-        "trust_level": "inferred", "lifecycle_state": "draft",
-        "effective_date": None, "last_confirmed_date": None, "shelf_life_months": None,
-        "owner": None, "reviewer": None, "approver": None,
-        "related_tables_json": related_tables or [], "related_columns_json": [],
-        "related_tables_schema_hash_json": {},
-        "superseded_by_rule_id": None, "under_suspicion_reason": None, "is_synthetic": 0,
-        "created_at": now, "updated_at": now,
-    })
-    return s.query_one("kb_rules", rule_id=rule_id)
+    try:
+        document_id = _id("kbdoc")
+        s.insert("kb_documents", {
+            "document_id": document_id, "tenant_id": tenant_id,
+            "title": f"Reusable knowledge proposal ({source_case_id})",
+            "category_hint": category, "is_synthetic": 0,
+            "created_by": actor, "created_at": now,
+        }, conn=conn)
+        version_id = _id("kbver")
+        text_hash = hashlib.sha256(rule_text.encode("utf-8")).hexdigest()
+        s.insert("kb_document_versions", {
+            "version_id": version_id, "document_id": document_id, "version_seq": 1,
+            "original_filename": None, "original_media_type": "text/markdown",
+            "original_sha256": None, "original_bytes_ref": None,
+            "original_size": len(rule_text), "converted_markdown": rule_text,
+            "converted_markdown_sha256": text_hash,
+            "converter_name": "case-closure", "converter_version": "1",
+            "conversion_warnings_json": [],
+            "conversion_report_json": {
+                                       "source": ("diagnostic_proposal"
+                                                  if (proposal_metadata or {}).get("proposal_kind")
+                                                  else "case_closure"),
+                                       "case_id": source_case_id,
+                                       "proposal": proposal_metadata or {}},
+            "review_state": "pending_review", "reviewer": None,
+            "reviewed_at": None, "created_by": actor, "created_at": now,
+        }, conn=conn)
+        section_id = _id("kbsec")
+        s.insert("kb_sections", {
+            "section_id": section_id, "version_id": version_id,
+            "heading": "Reusable knowledge candidate",
+            "body_markdown": rule_text, "order_seq": 0,
+        }, conn=conn)
+        rule_id = _id("kbrule")
+        s.insert("kb_rules", {
+            "rule_id": rule_id, "section_id": section_id, "tenant_id": tenant_id,
+            "document_id": document_id, "version_id": version_id,
+            "rule_hash": text_hash, "rule_text": rule_text, "category": category,
+            "trust_level": "inferred", "lifecycle_state": "draft",
+            "effective_date": None, "last_confirmed_date": None,
+            "shelf_life_months": None, "owner": None, "reviewer": None,
+            "approver": None, "related_tables_json": related_tables or [],
+            "related_columns_json": [], "related_tables_schema_hash_json": {},
+            "superseded_by_rule_id": None, "under_suspicion_reason": None,
+            "is_synthetic": 0,
+            "proposal_kind": (proposal_metadata or {}).get("proposal_kind"),
+            "proposal_subject_key": (proposal_metadata or {}).get("proposal_subject_key"),
+            "proposal_decision_hash": (proposal_metadata or {}).get("proposal_decision_hash"),
+            "based_on_rule_id": (proposal_metadata or {}).get("based_on_rule_id"),
+            "proposal_metadata_json": proposal_metadata or {},
+            "created_at": now, "updated_at": now,
+        }, conn=conn)
+        result = s.query_one("kb_rules", conn=conn, rule_id=rule_id)
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        return result
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
 
 
 # --- Retrieval ----------------------------------------------------------------
@@ -876,7 +996,7 @@ def _insert_system_rule(package: dict, rule: dict, tenant_id: str, actor: str, n
 
 def _finish_system_diagnostic_activation(package: dict, actor: str) -> None:
     """Bind drafts, then publish the complete version in one DB transaction."""
-    from dq_diagnostics.engines.cross_field.binder import bind_registered_rule
+    from domains.test_lab.diagnostics.t2_d04_cross_field_business_rule.binder import bind_registered_rule
 
     rows = s.query("kb_rules", version_id=package["version_id"])
     states = {row["lifecycle_state"] for row in rows}
@@ -910,6 +1030,69 @@ def _finish_system_diagnostic_activation(package: dict, actor: str) -> None:
         if cur.rowcount != len(package["rules"]):
             raise KbError("system diagnostic package activation was incomplete")
         conn.commit()
+
+
+def ensure_system_reference_document(*, tenant_id: str, document_id: str,
+                                     version_id: str, version_seq: int,
+                                     title: str, source_filename: str,
+                                     source_media_type: str, source_bytes: bytes,
+                                     converted_markdown: str,
+                                     category_hint: str = "domain_fact",
+                                     actor: str = "system-kb-seed",
+                                     metadata: dict | None = None) -> dict:
+    """Install one immutable, source-controlled reference document.
+
+    Reference documents are visible in the Knowledge Base document browser but
+    do not create ``kb_rules``.  The source file remains the sole runtime source
+    of truth; this approved version is its human-readable, hash-checked mirror.
+    """
+    source_hash = hashlib.sha256(source_bytes).hexdigest()
+    markdown_hash = hashlib.sha256(converted_markdown.encode("utf-8")).hexdigest()
+    existing = s.query_one("kb_document_versions", version_id=version_id)
+    if existing:
+        document = s.query_one("kb_documents", document_id=existing["document_id"])
+        if (not document or document["document_id"] != document_id
+                or document["tenant_id"] != tenant_id):
+            raise KbError("system reference document identity conflicts with another tenant")
+        if (existing.get("original_sha256") != source_hash
+                or existing.get("converted_markdown_sha256") != markdown_hash):
+            raise KbError(
+                f"system reference version {version_id} exists with different content"
+            )
+        return {"document_id": document_id, "version_id": version_id,
+                "source_hash": source_hash, "inserted": False}
+
+    now = s.now_ist()
+    with s.get_conn() as conn:
+        document = s.query_one("kb_documents", conn=conn, document_id=document_id)
+        if document and document["tenant_id"] != tenant_id:
+            raise KbError("system reference document identity conflicts with another tenant")
+        if not document:
+            s.insert("kb_documents", {
+                "document_id": document_id, "tenant_id": tenant_id,
+                "title": title, "category_hint": category_hint,
+                "is_synthetic": 0, "created_by": actor, "created_at": now,
+            }, conn=conn)
+        s.insert("kb_document_versions", {
+            "version_id": version_id, "document_id": document_id,
+            "version_seq": version_seq, "original_filename": source_filename,
+            "original_media_type": source_media_type,
+            "original_sha256": source_hash, "original_bytes_ref": None,
+            "original_size": len(source_bytes),
+            "converted_markdown": converted_markdown,
+            "converted_markdown_sha256": markdown_hash,
+            "converter_name": "system-reference-document",
+            "converter_version": "1", "conversion_warnings_json": [],
+            "conversion_report_json": {
+                "source": "source_controlled_reference_document",
+                "source_hash": source_hash, **(metadata or {}),
+            },
+            "review_state": "approved", "reviewer": actor,
+            "reviewed_at": now, "created_by": actor, "created_at": now,
+        }, conn=conn)
+        conn.commit()
+    return {"document_id": document_id, "version_id": version_id,
+            "source_hash": source_hash, "inserted": True}
 
 
 def ensure_system_diagnostic_package(package: dict, tenant_id: str = "bootstrap",

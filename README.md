@@ -5,6 +5,8 @@ release plans, historical handoffs, and input snapshots are indexed in
 [`documentation/README.md`](documentation/README.md).
 
 Supporting source material remains in `dev-requirements/` and `spec-assets/`.
+Non-production prototypes and investigations live in [`experiments/`](experiments/);
+production code must not depend on them.
 
 Validate documentation from this directory with `./documentation.ps1 check`.
 See the [maintenance policy](documentation/documentation-maintenance.md) for

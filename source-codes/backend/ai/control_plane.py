@@ -113,6 +113,7 @@ ROLE_CONFIG: dict[str, RoleCfg] = {
     # pre-freeze provenance check.  It never evaluates a rule or chooses a
     # verdict, so use the deterministic bucket and a single bounded pass.
     "role_mapping_verifier": _cfg("deterministic", "low", future_model="gpt-4.1-mini"),
+    "directionality_semantic_adjudicator": _cfg("deterministic", "low", future_model="gpt-4.1-mini"),
     # Deterministic / no-LLM roles.
     "laplace":  _cfg("deterministic", "none"),
     "context_memory_broker": _cfg("deterministic", "none"),

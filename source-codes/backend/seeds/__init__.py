@@ -160,8 +160,16 @@ def seed_platform_and_taxonomy() -> int:
 
 def seed_row_completeness_knowledge() -> int:
     """Publish the immutable built-in T2D6 package through the KB service."""
-    from dq_diagnostics.row_completeness_knowledge import seed_package
+    from domains.test_lab.diagnostics.t2_d06_row_completeness.knowledge import seed_package
     return int(bool(seed_package().get("inserted")))
+
+
+def seed_directionality_knowledge() -> int:
+    """Expose the immutable T2D11 directionality KB in the document browser."""
+    from domains.test_lab.diagnostics.t2_d11_directional_monotonic_consistency.knowledge import (
+        seed_document,
+    )
+    return int(bool(seed_document().get("inserted")))
 
 
 def _optional(modname: str, fn: str) -> int:
@@ -182,6 +190,7 @@ def seed_all() -> dict:
         "dq_framework": seed_dq_framework(),
         "platform_and_taxonomy": seed_platform_and_taxonomy(),
         "row_completeness_knowledge": seed_row_completeness_knowledge(),
+        "directionality_knowledge": seed_directionality_knowledge(),
         "monitoring": _optional("monitoring_seed", "load"),
         "context_memory": _optional("context_memory_seed", "load"),
     }

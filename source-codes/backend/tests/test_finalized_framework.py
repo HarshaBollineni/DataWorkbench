@@ -34,7 +34,7 @@ class FinalizedFrameworkTests(unittest.TestCase):
     def test_accepted_backends_are_the_only_executable_diagnostics(self):
         executable = [r for r in self.data["register"]
                       if r["workflow_status"] == "executable"]
-        self.assertEqual([r["diagnostic_id"] for r in executable], [2, 4, 6, 14])
+        self.assertEqual([r["diagnostic_id"] for r in executable], [2, 6, 11, 14])
         self.assertTrue(all(row.get("enabled_by") for row in executable),
                         "FWK-18: every executable flip must carry its decision")
         pending = [r for r in self.data["register"]

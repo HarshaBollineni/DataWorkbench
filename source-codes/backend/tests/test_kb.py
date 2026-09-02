@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
+from unittest import mock
 
 _TMP_DB = Path(tempfile.gettempdir()) / "archimedes-test-kb.db"
 _TMP_KB_STORAGE = Path(tempfile.gettempdir()) / "archimedes-test-kb-storage"
@@ -105,6 +108,27 @@ class KbLifecycleTests(unittest.TestCase):
         preview = kb.submit_for_review(TENANT, upload["version"]["version_id"], "tester", "domain_fact")
         return upload, preview
 
+    def _draft_proposal(self, subject: str, *, based_on_rule_id: str | None = None,
+                        source: str = "case_closure", conn=None) -> dict:
+        metadata = {
+            "proposal_kind": "t2_d11_expected_direction",
+            "proposal_subject_key": subject,
+            "proposal_decision_hash": f"decision-{subject}",
+            "based_on_rule_id": based_on_rule_id,
+        }
+        rule = kb.draft_rule_from_case_closure(
+            TENANT, "domain_fact", f"Directionality proposal {subject}",
+            ["portfolio"], f"run-{subject}", "tester",
+            proposal_metadata=metadata, conn=conn,
+        )
+        if source != "case_closure":
+            version = s.query_one("kb_document_versions", version_id=rule["version_id"])
+            report = version["conversion_report_json"]
+            s.update("kb_document_versions", {"version_id": rule["version_id"]}, {
+                "conversion_report_json": {**report, "source": source},
+            })
+        return rule
+
     def test_upload_preserves_original_bytes_and_hash(self):
         content = b"## Heading\nBody."
         upload = kb.upload_document(TENANT, "a.md", "text/markdown", content, "domain_fact", "tester")
@@ -146,6 +170,158 @@ class KbLifecycleTests(unittest.TestCase):
         result = kb.list_eligible_rules(TENANT, "intake")
         rule_ids = {r["rule_id"] for r in result["rules"]}
         self.assertFalse(rule_ids & {r["rule_id"] for r in preview["rules"]})
+
+    def test_diagnostic_proposal_stays_in_learning_candidate_queue(self):
+        subject = f"subject-{uuid.uuid4().hex}"
+        rule = self._draft_proposal(subject, source="diagnostic_proposal")
+
+        self.assertIn(rule["version_id"], kb.learning_candidate_version_ids(TENANT))
+        self.assertIn(rule["rule_id"], {
+            row["candidate_id"] for row in kb.list_learning_candidates(TENANT)
+        })
+
+    def test_proposal_hierarchy_rolls_back_when_unique_subject_insert_loses(self):
+        subject = f"subject-{uuid.uuid4().hex}"
+        self._draft_proposal(subject)
+        before = {
+            table: len(s.query(table))
+            for table in ("kb_documents", "kb_document_versions", "kb_sections", "kb_rules")
+        }
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self._draft_proposal(subject)
+
+        after = {
+            table: len(s.query(table))
+            for table in ("kb_documents", "kb_document_versions", "kb_sections", "kb_rules")
+        }
+        self.assertEqual(after, before)
+
+        with s.get_conn() as conn:
+            with self.assertRaises(sqlite3.IntegrityError):
+                self._draft_proposal(subject, conn=conn)
+            # The caller catches the unique-index loser and safely continues
+            # its wider transaction; the proposal savepoint must have removed
+            # all three hierarchy parents created before the rule insert.
+            s.insert("transaction_log", {
+                "ts": s.now_ist(), "actor": "tester",
+                "event": "proposal_savepoint_continued", "payload": {},
+            }, conn=conn)
+            conn.commit()
+        self.assertEqual({
+            table: len(s.query(table))
+            for table in ("kb_documents", "kb_document_versions", "kb_sections", "kb_rules")
+        }, before)
+
+        rollback_subject = f"subject-{uuid.uuid4().hex}"
+        with s.get_conn() as conn:
+            self._draft_proposal(rollback_subject, conn=conn)
+            conn.rollback()
+        self.assertEqual({
+            table: len(s.query(table))
+            for table in ("kb_documents", "kb_document_versions", "kb_sections", "kb_rules")
+        }, before)
+
+    def test_linked_revision_requires_same_published_proposal_subject(self):
+        subject = f"subject-{uuid.uuid4().hex}"
+        predecessor = self._draft_proposal(subject)
+        kb.publish_rule(
+            TENANT, predecessor["rule_id"], "reviewer", EDITOR_ROLES, "domain_fact",
+        )
+        wrong_subject = self._draft_proposal(
+            f"other-{uuid.uuid4().hex}", based_on_rule_id=predecessor["rule_id"],
+        )
+
+        with self.assertRaisesRegex(kb.KbError, "same proposal subject"):
+            kb.publish_rule(
+                TENANT, wrong_subject["rule_id"], "reviewer", EDITOR_ROLES,
+                "domain_fact",
+            )
+
+        self.assertEqual(
+            s.query_one("kb_rules", rule_id=predecessor["rule_id"])["lifecycle_state"],
+            "published",
+        )
+        self.assertEqual(
+            s.query_one("kb_rules", rule_id=wrong_subject["rule_id"])["lifecycle_state"],
+            "draft",
+        )
+
+    def test_linked_revision_publish_and_supersession_roll_back_together(self):
+        subject = f"subject-{uuid.uuid4().hex}"
+        predecessor = self._draft_proposal(subject)
+        kb.publish_rule(
+            TENANT, predecessor["rule_id"], "reviewer", EDITOR_ROLES, "domain_fact",
+        )
+        revision = self._draft_proposal(
+            subject, based_on_rule_id=predecessor["rule_id"],
+        )
+        real_insert = s.insert
+
+        def fail_supersession_audit(table, row, *, conn=None):
+            if table == "transaction_log" and row.get("event") == "knowledge_superseded":
+                raise RuntimeError("simulated audit write failure")
+            return real_insert(table, row, conn=conn)
+
+        with mock.patch.object(kb.s, "insert", side_effect=fail_supersession_audit):
+            with self.assertRaisesRegex(RuntimeError, "audit write failure"):
+                kb.publish_rule(
+                    TENANT, revision["rule_id"], "reviewer", EDITOR_ROLES,
+                    "domain_fact",
+                )
+
+        self.assertEqual(
+            s.query_one("kb_rules", rule_id=predecessor["rule_id"])["lifecycle_state"],
+            "published",
+        )
+        self.assertEqual(
+            s.query_one("kb_rules", rule_id=revision["rule_id"])["lifecycle_state"],
+            "draft",
+        )
+        self.assertFalse(any(
+            row["event"] == "knowledge_publish"
+            and (row.get("payload") or {}).get("rule_id") == revision["rule_id"]
+            for row in s.query("transaction_log")
+        ))
+
+        kb.publish_rule(
+            TENANT, revision["rule_id"], "reviewer", EDITOR_ROLES, "domain_fact",
+        )
+        self.assertEqual(
+            s.query_one("kb_rules", rule_id=predecessor["rule_id"])["lifecycle_state"],
+            "superseded",
+        )
+        self.assertEqual(
+            s.query_one("kb_rules", rule_id=revision["rule_id"])["lifecycle_state"],
+            "published",
+        )
+
+    def test_new_candidate_can_publish_without_reopening_archived_predecessor(self):
+        subject = f"subject-{uuid.uuid4().hex}"
+        predecessor = self._draft_proposal(subject)
+        kb.archive_rule(
+            TENANT, predecessor["rule_id"], "reviewer", EDITOR_ROLES,
+            "Reviewer rejected the earlier wording.",
+        )
+        replacement = self._draft_proposal(
+            subject, based_on_rule_id=predecessor["rule_id"],
+        )
+
+        published = kb.publish_rule(
+            TENANT, replacement["rule_id"], "reviewer", EDITOR_ROLES,
+            "domain_fact",
+        )
+
+        self.assertEqual(published["lifecycle_state"], "published")
+        self.assertEqual(
+            s.query_one("kb_rules", rule_id=predecessor["rule_id"])["lifecycle_state"],
+            "archived",
+        )
+        self.assertIsNone(
+            s.query_one("kb_rules", rule_id=predecessor["rule_id"])[
+                "superseded_by_rule_id"
+            ]
+        )
 
     def test_archive_requires_reason_and_role(self):
         _, preview = self._upload_and_submit()

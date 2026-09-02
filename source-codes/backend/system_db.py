@@ -21,11 +21,11 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-# Mutable-state DB location. Defaults to beside this module (local dev). In
+# Mutable-state DB location. Defaults to the ignored local-runtime boundary. In
 # containerized deploys set SYSTEM_DB_PATH to a mounted persistent volume
 # (e.g. /data/system_state.db on an Azure File Share) so state survives restarts.
 SYS_DB_PATH = Path(os.environ.get("SYSTEM_DB_PATH")
-                   or (Path(__file__).resolve().parent / "system_state.db"))
+                   or (Path(__file__).resolve().parent / ".runtime" / "system_state.db"))
 SYS_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 ANALYSIS_ARTIFACT_ROOT = Path(os.environ.get("ANALYSIS_ARTIFACT_DIR")
                               or (Path(__file__).resolve().parent / "analysis_artifacts")).resolve()
@@ -75,7 +75,7 @@ _JSON_COLS: dict[str, set[str]] = {
     "kb_document_versions": {"conversion_warnings_json", "conversion_report_json"},
     "kb_rules": {"related_tables_json", "related_columns_json", "related_tables_schema_hash_json",
                 "semantic_roles_json", "encoded_exceptions_json", "binding_params_json",
-                "parse_hazards_json"},
+                "parse_hazards_json", "proposal_metadata_json"},
     "kb_retrieval_manifests": {"rule_ids_json", "eligibility_reasons_json"},
     "diagnostic_kb_packages": {"package_json", "validation_json"},
     "rca_cases": {"tag_snapshot_json"},
@@ -411,8 +411,19 @@ CREATE TABLE IF NOT EXISTS kb_rules (
     related_tables_json TEXT, related_columns_json TEXT,
     related_tables_schema_hash_json TEXT,
     superseded_by_rule_id TEXT, under_suspicion_reason TEXT,
+    proposal_kind TEXT, proposal_subject_key TEXT, proposal_decision_hash TEXT,
+    based_on_rule_id TEXT, proposal_metadata_json TEXT,
     is_synthetic INTEGER DEFAULT 0,
     created_at TEXT, updated_at TEXT
+);
+CREATE TABLE IF NOT EXISTS kb_rule_proposal_evidence (
+    evidence_id TEXT PRIMARY KEY, rule_id TEXT NOT NULL,
+    source_run_id TEXT NOT NULL, source_item_id TEXT,
+    canonical_feature TEXT, expected_direction TEXT,
+    representation_orientation TEXT, rationale TEXT,
+    decision_hash TEXT, evidence_state TEXT DEFAULT 'supporting',
+    actor TEXT, created_at TEXT,
+    UNIQUE(rule_id, source_run_id)
 );
 CREATE TABLE IF NOT EXISTS kb_shelf_life_defaults (
     category TEXT PRIMARY KEY, months INTEGER NOT NULL
@@ -1083,6 +1094,9 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "source_page": "INTEGER", "binding_status": "TEXT NOT NULL DEFAULT 'unparsed'",
         "binding_primitive": "TEXT", "binding_params_json": "TEXT",
         "parse_hazards_json": "TEXT", "framework": "TEXT",
+        "proposal_kind": "TEXT", "proposal_subject_key": "TEXT",
+        "proposal_decision_hash": "TEXT", "based_on_rule_id": "TEXT",
+        "proposal_metadata_json": "TEXT",
     },
 }
 
@@ -1508,6 +1522,16 @@ def init_schema() -> None:
             "CREATE INDEX IF NOT EXISTS ix_kb_rules_binding "
             "ON kb_rules(tenant_id, lifecycle_state, binding_status)"
         )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_kb_open_proposal_subject "
+            "ON kb_rules(tenant_id, proposal_kind, proposal_subject_key) "
+            "WHERE proposal_kind IS NOT NULL "
+            "AND lifecycle_state IN ('draft', 'pending_review')"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_kb_proposal_evidence_rule "
+            "ON kb_rule_proposal_evidence(rule_id, created_at)"
+        )
         # RCA Stage 3 — case/evidence lookups.
         conn.execute("CREATE INDEX IF NOT EXISTS ix_rca_cases_issue ON rca_cases(issue_row_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_rca_cases_tenant_state ON rca_cases(tenant_id, state)")
@@ -1698,11 +1722,19 @@ def _with_root_provenance(table: str, row: dict) -> dict:
     return {**row, "artifact_origin": current_artifact_origin()}
 
 
-def insert(table: str, row: dict) -> int | str:
-    """Insert a row (JSON cols auto-encoded). Returns the new rowid / PK value."""
+def insert(table: str, row: dict, *, conn: sqlite3.Connection | None = None) -> int | str:
+    """Insert a row, optionally joining a caller-owned transaction.
+
+    JSON columns are encoded automatically.  A supplied connection is never
+    committed or closed here; the caller owns that transaction boundary.
+    """
     data = _encode(table, _with_root_provenance(table, row))
     cols = ", ".join(f'"{c}"' for c in data)
     ph = ", ".join("?" for _ in data)
+    if conn is not None:
+        cur = conn.execute(f'INSERT INTO {table} ({cols}) VALUES ({ph})',
+                           list(data.values()))
+        return cur.lastrowid
     with get_conn() as conn:
         cur = conn.execute(f'INSERT INTO {table} ({cols}) VALUES ({ph})',
                            list(data.values()))
@@ -1739,11 +1771,16 @@ def upsert(table: str, row: dict) -> None:
         conn.commit()
 
 
-def update(table: str, where: dict, changes: dict) -> int:
-    """UPDATE rows matching ``where`` with ``changes``. Returns affected rowcount."""
+def update(table: str, where: dict, changes: dict, *,
+           conn: sqlite3.Connection | None = None) -> int:
+    """Update matching rows, optionally joining a caller-owned transaction."""
     data = _encode(table, changes)
     set_clause = ", ".join(f'"{c}" = ?' for c in data)
     wc, wv = _where(where)
+    if conn is not None:
+        cur = conn.execute(f'UPDATE {table} SET {set_clause}{wc}',
+                           list(data.values()) + wv)
+        return cur.rowcount
     with get_conn() as conn:
         cur = conn.execute(f'UPDATE {table} SET {set_clause}{wc}',
                            list(data.values()) + wv)
@@ -1758,9 +1795,13 @@ def _where(filters: dict) -> tuple[str, list]:
     return clause, list(filters.values())
 
 
-def query(table_name: str, order_by: str | None = None, **filters) -> list[dict]:
+def query(table_name: str, order_by: str | None = None, *,
+          conn: sqlite3.Connection | None = None, **filters) -> list[dict]:
     wc, wv = _where(filters)
     ob = f" ORDER BY {order_by}" if order_by else ""
+    if conn is not None:
+        rows = conn.execute(f"SELECT * FROM {table_name}{wc}{ob}", wv).fetchall()
+        return [_decode(table_name, row) for row in rows]
     with get_conn() as conn:
         rows = conn.execute(f"SELECT * FROM {table_name}{wc}{ob}", wv).fetchall()
     return [_decode(table_name, r) for r in rows]
@@ -1799,8 +1840,9 @@ def query_page(table_name: str, *, limit: int, offset: int,
     return [_decode(table_name, row) for row in rows], total
 
 
-def query_one(table_name: str, **filters) -> dict | None:
-    rows = query(table_name, **filters)
+def query_one(table_name: str, *, conn: sqlite3.Connection | None = None,
+              **filters) -> dict | None:
+    rows = query(table_name, conn=conn, **filters)
     return rows[0] if rows else None
 
 
@@ -2130,7 +2172,7 @@ def wipe_diagnostics(selected_run_ids: set[str] | None = None) -> dict:
     init_schema()
     counts: dict[str, int] = {}
     payload_paths: set[str] = set()
-    from analysis_runtime.artifact_types import list_artifact_types  # noqa: PLC0415
+    from domains.aar.types import list_artifact_types  # noqa: PLC0415
     diagnostic_types = {
         row["artifact_type"] for row in list_artifact_types()
         if row.get("owner") != "Data Sourcing"
@@ -2394,7 +2436,8 @@ def wipe_all_items() -> dict:
         counts["object_contexts"] = conn.execute("DELETE FROM object_contexts").rowcount
         counts["context_links"] = conn.execute("DELETE FROM context_links").rowcount
         # Knowledge base rows (bytes on disk wiped below).
-        for t in ("diagnostic_kb_packages", "kb_retrieval_manifests", "kb_rules", "kb_sections",
+        for t in ("diagnostic_kb_packages", "kb_retrieval_manifests",
+                  "kb_rule_proposal_evidence", "kb_rules", "kb_sections",
                   "kb_document_versions", "kb_documents"):
             counts[t] = conn.execute(f"DELETE FROM {t}").rowcount
         # Static/reference platform tables — cleared then restored by the

@@ -27,6 +27,7 @@
 
 # Generated runtime and test data
 **/.runtime/
+**/.s4a-test-runtime/
 **/.e2e/
 **/localSandbox/
 verify-*/
@@ -44,6 +45,16 @@ verify-*/
 *.7z
 *.tmp
 *.local
+
+# Experimental work: retain source and documentation, exclude local state.
+experiments/**/.venv/
+experiments/**/agent_config.json
+experiments/**/.env
+experiments/**/outputs/
+experiments/**/output/
+experiments/**/data/private/
+# Existing large experimental fixture; small synthetic fixtures may be tracked.
+experiments/test-lab/t2-d06-row-completeness/mr_pd_sample.csv
 
 # Editors and operating systems
 .vscode/*

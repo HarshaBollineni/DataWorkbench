@@ -19,11 +19,6 @@ KEEP_REASONS = {
     # verify_plan8.py rebuild (their keep-reasons expired).
     "ai/effort.py": "imported (relative) by ai/bayes.py, credit_risk_domain.py, db_understanding.py, rca_checker.py — modules ai/skills.py lazy-loads for default prompts",
     "ai/skill_form.py": "imported by ai/skills.py save-path; skills is live via seeds",
-    "verify_plan8.py": "0.4.0 validation gate (plan 1.4), rebuilt in Phase 3 against the new register; run standalone, not imported by the app",
-    "spike_gx.py": "PSI parity evidence, needed at PSI enablement (backlog B2); broken at baseline (F-01)",
-    "spike_integration.py": "PSI parity evidence (backlog B2); broken at baseline (F-01)",
-    "spike_metrics.py": "PSI parity evidence (backlog B2)",
-    "spike_recalibrate.py": "PSI parity evidence (backlog B2); broken at baseline (F-01)",
 }
 
 

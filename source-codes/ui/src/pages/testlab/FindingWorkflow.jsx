@@ -55,6 +55,40 @@ export function FindingStateBadge({ finding, fallback = null }) {
   return fallback;
 }
 
+export function FindingActions({ finding, onDisposition }) {
+  const [busy, setBusy] = useState(false);
+  const [action, setAction] = useState("");
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState("");
+  if (!finding || finding.review_state !== "open" || !onDisposition) return null;
+  const submit = async () => {
+    setBusy(true); setError("");
+    try {
+      await onDisposition(finding.finding_id, action, reason.trim());
+      setAction(""); setReason("");
+    } catch (requestError) { setError(requestError.message); }
+    finally { setBusy(false); }
+  };
+  if (!action) return <div className="flex flex-wrap gap-2"><Button size="sm" variant="success" onClick={() => setAction("confirm_issue")}>Promote to issue...</Button><Button size="sm" variant="outline" onClick={() => setAction("dismiss")}>Dismiss...</Button></div>;
+  return <div className="flex flex-wrap items-center gap-2"><input autoFocus value={reason} onChange={(event) => setReason(event.target.value)} placeholder={action === "confirm_issue" ? "Promotion rationale (required)" : "Dismissal rationale (required)"} className="h-8 min-w-64 flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs" /><Button size="sm" variant={action === "confirm_issue" ? "success" : "outline"} disabled={busy || !reason.trim()} onClick={submit}>{busy ? "Saving..." : action === "confirm_issue" ? "Confirm promotion" : "Confirm dismissal"}</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => { setAction(""); setReason(""); }}>Cancel</Button>{error && <p className="w-full text-xs text-red-600">{error}</p>}</div>;
+}
+
+export function OverrideIssueAction({ resultId, onPromote }) {
+  const [editing, setEditing] = useState(false);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  if (!onPromote) return null;
+  const promote = async () => {
+    setBusy(true); setError("");
+    try { await onPromote(resultId, reason.trim()); setEditing(false); setReason(""); }
+    catch (requestError) { setError(requestError.message); }
+    finally { setBusy(false); }
+  };
+  if (!editing) return <Button size="sm" variant="outline" onClick={() => setEditing(true)}>Raise issue...</Button>;
+  return <div className="flex flex-wrap items-center gap-2"><input autoFocus value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Override rationale (required)" className="h-8 min-w-64 flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs" /><Button size="sm" variant="success" disabled={busy || !reason.trim()} onClick={promote}>{busy ? "Raising issue..." : "Confirm issue"}</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => { setEditing(false); setReason(""); }}>Cancel</Button>{error && <p className="w-full text-xs text-red-600">{error}</p>}</div>;
+}
+
 export function IssueLifecycleActions({ finding, onCloseIssue }) {
   const issue = finding?.existing_issue;
   const [closing, setClosing] = useState(false);

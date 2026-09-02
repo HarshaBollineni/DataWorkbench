@@ -1,19 +1,2 @@
-"""Universal single-feature ROC/AUC/GINI analysis."""
-
-from .feature_analysis import analyze_features
-from .models import (
-    AnalysisConstraints,
-    AnalysisResponse,
-    FeatureSpec,
-    MissingTargetAction,
-    TargetSpec,
-)
-
-__all__ = [
-    "AnalysisResponse",
-    "AnalysisConstraints",
-    "FeatureSpec",
-    "MissingTargetAction",
-    "TargetSpec",
-    "analyze_features",
-]
+"""Compatibility exports for T1-D02 ROC/Gini."""
+from domains.test_lab.diagnostics.t1_d02_feature_target_separation.roc_gini import *  # noqa: F401,F403

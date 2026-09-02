@@ -86,13 +86,19 @@ def _insert(
     return db.query_one("diag_inference_events", event_id=event_id) or row
 
 
-def record_zero_llm_usage(run_id: str, *, actor: str, reason: str = "disabled by default") -> dict[str, Any]:
+def record_zero_llm_usage(
+    run_id: str,
+    *,
+    actor: str,
+    reason: str = "disabled by default",
+    purpose: str = "semantic_role_verification",
+) -> dict[str, Any]:
     """Record an explicit zero-call decision instead of relying on missing rows."""
     return _insert(
         run_id=run_id,
         event_kind="llm",
         stage="pre_manifest_freeze",
-        purpose="semantic_role_verification",
+        purpose=purpose,
         status="skipped",
         invoked=False,
         payload={"reason": reason, "metrics_produced": False, "verdict_changed": False},
@@ -155,6 +161,7 @@ def record_llm_call(
     user_disposition: str,
     final_applied_mapping: dict[str, Any],
     actor: str,
+    purpose: str = "semantic_role_verification",
     provider_request_id: str | None = None,
     prompt_tokens: int | None = None,
     completion_tokens: int | None = None,
@@ -188,7 +195,7 @@ def record_llm_call(
         run_id=run_id,
         event_kind="llm",
         stage="pre_manifest_freeze",
-        purpose="semantic_role_verification",
+        purpose=purpose,
         status=status,
         invoked=True,
         payload=payload,

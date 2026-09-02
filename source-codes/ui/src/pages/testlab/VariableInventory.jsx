@@ -1,5 +1,5 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
-import { AlertTriangle, RotateCcw, Save, Search, Sparkles } from "lucide-react";
+import { RotateCcw, Save, Search, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { getInventoryV2, getItemTablesV2, putInventoryV2 } from "@/api/client";
@@ -8,9 +8,18 @@ import {
   specialValuesFor,
 } from "@/lib/specialValueValidation";
 
-const TYPES = ["numerical", "datetime", "categorical", "binary", "text", "identifier", "ordinal", "target", "other"];
-const TYPE_LABEL = { numerical: "Numeric", datetime: "Date", categorical: "Categorical", binary: "Boolean", text: "Text", identifier: "Identifier", ordinal: "Ordinal", target: "Target", other: "Other" };
-const ROLES = ["Feature", "Score", "Target", "Identifier", "Period", "Date", "Weight", "Group", "Ignore"];
+const FORMATS = ["numerical", "datetime", "text"];
+const FORMAT_LABEL = { numerical: "Numeric", datetime: "Date", text: "String" };
+const ROLES = ["Feature", "Target", "Period", "Date", "Weight", "Group", "Identifier", "Ignore"];
+
+const formatFor = (row, observed = false) => {
+  const classification = String(observed ? row.inferred_type : row.classification || "").toLowerCase();
+  const dataType = String(row.data_type || "").toLowerCase();
+  if (["datetime", "date", "timestamp"].includes(classification)) return "datetime";
+  if (["numerical", "numeric"].includes(classification)) return "numerical";
+  if (/int|float|double|decimal|number/.test(dataType) && classification !== "datetime") return "numerical";
+  return "text";
+};
 
 const validValuesFor = (row) => {
   const profile = row.profile_json || {};
@@ -30,7 +39,7 @@ const distinctCountFor = (row) => {
 
 const applyProfileIntelligence = (rows) => rows.map((row) => {
   const dictionaryRole = String(row.dictionary_role || "").toLowerCase();
-  const normalizedRole = dictionaryRole === "period" ? "Period" : row.role;
+  const normalizedRole = dictionaryRole === "period" ? "Period" : ROLES.includes(row.role) ? row.role : "Feature";
   const constant = distinctCountFor(row) === 1;
   if (constant) return { ...row, role: "Ignore", profile_recommendation: "Constant column: one observed non-missing level; role changed to Ignore." };
   return { ...row, role: normalizedRole };
@@ -178,7 +187,7 @@ const VariableInventory = forwardRef(function VariableInventory({ item, readOnly
       className="mt-4 max-h-[32rem] overflow-auto overscroll-y-auto rounded-md border border-slate-200"
     >
       <table className="w-full min-w-[1180px] text-sm">
-        <thead className="sticky top-0 z-10 bg-slate-100 text-left text-xs uppercase text-slate-500"><tr><th className="w-36 max-w-36 px-3 py-3">Column</th><th className="px-3 py-3">Type</th><th className="px-3 py-3">Observed</th><th className="px-3 py-3">Role</th><th className="px-3 py-3">Valid values</th><th className="px-3 py-3">Special / missing</th><th className="px-3 py-3">Source</th><th className="px-3 py-3">Description</th></tr></thead>
+        <thead className="sticky top-0 z-10 bg-slate-100 text-left text-xs uppercase text-slate-500"><tr><th className="w-36 max-w-36 px-3 py-3">Column</th><th className="px-3 py-3">Format</th><th className="px-3 py-3">Detected format</th><th className="px-3 py-3">Role</th><th className="px-3 py-3">Valid values</th><th className="px-3 py-3">Special / missing</th><th className="px-3 py-3">Source</th><th className="px-3 py-3">Description</th></tr></thead>
         <tbody>{filtered.map(({ row, index }) => {
           const suggestion = mapping.find((entry) => entry.source_column === row.column_name && entry.tier === "fuzzy" && entry.status === "confirm_suggestion");
           const codes = specialValuesFor(row);
@@ -188,9 +197,9 @@ const VariableInventory = forwardRef(function VariableInventory({ item, readOnly
           const observedSpecialCounts = row.profile_json?.proposed_special_value_counts || row.profile_json?.special_value_counts || {};
           const observedSpecialRows = row.profile_json?.proposed_special_value_row_count ?? row.profile_json?.special_value_row_count;
           return <tr key={`${row.table_name}.${row.column_name}`} className={`border-t align-top ${codeIssue ? "border-red-200 bg-red-50/30" : "border-slate-100"}`}>
-            <td className="w-36 max-w-36 whitespace-normal break-words px-3 py-3 font-semibold text-slate-900 [overflow-wrap:anywhere]">{row.column_name}{!!row.discrepancies?.length && <AlertTriangle className="ml-2 inline h-4 w-4 text-amber-600" />}{suggestion && <button type="button" className="mt-2 block max-w-full whitespace-normal break-words text-left text-[11px] font-normal text-dq-purple [overflow-wrap:anywhere]" onClick={() => update(index, "mapping_confirmed", true)}><Sparkles className="mr-1 inline h-3 w-3" />Accept link to {suggestion.canonical_field}</button>}</td>
-            <td className="px-3 py-3">{readOnly ? TYPE_LABEL[row.classification] : <select aria-label={`Type for ${row.column_name}`} className="h-10 rounded-md border border-slate-200 bg-white px-3" value={row.classification || "text"} onChange={(event) => update(index, "classification", event.target.value)}>{TYPES.map((type) => <option key={type} value={type}>{TYPE_LABEL[type]}</option>)}</select>}</td>
-            <td className="px-3 py-3 text-slate-600">{TYPE_LABEL[row.inferred_type] || row.inferred_type || "Unknown"}</td>
+            <td className="w-36 max-w-36 whitespace-normal break-words px-3 py-3 font-semibold text-slate-900 [overflow-wrap:anywhere]">{row.column_name}{suggestion && <button type="button" className="mt-2 block max-w-full whitespace-normal break-words text-left text-[11px] font-normal text-dq-purple [overflow-wrap:anywhere]" onClick={() => update(index, "mapping_confirmed", true)}><Sparkles className="mr-1 inline h-3 w-3" />Accept link to {suggestion.canonical_field}</button>}</td>
+            <td className="px-3 py-3">{readOnly ? FORMAT_LABEL[formatFor(row)] : <select aria-label={`Format for ${row.column_name}`} className="h-10 rounded-md border border-slate-200 bg-white px-3" value={formatFor(row)} onChange={(event) => update(index, "classification", event.target.value)}>{FORMATS.map((format) => <option key={format} value={format}>{FORMAT_LABEL[format]}</option>)}</select>}</td>
+            <td className="px-3 py-3 text-slate-600">{FORMAT_LABEL[formatFor(row, true)]}</td>
             <td className="px-3 py-3">{readOnly ? row.role : <select aria-label={`Role for ${row.column_name}`} className="h-10 rounded-md border border-slate-200 bg-white px-3" value={row.role || "Feature"} onChange={(event) => update(index, "role", event.target.value)}>{ROLES.map((role) => <option key={role}>{role}</option>)}</select>}</td>
             <td className="max-w-56 px-3 py-3 text-slate-600">{validValuesFor(row)}</td>
             <td className="min-w-64 px-3 py-3">{readOnly ? codes.join(", ") || "—" : <><input id={codeInputId} ref={(node) => { if (node) specialInputRefs.current.set(codeKey, node); else specialInputRefs.current.delete(codeKey); }} aria-label={`Special or missing values for ${row.column_name}`} aria-invalid={Boolean(codeIssue)} aria-describedby={codeIssue ? `${codeInputId}-error` : undefined} className={`h-10 w-full rounded-md border px-3 outline-none ${codeIssue ? "border-red-500 bg-red-50 focus:ring-2 focus:ring-red-200" : "border-slate-200 focus:border-teal-500"}`} value={specialValueDrafts[codeKey] ?? codes.join(", ")} placeholder={specialValuePlaceholder(row)} onChange={(event) => editSpecialCodes(index, codeKey, event.target.value)} onBlur={() => finishSpecialCodeEdit(codeKey)} />{codeIssue && <div id={`${codeInputId}-error`} className="mt-2 rounded-md border border-red-200 bg-red-50 px-2 py-2 text-xs text-red-700"><p>{codeIssue.message}</p>{!!codeIssue.suggestedValues.length && <button type="button" className="mt-1 font-semibold underline" onClick={() => { setSpecialValueDrafts((current) => ({ ...current, [codeKey]: codeIssue.suggestedValues.join(", ") })); updateSpecialCodes(index, codeIssue.suggestedValues); }}>Use suggested value: {codeIssue.suggestedValues.join(", ")}</button>}</div>}{!!codes.length && <><div className="mt-1 text-[11px] text-slate-500">Observed rows: {observedSpecialRows ?? "apply to calculate"}{Object.keys(observedSpecialCounts).length ? ` · ${Object.entries(observedSpecialCounts).map(([code, count]) => `${code}: ${count}`).join(", ")}` : ""}</div><label className={`mt-1 flex gap-1 text-[11px] ${codeIssue ? "text-slate-400" : "text-slate-500"}`}><input type="checkbox" disabled={Boolean(codeIssue)} checked={Boolean(row.missing_codes_confirmed) && !codeIssue} onChange={(event) => update(index, "missing_codes_confirmed", event.target.checked)} />Confirmed missing codes</label></>}</>}</td>

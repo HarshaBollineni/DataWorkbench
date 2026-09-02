@@ -16,7 +16,7 @@ new manifests route automatically:
   complete Baseline identity, or create a new diagnostic-specific chain and offer promotion.
 
 The detailed Mermaid workflow and operational contract are maintained in
-`backend/dq_diagnostics/engines/population_stability/README.md`.
+`backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md`.
 
 ## Binning contracts
 

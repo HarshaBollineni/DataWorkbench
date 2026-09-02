@@ -16,6 +16,9 @@ Current user and technical entry points remain at
 
 ## Diagnostic implementation records
 
+The canonical diagnostic identifiers, names, MVP catalog, and placement rules are recorded in
+[`architecture/domain-folder-and-naming-convention.md`](architecture/domain-folder-and-naming-convention.md).
+
 - [`diagnostics/row-completeness/contract.md`](diagnostics/row-completeness/contract.md) — Diagnostic #6 observed-span continuity contract, rule semantics, governed configuration, and artifact integration.
 - [`diagnostics/psi/phase-plan.md`](diagnostics/psi/phase-plan.md) — bounded D-22 PSI plan and acceptance gates.
 - [`diagnostics/psi/implementation-report.md`](diagnostics/psi/implementation-report.md) — PSI implementation and verification evidence.

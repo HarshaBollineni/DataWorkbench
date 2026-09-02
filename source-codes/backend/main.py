@@ -44,10 +44,14 @@ from dq_diagnostics.migrate_040 import retire_old_framework  # noqa: E402
 retire_old_framework()
 # RCA Stage 0/1 — bootstrap tenant/feature-flags + governed business
 # taxonomy, seeded every boot (idempotent) for the same reason as above.
-from seeds import seed_platform_and_taxonomy, seed_row_completeness_knowledge  # noqa: E402
+from seeds import (  # noqa: E402
+    seed_directionality_knowledge, seed_platform_and_taxonomy,
+    seed_row_completeness_knowledge,
+)
 
 seed_platform_and_taxonomy()
 seed_row_completeness_knowledge()
+seed_directionality_knowledge()
 # Repair confirmed supporting-analysis observations whose issue rows were
 # removed by the pre-fix retirement migration on an earlier restart.
 from analysis_runtime.runs import repair_confirmed_observation_issues  # noqa: E402
@@ -97,7 +101,7 @@ _time_box_stop = threading.Event()
 
 
 def _time_box_sweep_loop() -> None:
-    import rca  # deferred: rca imports system_db at module load, after this point in boot
+    from domains.rca import service as rca  # deferred: service imports system_db after boot setup
 
     while not _time_box_stop.wait(_TIME_BOX_SWEEP_INTERVAL):
         try:

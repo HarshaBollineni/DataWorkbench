@@ -14,7 +14,7 @@ Concrete extension points are:
 
 - Diagnostic #2's dedicated manifest and runner establish the core-diagnostic adapter precedent.
 - `routers/diagnostics.py` owns the existing public workflow and needs explicit #2/#4/#14 dispatch without new endpoint families.
-- `analysis_runtime.artifact_types` is the producer-extension registry; repository identity, immutability, integrity, exact reuse, lineage, and impact remain in `AnalysisArtifactRepository`.
+- `domains.aar.types` is the producer-extension registry; repository identity, immutability, integrity, exact reuse, lineage, and impact remain in `AnalysisArtifactRepository`.
 - `SnapshotRef` and stable canonical fingerprints are reused; PSI gets its own two-population manifest rather than being forced into `FrozenAnalysisManifest`.
 - Test Lab already has diagnostic scope/result dispatch points; PSI receives explicit components and never uses the cross-field or feature-target renderers.
 
@@ -37,7 +37,7 @@ Decision reached: all blocking gates passed. Diagnostic #14 is executable and re
 
 | Requirement | Code boundary | Acceptance evidence |
 |---|---|---|
-| Deterministic PSI and canonical thresholds | `dq_diagnostics/engines/population_stability/` | Engine unit tests including 0.10/0.25 boundaries |
+| Deterministic PSI and canonical thresholds | `domains/test_lab/diagnostics/t4_d14_population_stability/` | Engine unit tests including 0.10/0.25 boundaries |
 | Ordered immutable populations | PSI manifest + population module | One/two-snapshot and rejection tests |
 | Reviewed frozen bins | PSI bins + artifact type registry | Validation/reuse/integrity tests |
 | Exact reuse and lineage | Existing `AnalysisArtifactRepository` | Positive/negative identity and graph tests |

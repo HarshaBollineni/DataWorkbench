@@ -24,7 +24,7 @@ os.environ.pop("SYSTEM_DB_BACKUP_PATH", None)
 import system_db as s  # noqa: E402
 from ai.v2 import service  # noqa: E402
 from analysis_runtime import runs  # noqa: E402
-from analysis_runtime.artifacts import AnalysisArtifactRepository  # noqa: E402
+from domains.aar.repository import AnalysisArtifactRepository  # noqa: E402
 from supporting_analyses import ensure_registered  # noqa: E402
 from routers.analyses import (  # noqa: E402
     AnalysisManifestIn,

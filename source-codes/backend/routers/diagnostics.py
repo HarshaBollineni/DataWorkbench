@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -11,15 +11,34 @@ from ai.v2 import service
 from background_streams import observe_background_events
 from routers.v2_common import sanitize_internal_errors as _plt04_sanitize
 from routers.v2_common import stream_events as _sse
+import tenancy
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _diagnostic_principal(authorization) -> dict:
+    """Resolve HTTP callers while keeping direct service tests explicit.
+
+    FastAPI supplies ``None`` or the header string. Calling a decorated route
+    directly leaves its ``Header`` parameter object in place; that internal
+    path retains the historical bootstrap/system principal.
+    """
+    if authorization is not None and not isinstance(authorization, str):
+        return {"username": "system", "tenant_id": "bootstrap", "authz_roles": []}
+    return tenancy.resolve_principal(authorization)
+
+
+def _require_d11_tenant(run: dict, principal: dict) -> None:
+    tenant_id = str((run.get("manifest_json") or {}).get("tenant_id") or "bootstrap")
+    if tenant_id != principal["tenant_id"]:
+        raise KeyError("Unknown directionality run")
+
+
 def _diag_err(exc: Exception):
     """Map deliberate diagnostics refusals onto their public status codes."""
     from dq_diagnostics.engines.base import EngineNotImplementedError
-    from dq_diagnostics.manifest import ManifestError
+    from domains.test_lab.shared.run_state import ManifestError
     from dq_diagnostics.register import WorkflowPendingError
 
     if isinstance(exc, WorkflowPendingError):
@@ -49,6 +68,16 @@ class ManifestPatch(BaseModel):
     enabled: bool | None = None
     features: list[str] | None = None
     feature: str | None = None
+    orientation: str | None = None
+    segment_column: str | None = None
+    target_type: str | None = None
+    positive_class: object | None = None
+    expected_direction: str | None = None
+    rationale: str | None = None
+    canonical_feature: str | None = None
+    representation_orientation: str | None = None
+    include_in_kb: bool | None = None
+    limit: int | None = None
     baseline: dict | None = None
     current: dict | None = None
     special_policy: str | None = None
@@ -129,8 +158,10 @@ def _run_history_entry(run: dict, store) -> dict:
 
 def _diagnostic_run_history(item_id: str, diagnostic_id: int, store,
                             entry_limit: int | None = None) -> dict:
-    runs = store.query("diag_runs", item_id=item_id, diagnostic_id=diagnostic_id,
-                       order_by="created_at DESC, run_id DESC")
+    runs = [run for run in store.query(
+        "diag_runs", item_id=item_id, diagnostic_id=diagnostic_id,
+        order_by="created_at DESC, run_id DESC",
+    ) if run["status"] != "discarded"]
     counts: dict[str, int] = {}
     for run in runs:
         counts[run["status"]] = counts.get(run["status"], 0) + 1
@@ -146,7 +177,8 @@ def _diagnostic_run_history(item_id: str, diagnostic_id: int, store,
 
 @router.get("/items/{item_id}/diagnostics/board")
 @_plt04_sanitize
-def diagnostics_board(item_id: str):
+def diagnostics_board(item_id: str,
+                      authorization: str | None = Header(default=None)):
     """The Coverage board: EXACTLY one card per register row (9, D-17) with
     its chip and reason, plus the area-level GAP strip (FWK-14).
 
@@ -159,21 +191,28 @@ def diagnostics_board(item_id: str):
     from dq_diagnostics import register as register_mod
     from dq_diagnostics.register import REFUSAL_WORKFLOW_PENDING, WorkflowPendingError
 
+    principal = _diagnostic_principal(authorization)
     try:
         item = service.require_item(item_id)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
 
     areas = {a["area_id"]: a for a in _s.query("framework_test_areas")}
-    from dq_diagnostics import manifest_population_stability as psi_manifest
+    from domains.test_lab.diagnostics.t2_d11_directional_monotonic_consistency import manifest as direction_manifest
+    from domains.test_lab.diagnostics.t4_d14_population_stability import manifest as psi_manifest
     cards = []
     for row in register_mod.list_register():
         did = row["diagnostic_id"]
         try:
-            state = readiness_mod.readiness(item_id, did, "bootstrap")
+            state = readiness_mod.readiness(item_id, did, principal["tenant_id"])
             chip = state.to_dict()
         except WorkflowPendingError:
             chip = {"status": "workflow_pending", "reason": REFUSAL_WORKFLOW_PENDING, "detail": {}}
+        open_draft = (psi_manifest.latest_draft(item_id) if did == 14
+                      else direction_manifest.latest_draft(
+                          item_id, tenant_id=principal["tenant_id"],
+                          actor=principal["username"],
+                      ) if did == 11 else None)
         last = None; history = {"total": 0, "counts": {}, "latest_completed": None, "runs": []}
         if row["workflow_status"] == "executable":
             history = _diagnostic_run_history(item_id, did, _s, entry_limit=5)
@@ -201,7 +240,7 @@ def diagnostics_board(item_id: str):
             "recent_runs": history["runs"][:5],
             # Draft discovery rides with the already-loaded Coverage board so
             # the resume/start-afresh choice can open without a click-time fetch.
-            "open_draft": psi_manifest.latest_draft(item_id) if did == 14 else None,
+            "open_draft": open_draft,
         })
     coverage = register_mod.coverage_map()
     return {
@@ -233,7 +272,10 @@ def diagnostic_run_history(item_id: str, diagnostic_id: int):
 
 @router.post("/items/{item_id}/diagnostics/manifest")
 @_plt04_sanitize
-def build_diagnostic_manifest(item_id: str, body: ManifestIn):
+def build_diagnostic_manifest(
+    item_id: str, body: ManifestIn,
+    authorization: str | None = Header(default=None),
+):
     """Build (and persist as a DRAFT ``diag_runs`` row) the scope gate:
     rules in scope, resolved role map with score+reason, thresholds with
     their source, scope preview. Returns the manifest."""
@@ -245,14 +287,39 @@ def build_diagnostic_manifest(item_id: str, body: ManifestIn):
         if body.diagnostic_id == 4:
             return selected["manifest"].build_manifest(item_id, body.diagnostic_id,
                 actor="system", tenant_id="bootstrap", use_case_override=body.use_case)
+        if body.diagnostic_id == 11:
+            principal = _diagnostic_principal(authorization)
+            if body.start_afresh:
+                selected["manifest"].discard_drafts(
+                    item_id, actor=principal["username"],
+                    tenant_id=principal["tenant_id"],
+                )
+            else:
+                saved = selected["manifest"].latest_draft(
+                    item_id, tenant_id=principal["tenant_id"],
+                    actor=principal["username"],
+                )
+                if saved:
+                    return selected["manifest"].refresh_draft_scope(
+                        saved["run_id"], actor=principal["username"],
+                        tenant_id=principal["tenant_id"],
+                    )
         if body.diagnostic_id == 14:
             if body.start_afresh:
                 selected["manifest"].discard_drafts(item_id, actor="system")
             elif selected["manifest"].latest_draft(item_id):
-                from dq_diagnostics.manifest import ManifestError
-                raise ManifestError("An open PSI draft already exists; explicitly resume it or start afresh.")
+                from domains.test_lab.shared.run_state import ManifestError
+                raise ManifestError(
+                    "An open PSI draft already exists; explicitly resume it or start afresh."
+                )
+        if body.diagnostic_id == 14:
             return selected["manifest"].build_manifest(item_id, actor="system",
                 current_snapshot_id=body.current_snapshot_id)
+        if body.diagnostic_id == 11:
+            return selected["manifest"].build_manifest(
+                item_id, actor=principal["username"],
+                tenant_id=principal["tenant_id"],
+            )
         return selected["manifest"].build_manifest(item_id, actor="system")
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
@@ -260,47 +327,78 @@ def build_diagnostic_manifest(item_id: str, body: ManifestIn):
 
 @router.get("/items/{item_id}/diagnostics/{diagnostic_id}/draft")
 @_plt04_sanitize
-def resumable_diagnostic_draft(item_id: str, diagnostic_id: int):
+def resumable_diagnostic_draft(
+    item_id: str, diagnostic_id: int,
+    authorization: str | None = Header(default=None),
+):
     """Discover an open setup before launch; never resumes it implicitly."""
     try:
-        if diagnostic_id != 14:
+        if diagnostic_id not in {11, 14}:
             return {"draft": None}
-        from dq_diagnostics import manifest_population_stability as psi_manifest
-        return {"draft": psi_manifest.latest_draft(item_id)}
+        from dq_diagnostics.dispatch import adapter
+        if diagnostic_id == 11:
+            principal = _diagnostic_principal(authorization)
+            return {"draft": adapter(diagnostic_id)["manifest"].latest_draft(
+                item_id, tenant_id=principal["tenant_id"],
+                actor=principal["username"],
+            )}
+        return {"draft": adapter(diagnostic_id)["manifest"].latest_draft(item_id)}
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
 
 
 @router.patch("/diagnostics/manifests/{run_id}")
 @_plt04_sanitize
-def patch_diagnostic_manifest(run_id: str, body: ManifestPatch):
+def patch_diagnostic_manifest(
+    run_id: str, body: ManifestPatch,
+    authorization: str | None = Header(default=None),
+):
     """One scope-gate edit -> one ``diag_run_decisions`` row (CFR-12).
     ``kind`` ∈ role_override · threshold_tune · scope_exclusion ·
     role_verification_change. Refused once the manifest is frozen."""
     try:
-        from dq_diagnostics import manifest as manifest_mod
+        from domains.test_lab.shared import run_state as manifest_mod
         run = manifest_mod.get_run(run_id)
         from dq_diagnostics.dispatch import adapter
+        actor = "system"
+        if run["diagnostic_id"] == 11:
+            principal = _diagnostic_principal(authorization)
+            _require_d11_tenant(run, principal)
+            actor = principal["username"]
         return adapter(run["diagnostic_id"])["manifest"].patch_manifest(
-            run_id, body.model_dump(exclude_none=True), actor="system")
+            run_id, body.model_dump(exclude_none=True), actor=actor)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
 
 
 @router.get("/diagnostics/manifests/{run_id}")
 @_plt04_sanitize
-def get_diagnostic_manifest(run_id: str):
-    from dq_diagnostics import manifest as manifest_mod
+def get_diagnostic_manifest(
+    run_id: str, authorization: str | None = Header(default=None),
+):
+    from domains.test_lab.shared import run_state as manifest_mod
     try:
         run = manifest_mod.get_run(run_id)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
+    principal = None
+    if run["diagnostic_id"] == 11:
+        principal = _diagnostic_principal(authorization)
+        try:
+            _require_d11_tenant(run, principal)
+        except Exception as exc:  # noqa: BLE001
+            _diag_err(exc)
     if run["diagnostic_id"] == 2 and run["status"] == manifest_mod.DRAFT:
-        from dq_diagnostics import manifest_feature_target as feature_manifest
+        from domains.test_lab.diagnostics.t1_d02_feature_target_separation import manifest as feature_manifest
         run["manifest_json"] = feature_manifest.refresh_draft_scope(run_id)
     if run["diagnostic_id"] == 14 and run["status"] == manifest_mod.DRAFT:
-        from dq_diagnostics import manifest_population_stability as psi_manifest
+        from domains.test_lab.diagnostics.t4_d14_population_stability import manifest as psi_manifest
         run["manifest_json"] = psi_manifest.refresh_draft_scope(run_id)
+    if run["diagnostic_id"] == 11 and run["status"] == manifest_mod.DRAFT:
+        from domains.test_lab.diagnostics.t2_d11_directional_monotonic_consistency import manifest as direction_manifest
+        run["manifest_json"] = direction_manifest.refresh_draft_scope(
+            run_id, actor=principal["username"], tenant_id=principal["tenant_id"],
+        )
     return {"run": {k: run[k] for k in ("run_id", "item_id", "diagnostic_id", "status",
                                         "created_at", "started_at", "finished_at")},
             "manifest": run["manifest_json"],
@@ -309,7 +407,10 @@ def get_diagnostic_manifest(run_id: str):
 
 @router.post("/diagnostics/manifests/{run_id}/run")
 @_plt04_sanitize
-def run_diagnostic_manifest(run_id: str, body: RunIn | None = None):
+def run_diagnostic_manifest(
+    run_id: str, body: RunIn | None = None,
+    authorization: str | None = Header(default=None),
+):
     """Freeze the manifest and execute.
 
     ``{"stream": true}`` freezes only and hands back the SSE URL — the
@@ -318,11 +419,16 @@ def run_diagnostic_manifest(run_id: str, body: RunIn | None = None):
     results. Either way execution happens exactly once per run: the stream
     replays a completed run rather than re-running it.
     """
-    from dq_diagnostics import manifest as manifest_mod
+    from domains.test_lab.shared import run_state as manifest_mod
     body = body or RunIn()
     try:
         run = manifest_mod.get_run(run_id)
         diagnostic_id = run["diagnostic_id"]
+        actor = "system"
+        if diagnostic_id == 11:
+            principal = _diagnostic_principal(authorization)
+            _require_d11_tenant(run, principal)
+            actor = principal["username"]
         # FWK-17 — refuse a pending diagnostic with the exact refusal text.
         from dq_diagnostics.register import require_executable
         require_executable(diagnostic_id)
@@ -332,14 +438,19 @@ def run_diagnostic_manifest(run_id: str, body: RunIn | None = None):
         if body.stream:
             if diagnostic_id == 2 and run["status"] == manifest_mod.DRAFT:
                 # Freeze against the final persisted Step 3 schema roles.
-                from dq_diagnostics import manifest_feature_target as feature_manifest
+                from domains.test_lab.diagnostics.t1_d02_feature_target_separation import manifest as feature_manifest
                 feature_manifest.refresh_draft_scope(run_id)
-            manifest = freeze(run_id) if run["status"] == manifest_mod.DRAFT \
+            if diagnostic_id == 11 and run["status"] == manifest_mod.DRAFT:
+                from domains.test_lab.diagnostics.t2_d11_directional_monotonic_consistency import manifest as direction_manifest
+                direction_manifest.refresh_draft_scope(
+                    run_id, actor=actor, tenant_id=principal["tenant_id"],
+                )
+            manifest = freeze(run_id, actor=actor) if run["status"] == manifest_mod.DRAFT \
                 else run["manifest_json"]
             return {"run_id": run_id, "status": "running",
                     "stream_url": f"/api/v2/diagnostics/runs/{run_id}/stream",
                     "rules": work_count(manifest)}
-        return runner.execute_now(run_id)
+        return runner.execute_now(run_id, actor=actor)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
 
@@ -348,7 +459,7 @@ def run_diagnostic_manifest(run_id: str, body: RunIn | None = None):
 @_plt04_sanitize
 def create_psi_bin_draft(run_id: str, feature: str, generate_new: bool = False):
     try:
-        from dq_diagnostics.manifest_population_stability import create_bin_draft
+        from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import create_bin_draft
         return create_bin_draft(run_id, feature, actor="system", ignore_repository_match=generate_new)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
@@ -358,7 +469,7 @@ def create_psi_bin_draft(run_id: str, feature: str, generate_new: bool = False):
 @_plt04_sanitize
 def create_psi_bin_drafts_stream(run_id: str):
     """Generate outstanding PSI drafts in a bounded, resumable server-side batch."""
-    from dq_diagnostics.manifest_population_stability import generate_bin_draft_events
+    from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import generate_bin_draft_events
     events = observe_background_events(
         f"psi-bin-drafts:{run_id}",
         lambda: generate_bin_draft_events(run_id, actor="system"),
@@ -370,7 +481,7 @@ def create_psi_bin_drafts_stream(run_id: str):
 @_plt04_sanitize
 def review_psi_bins(run_id: str, feature: str, artifact_id: str | None = None):
     try:
-        from dq_diagnostics.manifest_population_stability import bin_review
+        from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import bin_review
         return bin_review(run_id, feature, artifact_id)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
@@ -380,7 +491,7 @@ def review_psi_bins(run_id: str, feature: str, artifact_id: str | None = None):
 @_plt04_sanitize
 def revise_psi_bins(run_id: str, feature: str, body: PsiBinRevisionIn):
     try:
-        from dq_diagnostics.manifest_population_stability import revise_from_fine
+        from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import revise_from_fine
         return revise_from_fine(run_id, feature, body.artifact_id, body.definition, actor="system")
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
@@ -390,7 +501,7 @@ def revise_psi_bins(run_id: str, feature: str, body: PsiBinRevisionIn):
 @_plt04_sanitize
 def preview_psi_bin_revision(run_id: str, feature: str, body: PsiBinRevisionIn):
     try:
-        from dq_diagnostics.manifest_population_stability import preview_fine_revision
+        from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import preview_fine_revision
         return preview_fine_revision(run_id, feature, body.artifact_id, body.definition)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
@@ -400,7 +511,7 @@ def preview_psi_bin_revision(run_id: str, feature: str, body: PsiBinRevisionIn):
 @_plt04_sanitize
 def psi_split_feature_options(run_id: str, feature: str, limit: int = 200):
     try:
-        from dq_diagnostics.manifest_population_stability import split_feature_options
+        from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import split_feature_options
         return split_feature_options(run_id, feature, limit=limit)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
@@ -410,7 +521,7 @@ def psi_split_feature_options(run_id: str, feature: str, limit: int = 200):
 @_plt04_sanitize
 def freeze_psi_bin_draft(run_id: str, feature: str, body: PsiBinFreezeIn):
     try:
-        from dq_diagnostics.manifest_population_stability import freeze_bin_draft
+        from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import freeze_bin_draft
         return freeze_bin_draft(run_id, feature, body.draft_artifact_id, actor="system")
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
@@ -420,7 +531,7 @@ def freeze_psi_bin_draft(run_id: str, feature: str, body: PsiBinFreezeIn):
 @_plt04_sanitize
 def approve_psi_bins_batch(run_id: str, body: PsiBinBatchApprovalIn):
     try:
-        from dq_diagnostics.manifest_population_stability import approve_bin_batch
+        from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import approve_bin_batch
         return approve_bin_batch(run_id, body.features, actor="system")
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
@@ -430,7 +541,7 @@ def approve_psi_bins_batch(run_id: str, body: PsiBinBatchApprovalIn):
 @_plt04_sanitize
 def psi_candidate_values(run_id: str, feature: str):
     try:
-        from dq_diagnostics.manifest_population_stability import candidate_values
+        from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import candidate_values
         return candidate_values(run_id, feature)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
@@ -440,7 +551,7 @@ def psi_candidate_values(run_id: str, feature: str):
 @_plt04_sanitize
 def create_manual_psi_bin_draft(run_id: str, feature: str, body: PsiManualBinsIn):
     try:
-        from dq_diagnostics.manifest_population_stability import create_manual_bin_draft
+        from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import create_manual_bin_draft
         return create_manual_bin_draft(run_id, feature, body.groups, actor="system")
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
@@ -450,7 +561,7 @@ def create_manual_psi_bin_draft(run_id: str, feature: str, body: PsiManualBinsIn
 @_plt04_sanitize
 def create_numeric_psi_bin_override(run_id: str, feature: str, body: PsiNumericBinsIn):
     try:
-        from dq_diagnostics.manifest_population_stability import create_numeric_bin_override
+        from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import create_numeric_bin_override
         return create_numeric_bin_override(run_id, feature, body.cuts, body.special_values,
                                            body.rationale, actor="system")
     except Exception as exc:  # noqa: BLE001
@@ -461,7 +572,7 @@ def create_numeric_psi_bin_override(run_id: str, feature: str, body: PsiNumericB
 @_plt04_sanitize
 def promote_psi_iv_bins(run_id: str, feature: str, body: PsiBinPromotionIn):
     try:
-        from dq_diagnostics.manifest_population_stability import promote_psi_iv_bins as promote
+        from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import promote_psi_iv_bins as promote
         return promote(run_id, feature, body.draft_artifact_id, actor="system")
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
@@ -475,8 +586,24 @@ def stream_diagnostic_run(run_id: str):
     An error surfaces as a sanitized ``error`` frame (PLT-04): the real
     exception is logged server-side and never travels to the client.
     """
-    from dq_diagnostics import manifest as manifest_mod
+    from domains.test_lab.shared import run_state as manifest_mod
     import system_db as _s
+
+    # D11's authenticated JSON launch is the only operation allowed to freeze
+    # its manifest and materialize queued Knowledge Base proposals.  Native
+    # EventSource requests cannot carry that bearer header, so this endpoint is
+    # deliberately an observer only once the launch has moved the run out of
+    # DRAFT.  Keep the legacy stream-start behavior for other diagnostics.
+    requested_run = _s.query_one("diag_runs", run_id=run_id)
+    if (requested_run and requested_run["diagnostic_id"] == 11
+            and requested_run["status"] == manifest_mod.DRAFT):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Launch this directionality workflow through the authenticated "
+                "run action before opening its event stream."
+            ),
+        )
 
     def events():
         try:
@@ -502,7 +629,9 @@ def stream_diagnostic_run(run_id: str):
                        "verdict": summary["verdict"] if summary else None,
                        "rollup": rollup, "thought": "Run already complete."}
                 return
-            yield from runner.run(run_id)
+            manifest = run.get("manifest_json") or {}
+            actor = manifest.get("frozen_by") or manifest.get("created_by") or "system"
+            yield from runner.run(run_id, actor=actor)
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error while streaming diagnostic run %s", run_id)
             _s.update("diag_runs", {"run_id": run_id}, {"status": manifest_mod.FAILED,
@@ -571,7 +700,7 @@ def disposition_finding(finding_id: str, body: DispositionIn):
         issue_row_id = row_completeness_decision.get("issue_row_id")
     elif body.action == "confirm_issue":
         if source_run and source_run.get("diagnostic_id") == 2:
-            from dq_diagnostics.runner_feature_target import (
+            from domains.test_lab.diagnostics.t1_d02_feature_target_separation.runner import (
                 CandidateIssueConflict, ensure_candidate_issue,
             )
             try:
@@ -583,7 +712,7 @@ def disposition_finding(finding_id: str, body: DispositionIn):
                     "overwrite_required": True,
                 }) from exc
         elif source_run and source_run.get("diagnostic_id") == 14:
-            from dq_diagnostics.runner_population_stability import ensure_contextual_issue
+            from domains.test_lab.diagnostics.t4_d14_population_stability.runner import ensure_contextual_issue
             issue_row_id = ensure_contextual_issue(finding_id)
         else:
             # PASS / NOT-APPLICABLE findings are not promoted merely because
@@ -628,7 +757,7 @@ def disposition_finding(finding_id: str, body: DispositionIn):
 def promote_psi_result(result_id: str, body: PsiResultPromotionIn):
     """Allow an SME to promote any evaluated PSI feature, including a stable override."""
     try:
-        from dq_diagnostics.runner_population_stability import ensure_contextual_finding
+        from domains.test_lab.diagnostics.t4_d14_population_stability.runner import ensure_contextual_finding
         finding_id = ensure_contextual_finding(result_id, reason=body.reason, actor="system")
         return disposition_finding(finding_id, DispositionIn(
             action="confirm_issue", reason=body.reason))
@@ -641,7 +770,7 @@ def promote_psi_result(result_id: str, body: PsiResultPromotionIn):
 def promote_feature_target_result(result_id: str, body: PsiResultPromotionIn):
     """Allow an SME to override Diagnostic 2's recommendation for any assessed feature."""
     try:
-        from dq_diagnostics.runner_feature_target import ensure_candidate_finding
+        from domains.test_lab.diagnostics.t1_d02_feature_target_separation.runner import ensure_candidate_finding
         finding_id = ensure_candidate_finding(result_id, reason=body.reason, actor="system")
         return disposition_finding(finding_id, DispositionIn(
             action="confirm_issue", reason=body.reason,
@@ -659,10 +788,10 @@ def promote_diagnostic_result(result_id: str, body: PsiResultPromotionIn):
         result = _s.query_one("diag_results", result_id=result_id)
         if not result: raise KeyError(f"Unknown diagnostic result: {result_id}")
         if result["diagnostic_id"] == 2:
-            from dq_diagnostics.runner_feature_target import ensure_candidate_finding
+            from domains.test_lab.diagnostics.t1_d02_feature_target_separation.runner import ensure_candidate_finding
             finding_id = ensure_candidate_finding(result_id, reason=body.reason, actor="system")
         elif result["diagnostic_id"] == 14:
-            from dq_diagnostics.runner_population_stability import ensure_contextual_finding
+            from domains.test_lab.diagnostics.t4_d14_population_stability.runner import ensure_contextual_finding
             finding_id = ensure_contextual_finding(result_id, reason=body.reason, actor="system")
         else:
             from dq_diagnostics.result_promotion import ensure_override_finding
@@ -677,7 +806,7 @@ def promote_diagnostic_result(result_id: str, body: PsiResultPromotionIn):
 @router.get("/diagnostics/results/{result_id}/binning-impact")
 @_plt04_sanitize
 def diagnostic_binning_impact(result_id: str):
-    from dq_diagnostics.binning_reviews import impact
+    from domains.test_lab.diagnostics.t1_d02_feature_target_separation.binning_reviews import impact
     try:
         return impact(result_id)
     except Exception as exc:  # noqa: BLE001
@@ -687,7 +816,7 @@ def diagnostic_binning_impact(result_id: str):
 @router.post("/diagnostics/results/{result_id}/binning-preview")
 @_plt04_sanitize
 def preview_diagnostic_binning(result_id: str, body: BinningReviewIn):
-    from dq_diagnostics.binning_reviews import preview
+    from domains.test_lab.diagnostics.t1_d02_feature_target_separation.binning_reviews import preview
     try:
         return preview(result_id, body.definition)
     except Exception as exc:  # noqa: BLE001
@@ -697,7 +826,7 @@ def preview_diagnostic_binning(result_id: str, body: BinningReviewIn):
 @router.post("/diagnostics/results/{result_id}/binning-review")
 @_plt04_sanitize
 def review_diagnostic_binning(result_id: str, body: BinningReviewIn):
-    from dq_diagnostics.binning_reviews import review
+    from domains.test_lab.diagnostics.t1_d02_feature_target_separation.binning_reviews import review
     try:
         return review(result_id, body.definition, body.scope,
                       confirm_universal=body.confirm_universal, actor="system")
@@ -715,7 +844,7 @@ def review_diagnostic_binning(result_id: str, body: BinningReviewIn):
 @router.post("/diagnostics/results/{result_id}/numeric-binning-override")
 @_plt04_sanitize
 def create_numeric_diagnostic_binning_override(result_id: str, body: NumericIvOverrideIn):
-    from dq_diagnostics.binning_reviews import create_numeric_override
+    from domains.test_lab.diagnostics.t1_d02_feature_target_separation.binning_reviews import create_numeric_override
     try:
         return create_numeric_override(
             result_id, body.cuts, body.special_values, body.rationale, body.scope,
@@ -738,7 +867,7 @@ def diagnostics_coverage_summary(item_id: str):
     """FWK-16 — coverage-honest roll-up. There is deliberately NO weighted
     health-score field on this payload (not zero, not null) while fewer than
     two core diagnostics are executable."""
-    from dq_diagnostics import runner_cross_field as runner
+    from domains.test_lab.diagnostics.t2_d04_cross_field_business_rule import runner
     try:
         service.require_item(item_id)
         return runner.coverage_summary(item_id)
@@ -759,17 +888,24 @@ def diagnostic_run_report(run_id: str, fmt: str = "pdf"):
         runner = adapter(run["diagnostic_id"])["runner"]
         if fmt == "text":
             return Response(content=runner.report_text(run_id), media_type="text/plain")
-        if run["diagnostic_id"] == 14:
-            return Response(content=runner.report_text(run_id), media_type="text/plain")
         report_metadata = None
-        if run["diagnostic_id"] == 6:
+        if run["diagnostic_id"] in {2, 6, 11, 14} and hasattr(runner, "report_document"):
             payload, report_metadata = runner.report_document(run_id)
         else:
             payload = runner.report_pdf(run_id)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
-    filename = (f"row-completeness-{run_id}.pdf" if run["diagnostic_id"] == 6
-                else f"cross-field-{run_id}.pdf")
+    filename = (
+        f"row-completeness-{run_id}.pdf"
+        if run["diagnostic_id"] == 6
+        else f"feature-target-separation-{run_id}.pdf"
+        if run["diagnostic_id"] == 2
+        else f"directional-monotonic-consistency-{run_id}.pdf"
+        if run["diagnostic_id"] == 11
+        else f"population-stability-{run_id}.pdf"
+        if run["diagnostic_id"] == 14
+        else f"cross-field-{run_id}.pdf"
+    )
     headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
     if report_metadata:
         headers["X-Analysis-Artifact-Id"] = report_metadata["report_artifact"]["artifact_id"]

@@ -357,8 +357,7 @@ files that are not addressable as governed artifacts.
 
 - Data Sourcing profiling and confirmation: `backend/ai/v2/service.py`
 - Snapshot refresh profiling: `backend/assets/refresh.py`
-- Data Sourcing AAR projection: `backend/analysis_runtime/data_sourcing_artifacts.py`
-- Artifact repository and integrity checks: `backend/analysis_runtime/artifacts.py`
-- Artifact type registry: `backend/analysis_runtime/artifact_types.py`
+- Data Sourcing AAR projection: `backend/domains/aar/data_sourcing.py`
+- Artifact repository and integrity checks: `backend/domains/aar/repository.py`
+- Artifact type registry: `backend/domains/aar/types.py`
 - SQLite schema and reset/backup behavior: `backend/system_db.py`
-

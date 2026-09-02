@@ -63,7 +63,7 @@ TIME_BASIS_PERIOD = "period"
 DICTIONARY_PERIOD_ROLE = TIME_BASIS_PERIOD
 INVENTORY_ROLE_BY_DICTIONARY = {
     "feature": "Feature",
-    "score": "Score",
+    "score": "Feature",
     "target": "Target",
     "identifier": "Identifier",
     DICTIONARY_PERIOD_ROLE: "Period",
@@ -765,8 +765,11 @@ def _column_profile(series: pd.Series, special_values: list[Any] | None = None,
                         "percentiles": {}, "histogram": [],
                         "distinct_set_hash": None, "top_k": None})
         return profile
+    # Binary describes cardinality, not storage.  A two-level string feature
+    # (for example "fixed"/"variable") must retain categorical frequencies;
+    # native numeric binary columns still enter this branch through dtype.
     numeric_profile = (pd.api.types.is_numeric_dtype(series) or
-                       logical_type in {"numerical", "binary", "ordinal"})
+                       logical_type in {"numerical", "ordinal"})
     datetime_profile = (pd.api.types.is_datetime64_any_dtype(series) or
                         logical_type == "datetime")
     quarter_values: list[tuple[int, int]] = []
@@ -1755,7 +1758,7 @@ def process_snapshot(item_id: str, *, intent: str | None = None, start_date: str
             "detail_json": {"overlaps": overlaps},
         })
     ing_records.set_status(item_id, "ready")
-    from analysis_runtime.data_sourcing_artifacts import persist_snapshot_profile_artifacts
+    from domains.aar.data_sourcing import persist_snapshot_profile_artifacts
     try:
         artifact_ids = persist_snapshot_profile_artifacts(item_id, actor=uploaded_by)
         if not artifact_ids:
@@ -1890,7 +1893,10 @@ def put_inventory(item_id: str, rows: list[dict], table: str | None = None) -> l
             "missing_value_codes_json": special_values,
             "missing_codes_confirmed": int(specials_confirmed),
             "profile_json": row.get("profile_json", current.get("profile_json", {})),
-            "provisional": int(bool(row.get("provisional", current.get("provisional", 0)))),
+            # Rows submitted from Step 3 are explicit user-reviewed schema
+            # decisions. They must no longer remain low-confidence inferred
+            # definitions downstream.
+            "provisional": 0,
             "updated_at": db.now_ist(),
         })
         # A Review decision changes the analytical population. Re-read each
@@ -1928,7 +1934,7 @@ def put_inventory(item_id: str, rows: list[dict], table: str | None = None) -> l
                                        _step4_confirmation_outstanding(item_id) or
                                        not schema_result.get("is_match", True) else 0),
         ))
-    from analysis_runtime.data_sourcing_artifacts import persist_snapshot_profile_artifacts
+    from domains.aar.data_sourcing import persist_snapshot_profile_artifacts
     try:
         persist_snapshot_profile_artifacts(item_id, actor="system")
     except Exception:
@@ -1978,7 +1984,7 @@ def ingest_summary(item_id: str, table: str | None = None) -> dict:
     affected = schema_check.affected_columns(schema_result)
     configurations = []
     if affected:
-        from dq_diagnostics import manifest as manifest_mod
+        from domains.test_lab.diagnostics.t2_d04_cross_field_business_rule import manifest as manifest_mod
         configurations = manifest_mod.affected_configurations(item_id, affected)
     consequence = None
     if not schema_result.get("is_match", True):

@@ -1,0 +1,592 @@
+metadata:
+  name: PD Directionality Knowledge Base
+  version: '0.2'
+  risk_outcome: PD
+  purpose: Provide prior domain expectations for feature directionality relative to probability or occurrence of
+    default.
+  scope: Generic credit risk with coverage across consumer, small business, commercial, mortgage, and CRE.
+  change_note: Added concise canonical feature definitions for human interpretation and NLP/semantic matching. Existing
+    rule content is unchanged.
+conventions:
+  risk_outcome:
+    description: Probability or occurrence of default.
+    orientation: higher_is_worse
+    binary_target:
+      default: 1
+      non_default: 0
+    note: For a binary target, 1 is assumed to represent default and 0 non-default. If the supplied target uses
+      the opposite convention, expected statistical polarity must be reversed.
+  expected_direction:
+    increasing: As the feature value increases, PD/default risk is expected to increase.
+    decreasing: As the feature value increases, PD/default risk is expected to decrease.
+    non_monotonic: A relationship is expected, but it is not expected to consistently increase or decrease across
+      the feature range.
+    no_clear_direction: Domain knowledge does not provide a sufficiently reliable increasing or decreasing prior.
+    not_applicable: Increasing/decreasing numeric directionality is not meaningful for the feature.
+  knowledge_strength:
+    strong: Direction is well established from credit-risk principles and/or commonly accepted industry practice
+      and is expected to apply broadly.
+    moderate: Direction has a reasonable economic or credit-risk basis but may vary with portfolio, feature definition,
+      time horizon, or other context.
+    weak: Direction is plausible but materially dependent on context and should be treated cautiously.
+  transformations:
+    growth:
+      formula: (value_t1 / value_t0) - 1
+      interpretation: Positive values represent growth and negative values represent decline.
+    absolute_change:
+      formula: value_t1 - value_t0
+      interpretation: Positive values represent an increase and negative values represent a decrease.
+    rate_change:
+      formula: rate_t1 - rate_t0
+      interpretation: Positive values represent an increase in the rate. Units should be consistently expressed
+        in percentage points or basis points.
+    time:
+      interpretation: t1 is the more recent observation and t0 is the earlier comparison observation. The KB does
+        not prescribe a universal monthly, quarterly, or annual lag.
+  interpretation_notes:
+  - Expected direction represents prior domain knowledge, not the observed relationship in the current dataset.
+  - Contradictory empirical evidence should be reported as disagreement and should not automatically modify the
+    Knowledge Base expectation.
+  - Feature descriptions take precedence over feature names when determining the appropriate canonical feature.
+  - A feature may be predictive even when monotonic directionality is not applicable.
+  - Numeric codes representing nominal categories must not be interpreted as continuous or ordinal solely because
+    they are stored numerically.
+  - Representations are examples rather than an exhaustive list of possible feature names.
+  - Inverse representations should only be used where the numerical or economic inversion is unambiguous.
+feature_rules:
+- feature: credit_quality_score
+  feature_family: credit_behaviour
+  definition: A numeric score summarizing borrower or obligor creditworthiness, where higher values are assumed
+    to indicate better credit quality unless otherwise specified.
+  representations:
+  - credit score
+  - FICO score
+  - bureau score
+  - creditworthiness score
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  rationale: Higher creditworthiness scores generally indicate stronger credit quality and lower default risk.
+  notes: Apply only when higher score values represent better creditworthiness. Confirm orientation from the feature
+    definition.
+- feature: delinquency_severity
+  feature_family: credit_behaviour
+  definition: The current severity of overdue contractual payments, commonly measured by days past due, arrears
+    days, or delinquency stage.
+  representations:
+  - days past due
+  - DPD
+  - arrears days
+  - current delinquency severity
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: strong
+  rationale: Greater current delinquency or arrears severity indicates deteriorating repayment behaviour and higher
+    default risk.
+- feature: delinquency_frequency
+  feature_family: credit_behaviour
+  definition: The number or frequency of historical delinquency or missed-payment events over a defined observation
+    period.
+  representations:
+  - delinquency count
+  - number of delinquencies
+  - missed payment count
+  - delinquency frequency
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: strong
+  rationale: More historical delinquency events indicate weaker repayment behaviour and generally higher default
+    risk.
+- feature: delinquency_recency
+  feature_family: credit_behaviour
+  definition: The elapsed time since the most recent delinquency or adverse payment event.
+  representations:
+  - months since delinquency
+  - time since delinquency
+  - months since arrears
+  - time since adverse payment event
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  rationale: More time since adverse repayment behaviour generally reduces its relevance to current default risk.
+- feature: prior_adverse_event
+  feature_family: credit_behaviour
+  definition: An indicator or measure of severe historical adverse credit events such as default, bankruptcy, insolvency,
+    or charge-off.
+  representations:
+  - prior default
+  - previous default
+  - bankruptcy
+  - insolvency
+  - charge off
+  - charge-off
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: strong
+  rationale: A prior severe adverse credit event indicates materially elevated credit risk.
+- feature: collections
+  feature_family: credit_behaviour
+  definition: The number, presence, or extent of credit obligations that have entered collection activity.
+  representations:
+  - collections count
+  - collection count
+  - collection events
+  - accounts in collection
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: strong
+  rationale: Greater collection activity indicates historical repayment difficulty and generally higher default
+    risk.
+- feature: new_credit_activity
+  feature_family: credit_behaviour
+  definition: Recent activity indicating applications for or acquisition of new credit, including inquiries and
+    recently opened accounts.
+  representations:
+  - credit inquiries
+  - hard inquiries
+  - recent accounts opened
+  - new credit accounts
+  - recent credit seeking
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: moderate
+  rationale: Greater recent credit-seeking or rapid acquisition of new credit may indicate increasing financial
+    pressure.
+- feature: credit_history_length
+  feature_family: credit_behaviour
+  definition: The length of time for which the borrower or obligor has an established observable credit history.
+  representations:
+  - credit history length
+  - credit history age
+  - oldest trade age
+  - bureau age
+  - length of credit history
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  rationale: Longer demonstrated credit history generally provides more evidence of established repayment behaviour.
+- feature: trade_payment_delinquency
+  feature_family: credit_behaviour
+  definition: The extent or severity of late payment on commercial trade obligations relative to agreed payment
+    terms.
+  representations:
+  - days beyond terms
+  - DBT
+  - trade delinquency
+  - trade payment delinquency
+  - late trade payments
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: strong
+  rationale: Greater delay on commercial trade obligations indicates weaker payment behaviour and higher default
+    risk.
+- feature: utilization
+  feature_family: indebtedness_and_burden
+  definition: The proportion of an available credit facility or credit limit that is currently drawn or used.
+  representations:
+  - credit utilization
+  - revolving utilization
+  - utilization ratio
+  - balance to limit
+  - balance-to-limit ratio
+  - credit line utilization
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: strong
+  rationale: Greater utilization of available credit generally indicates higher indebtedness or dependence on credit
+    and is associated with higher default risk.
+- feature: debt_service_burden
+  feature_family: indebtedness_and_burden
+  definition: Debt obligations or contractual payments relative to borrower income or other available repayment
+    capacity.
+  representations:
+  - debt to income
+  - debt-to-income
+  - DTI
+  - payment to income
+  - payment-to-income
+  - PTI
+  - debt service ratio
+  - DSR
+  - total debt service ratio
+  - gross debt service ratio
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: strong
+  rationale: Greater debt or contractual payment burden relative to income or available capacity reduces repayment
+    capacity and generally increases default risk.
+- feature: income_capacity
+  feature_family: capacity_and_coverage
+  definition: The level of borrower or household income available to support living costs and contractual debt obligations.
+  representations:
+  - borrower income
+  - household income
+  - annual income
+  - monthly income
+  - gross income
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: moderate
+  rationale: Greater income generally improves repayment capacity, although the relationship depends on obligations
+    and borrower circumstances.
+- feature: income_growth
+  feature_family: capacity_and_coverage
+  definition: The rate of change in borrower or household income over a defined time interval.
+  representations:
+  - income growth
+  - borrower income growth
+  - household income growth
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: moderate
+  transformation: growth
+  rationale: Improving income generally strengthens repayment capacity.
+- feature: debt_service_coverage
+  feature_family: capacity_and_coverage
+  definition: Cash flow or income available for debt service relative to required principal and interest payments.
+  representations:
+  - DSCR
+  - debt service coverage ratio
+  - debt-service coverage ratio
+  - NOI to debt service
+  - cash flow to debt service
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  rationale: Higher cash flow relative to required debt service indicates greater repayment capacity and generally
+    lower default risk.
+- feature: interest_coverage
+  feature_family: capacity_and_coverage
+  definition: Earnings or cash flow available to cover contractual interest expense relative to the interest obligation.
+  representations:
+  - interest coverage ratio
+  - EBIT to interest
+  - EBITDA to interest
+  - FFO to interest
+  - interest coverage
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  rationale: Greater ability to cover interest expense indicates stronger debt-servicing capacity and generally
+    lower default risk.
+- feature: fixed_charge_coverage
+  feature_family: capacity_and_coverage
+  definition: Earnings or cash flow available to meet recurring fixed financial charges relative to those fixed
+    obligations.
+  representations:
+  - FCCR
+  - fixed charge coverage ratio
+  - fixed-charge coverage ratio
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  rationale: Greater ability to meet fixed financial obligations indicates lower financial stress and default risk.
+- feature: cash_flow_to_debt
+  feature_family: capacity_and_coverage
+  definition: Operating, funds-from-operations, or free cash flow relative to total debt obligations.
+  representations:
+  - cash flow to debt
+  - CFO to debt
+  - FFO to debt
+  - free cash flow to debt
+  - FCF to debt
+  - operating cash flow to debt
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  rationale: Greater cash generation relative to debt indicates stronger debt-servicing and repayment capacity.
+- feature: liquidity
+  feature_family: capacity_and_coverage
+  definition: Liquid financial resources or readily available funding that can be used to meet near-term financial
+    obligations.
+  representations:
+  - liquidity ratio
+  - liquidity buffer
+  - available liquidity
+  - borrower liquidity
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  rationale: Greater liquidity improves the ability to meet obligations and withstand financial stress.
+- feature: revenue_growth
+  feature_family: business_performance
+  definition: The rate of change in business revenue, sales, or turnover over a defined time interval.
+  representations:
+  - revenue growth
+  - sales growth
+  - turnover growth
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: moderate
+  transformation: growth
+  rationale: Sustained positive revenue growth generally supports financial capacity, although growth alone does
+    not establish credit quality.
+- feature: profitability_margin
+  feature_family: business_performance
+  definition: Operating earnings or profit expressed relative to revenue, such as EBIT, EBITDA, or operating margin.
+  representations:
+  - EBIT margin
+  - EBITDA margin
+  - operating margin
+  - profit margin
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: moderate
+  rationale: Greater operating profitability generally provides greater capacity to absorb financial stress.
+- feature: cash_flow_growth
+  feature_family: business_performance
+  definition: The rate of change in operating or free cash flow over a defined time interval.
+  representations:
+  - cash flow growth
+  - operating cash flow growth
+  - free cash flow growth
+  - FCF growth
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: moderate
+  transformation: growth
+  rationale: Improving cash generation generally strengthens debt-servicing capacity.
+- feature: financial_leverage
+  feature_family: leverage_and_collateral
+  definition: The degree to which a borrower or business is financed by debt relative to earnings, equity, capital,
+    or assets.
+  representations:
+  - debt to EBITDA
+  - debt/EBITDA
+  - debt to equity
+  - debt/equity
+  - debt to capital
+  - debt/capital
+  - debt to assets
+  - leverage ratio
+  - borrower leverage
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: strong
+  rationale: Greater financial leverage generally increases vulnerability to adverse operating or financial conditions.
+- feature: loan_to_value
+  feature_family: leverage_and_collateral
+  definition: Loan or outstanding debt amount relative to the value of the underlying collateral or property.
+  representations:
+  - LTV
+  - loan to value
+  - loan-to-value
+  - original LTV
+  - origination LTV
+  - current LTV
+  - indexed LTV
+  - updated LTV
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: strong
+  rationale: Greater leverage relative to collateral value reduces borrower equity and collateral cushion and generally
+    increases default risk.
+  notes: Original, current, and indexed LTV are measurement variants of the same directional concept, although predictive
+    strength may differ.
+- feature: loan_to_cost
+  feature_family: leverage_and_collateral
+  definition: Loan financing relative to the total cost of acquiring, developing, or constructing the financed asset
+    or project.
+  representations:
+  - LTC
+  - loan to cost
+  - loan-to-cost
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: moderate
+  rationale: Greater financing relative to project or property cost generally represents greater leverage.
+- feature: debt_yield
+  feature_family: leverage_and_collateral
+  definition: Property net operating income relative to the outstanding loan or debt balance.
+  representations:
+  - debt yield
+  - NOI to loan balance
+  - NOI to debt
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  rationale: Greater property income relative to debt indicates stronger repayment capacity and generally lower
+    default risk.
+- feature: property_occupancy
+  feature_family: property_and_cre
+  definition: The proportion of a property that is occupied or leased and therefore available to generate contractual
+    rental cash flow.
+  representations:
+  - occupancy rate
+  - property occupancy
+  - leased percentage
+  - occupied percentage
+  inverse_representations:
+  - vacancy rate
+  - vacancy percentage
+  - property vacancy
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  rationale: Greater property occupancy generally supports property cash flow and debt servicing.
+- feature: rent_collection
+  feature_family: property_and_cre
+  definition: The proportion of contractual rent that is actually collected from tenants over a defined period.
+  representations:
+  - rent collection rate
+  - percentage rent collected
+  - rent collected percentage
+  inverse_representations:
+  - rent arrears rate
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  rationale: Greater realized rent collection supports property cash flow and debt servicing.
+- feature: rental_growth
+  feature_family: property_and_cre
+  definition: The rate of change in rental rates or rental income over a defined time interval.
+  representations:
+  - rental growth
+  - rent growth
+  - rental income growth
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: moderate
+  transformation: growth
+  rationale: Improving rental economics generally strengthen property cash flow and debt-servicing capacity.
+- feature: noi_growth
+  feature_family: property_and_cre
+  definition: The rate of change in property net operating income over a defined time interval.
+  representations:
+  - NOI growth
+  - net operating income growth
+  - net-operating-income growth
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: moderate
+  transformation: growth
+  rationale: Improving net operating income generally strengthens property debt-servicing capacity.
+- feature: tenant_concentration
+  feature_family: property_and_cre
+  definition: The degree to which property rental income or occupied space depends on a small number of tenants.
+  representations:
+  - tenant concentration
+  - top tenant concentration
+  - major tenant concentration
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: moderate
+  rationale: Greater reliance on a small number of tenants increases cash-flow concentration risk.
+- feature: lease_expiry_concentration
+  feature_family: property_and_cre
+  definition: The degree to which contractual leases expire or roll over within the same near-term period.
+  representations:
+  - lease expiry concentration
+  - lease rollover concentration
+  - near-term lease expiry concentration
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: moderate
+  rationale: Concentrated near-term lease expirations increase rollover, vacancy, and cash-flow risk.
+- feature: property_value_growth
+  feature_family: property_and_cre
+  definition: The rate of change in the value of an individual property or collateral asset over a defined time
+    interval.
+  representations:
+  - property value growth
+  - property price growth
+  - collateral value growth
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: moderate
+  transformation: growth
+  rationale: Increasing collateral values generally strengthen borrower equity and collateral protection.
+  notes: Represents change in an individual property or collateral value, not a macroeconomic property price index.
+- feature: unemployment_rate_change
+  feature_family: macroeconomic
+  definition: The change in the unemployment rate between two defined observation periods.
+  representations:
+  - unemployment rate change
+  - change in unemployment rate
+  - unemployment change
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: strong
+  transformation: rate_change
+  rationale: Rising unemployment generally weakens borrower income and repayment capacity and increases default
+    risk.
+- feature: real_gdp_growth
+  feature_family: macroeconomic
+  definition: The rate of change in inflation-adjusted gross domestic product over a defined time interval.
+  representations:
+  - real GDP growth
+  - real gross domestic product growth
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  transformation: growth
+  rationale: Stronger real economic growth generally supports borrower and business performance and reduces default
+    risk.
+- feature: house_price_growth
+  feature_family: macroeconomic
+  definition: The rate of change in a residential house price index over a defined time interval.
+  representations:
+  - house price growth
+  - HPI growth
+  - house price index growth
+  - house price appreciation
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  transformation: growth
+  rationale: Rising residential property values generally strengthen borrower equity and reduce mortgage credit
+    stress.
+- feature: cre_price_growth
+  feature_family: macroeconomic
+  definition: The rate of change in a commercial real estate price index over a defined time interval.
+  representations:
+  - CRE price growth
+  - commercial real estate price growth
+  - CRE price index growth
+  - commercial property price growth
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: strong
+  transformation: growth
+  rationale: Rising commercial property values generally strengthen collateral and borrower equity positions.
+- feature: bbb_credit_spread_change
+  feature_family: macroeconomic
+  definition: The change in the credit spread between BBB-rated corporate borrowing yields and a comparable risk-free
+    Treasury yield.
+  representations:
+  - BBB credit spread change
+  - change in BBB spread
+  - BBB spread change
+  - corporate credit spread change
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: moderate
+  transformation: rate_change
+  rationale: Widening corporate credit spreads generally indicate increasing credit-market stress and risk premia.
+  notes: Conceptually based on the change in the BBB corporate yield spread over a comparable risk-free Treasury
+    yield, such as the 10-year Treasury.
+- feature: mortgage_rate_change
+  feature_family: macroeconomic
+  definition: The change in a representative mortgage borrowing rate between two defined observation periods.
+  representations:
+  - mortgage rate change
+  - change in mortgage rate
+  - mortgage interest rate change
+  risk_outcome: PD
+  expected_direction: increasing
+  knowledge_strength: moderate
+  transformation: rate_change
+  rationale: Rising mortgage rates can increase affordability and refinancing pressure, although transmission depends
+    on loan structure.
+- feature: real_disposable_income_growth
+  feature_family: macroeconomic
+  definition: The rate of change in inflation-adjusted disposable personal income over a defined time interval.
+  representations:
+  - real disposable income growth
+  - real disposable personal income growth
+  - real DPI growth
+  risk_outcome: PD
+  expected_direction: decreasing
+  knowledge_strength: moderate
+  transformation: growth
+  rationale: Growth in real disposable income generally strengthens household repayment capacity.

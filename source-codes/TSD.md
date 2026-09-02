@@ -19,7 +19,7 @@ knowledge-base governance, and persistence.
 | --- | --- | --- | --- |
 | React/Vite UI | [`ui/`](ui/) | 5175 | Browser routes, workflow state, API client |
 | FastAPI backend | [`backend/`](backend/) | 8001 | Domain APIs, deterministic engines, AI orchestration |
-| SQLite state | `backend/system_state.db` by default | n/a | Mutable application and audit state |
+| SQLite state | `backend/.runtime/system_state.db` by default | n/a | Ignored mutable application and audit state |
 | Durable artifacts | Configured upload/KB/backup paths | n/a | Source snapshots, KB documents, database backup |
 
 Production builds deploy the backend as an Azure Container App and the UI as an
@@ -59,6 +59,45 @@ without changing its URLs:
 `routers/analyses.py` owns supporting-analysis and reusable artifact APIs.
 Private module movement must not change these public route contracts.
 
+Domain implementations converge under `backend/domains`. The first migrated
+slice is T2-D06 Row Completeness at
+`backend/domains/test_lab/diagnostics/t2_d06_row_completeness`, containing its
+API models, deterministic engine, manifest, runner, and governed knowledge
+resolver. Compatibility aliases at the former `dq_diagnostics` paths preserve
+existing imports while callers migrate. Shared result promotion, diagnostic
+registration, readiness, thresholds, inference audit, and AAR services remain
+outside the T2-D06 package because multiple diagnostics consume them.
+
+T1-D02 Single-feature Target Separation is grouped under
+`backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation`.
+Information Value and fine/coarse binning primitives are separately owned by
+`backend/domains/test_lab/shared/binning` because T1-D02 produces their
+artifacts and T4-D14 consumes their governed definitions. Diagnostic-specific
+review orchestration remains with T1-D02.
+
+T4-D14 Population Stability Index is grouped under
+`backend/domains/test_lab/diagnostics/t4_d14_population_stability`. It owns its
+population selection, PSI engine, manifest, and runner while consuming the
+shared governed binning definitions above. Former `dq_diagnostics` imports are
+exact module aliases during staged migration.
+
+T2-D04 Cross-field Business Rule is grouped under
+`backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule`. It
+owns governed rule binding, deterministic role resolution, manifest
+construction, execution, and reporting. Generic run-state constants, lookup,
+and append-only decisions live in `backend/domains/test_lab/shared/run_state.py`
+for all diagnostics. Former cross-field paths are exact compatibility aliases.
+
+T2-D11 Directional and Monotonic Consistency is grouped under
+`backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency`.
+It owns the empirical direction engine, KB v0.3 reference data, semantic
+adjudication, governed scope manifest, execution, and evidence reporting. Broad
+quantile bins determine relationship shape; Spearman correlation and
+univariate regression confirm direction, while Pearson correlation is retained
+for display only. Expected direction remains KB-driven and is compared with the
+separately stored empirical direction after applying the user-confirmed target
+orientation.
+
 ## Frontend boundaries
 
 [`ui/src/App.jsx`](ui/src/App.jsx) defines authenticated routes and lazy-loads
@@ -66,6 +105,30 @@ their pages. [`ui/src/api/client.js`](ui/src/api/client.js) is the endpoint
 catalog; [`ui/src/api/transport.js`](ui/src/api/transport.js) owns API origin,
 session authorization, JSON transport, and error parsing. Route pages compose
 feature components, while shared display/workflow helpers live in `ui/src/lib`.
+Domain-owned UI code lives under `ui/src/features`; T2-D06 is grouped at
+`ui/src/features/test-lab/diagnostics/t2-d06-row-completeness`. Compatibility
+exports preserve its former `ui/src/pages/testlab` module paths.
+T1-D02 scope/results live under the matching feature path, while binning
+evidence shared with T4-D14 and RCA lives under
+`ui/src/features/test-lab/shared/binning`.
+T4-D14 scope, results, binning workspace, and workflow helpers live under
+`ui/src/features/test-lab/diagnostics/t4-d14-population-stability`; its common
+bin-label presentation stays in the shared binning package.
+T2-D04 scope and verdict/result rendering live under
+`ui/src/features/test-lab/diagnostics/t2-d04-cross-field-business-rule`; the
+route-level scope and results modules now only load state and dispatch to the
+matching diagnostic component.
+T2-D11 scope adjudication and its chart-backed result board live under
+`ui/src/features/test-lab/diagnostics/t2-d11-directional-monotonic-consistency`.
+The scope workflow supports explicit direction classes, exclusion, optional
+segmentation, cautious progressive fuzzy candidates, and optional draft KB
+proposals without allowing empirical output to rewrite the governed KB.
+
+The governed RCA lifecycle lives under `backend/domains/rca`, with its UI at
+`ui/src/features/rca`. Taxonomy, Knowledge Base, and Issue Management remain
+separate because they serve workflows beyond RCA. The Analysis Artifact
+Repository lives under `backend/domains/aar` and `ui/src/features/aar`;
+snapshot and target contracts remain shared in `analysis_runtime`.
 
 | Route | Current surface |
 | --- | --- |

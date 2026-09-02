@@ -161,7 +161,7 @@ def readiness(item_id: str, diagnostic_id: int, tenant_id: str = "bootstrap") ->
                 "blocked", "confirmed target does not resolve to exactly one profiled table",
                 {"target": target, "tables": target_tables},
             )
-        from .engines.feature_target_separation.roles import is_eligible_feature
+        from domains.test_lab.diagnostics.t1_d02_feature_target_separation.roles import is_eligible_feature
         eligible = [
             row["column_name"] for row in inventory
             if row.get("table_name") == target_tables[0]
@@ -205,6 +205,25 @@ def readiness(item_id: str, diagnostic_id: int, tenant_id: str = "bootstrap") ->
         return Readiness("ready", None, {"eligible_tables": sorted(eligible),
                          "segment_optional": True,
                          "summary": "Configure a facility identifier, reporting period, grain, and one continuity floor."})
+
+    if diagnostic_id == 11:
+        target = item.get("target_variable")
+        inventory = s.query("variable_inventory", item_id=item_id)
+        target_rows = [row for row in inventory if row.get("column_name") == target]
+        target_tables = sorted({row.get("table_name") for row in target_rows if row.get("table_name")})
+        if len(target_tables) != 1:
+            return Readiness("blocked", "confirmed target does not resolve to exactly one profiled table",
+                             {"target": target, "tables": target_tables})
+        rows = [row for row in inventory if row.get("table_name") == target_tables[0]
+                and row.get("column_name") != target]
+        numeric = [row for row in rows if any(token in str(row.get("data_type") or "").lower()
+                   for token in ("int", "float", "double", "decimal", "numeric", "number"))]
+        if not numeric:
+            return Readiness("not_applicable", "no numeric independent variables are available for directionality",
+                             {"target": target, "table": target_tables[0], "eligible_features": 0})
+        return Readiness("ready", None, {"target": target, "table": target_tables[0],
+                         "eligible_features": len(numeric), "segment_optional": True,
+                         "summary": f"{len(numeric)} numeric feature(s) available for directionality review"})
 
     if diagnostic_id != 4:
         # Every other executable diagnostic would answer for itself through

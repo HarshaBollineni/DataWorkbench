@@ -195,7 +195,8 @@ intent-conditional blank/carry-forward logic (CTX-04/CTX-06) is explicitly Step 
 
 ## The manifest guard (AST-08/AST-12)
 
-`dq_diagnostics/manifest.py`'s `build_manifest(item_id, diagnostic_id, ...)` already resolved
+`domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/manifest.py`'s
+`build_manifest(item_id, diagnostic_id, ...)` already resolved
 `item = s.query_one("dq_items", item_id=item_id)` partway through the function (for the
 `use_case_override` branch). The guard is placed at the TOP of the function, reusing that same
 query (removing the second, later `s.query_one` call that used to re-fetch the same row) — refusing

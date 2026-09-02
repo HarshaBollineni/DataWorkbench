@@ -159,11 +159,12 @@ test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)
     await expect(card4.getByText(/Decision: verdict/)).toBeVisible();
     await expect(card4.getByText(/KB dependency:/)).toBeVisible();
 
-    // A published + bound in-scope rule set exists now, so #4 reads ready.
-    await expect(card4.locator('[data-testid="chip-status"][data-status="ready"]')).toBeVisible();
-    await expect(card4.getByRole("button", { name: "Launch workflow" })).toBeVisible();
+    // #4 remains visible but cannot be launched while refinement is underway.
+    await expect(card4.locator('[data-testid="chip-status"][data-status="workflow_pending"]')).toBeVisible();
+    await expect(card4.getByText("workflow not yet defined")).toBeVisible();
+    await expect(card4.getByRole("button", { name: "Launch workflow" })).toHaveCount(0);
 
-    // Five not-yet-implemented cards are workflow_pending and have ZERO run
+    // Five disabled or not-yet-implemented cards are workflow_pending and have ZERO run
     // affordance: no button element at all inside it (not a disabled one).
     const pendingCards = page.locator('[data-testid="diagnostic-card"][data-chip-status="workflow_pending"]');
     await expect(pendingCards).toHaveCount(5);
@@ -203,74 +204,14 @@ test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)
     await expect(page.getByText("LLM and inference disclosure")).toBeVisible();
     await page.getByRole("button", { name: "Back to Test Lab" }).click();
 
-    // --- 3. Scope gate -------------------------------------------------
-    await card4.getByRole("button", { name: "Launch workflow" }).click();
-    await expect(page.getByText("Cross-field business rule · scope gate")).toBeVisible();
-    await expect(page.getByText(/Rules in scope \(\d+\)/)).toBeVisible();
-    await expect(page.getByText(/Roles resolved: \d+\/\d+/)).toBeVisible();
-    await expect(page.getByText("Thresholds / parameters")).toBeVisible();
-    await expect(page.getByText("Scope preview")).toBeVisible();
-    // Sources are shown, not bare numbers (design/default vs user-set).
-    await expect(page.getByText("default").first()).toBeVisible();
-
-    // --- 4. Run, watching SSE progress ----------------------------------
-    // The run console appears while the SSE stream is open (start/progress
-    // captions via AgentConsole). The current workflow returns to Coverage
-    // on completion and exposes the retained run from its diagnostic card.
-    await page.getByRole("button", { name: "Run diagnostic" }).click();
-    await expect(page.getByText("Run console")).toBeVisible();
-
-    // --- 5. Retained result ------------------------------------------------
-    await expect(page.getByRole("heading", { name: "Findings" })).toBeVisible({ timeout: 60_000 });
-    await page.getByRole("button", { name: "Back to Test Lab" }).click();
-    await expect(page.getByRole("heading", { name: "Test Lab" })).toBeVisible();
-    await expect(card4.getByRole("button", { name: "View results" })).toBeVisible();
-    await expect(card4.getByRole("button", { name: "Re-run" })).toBeVisible();
-
-    const resultsRes = await request.get(`${API}/v2/items/${itemId}/diagnostics/results`,
-      { headers: { Authorization: `Bearer ${token}` } });
-    expect(resultsRes.ok(), await resultsRes.text()).toBeTruthy();
-    const resultsPayload = await resultsRes.json();
-    const runId = resultsPayload.run?.run_id;
-    expect(runId).toBeTruthy();
-    const result = resultsPayload.results?.find((entry) => entry.diagnostic_id === 4);
-    expect(result).toBeTruthy();
-    const verdict = result.verdict;
-    expect(["pass", "violation", "not_applicable"]).toContain(verdict);
-
-    if (verdict === "not_applicable") {
-      // CFR-04 — NOT-APPLICABLE always states its reason, never silent.
-      expect(result.na_reason).toBeTruthy();
-    }
-
-    const violations = (result.findings || []).filter((finding) => finding.outcome === "VIOLATION");
-    if (violations.length > 0) {
-      // A VIOLATION auto-opens an issue into the existing hand-off
-      // (RCA-27) — checked via the API (6-T15). An RCA case could then be
-      // opened from Issue Management; RCA's own e2e suite (rca.spec.js)
-      // already covers case creation from an issue, not repeated here.
-      const issuesRes = await request.get(`${API}/v2/items/${itemId}/issues`,
-        { headers: { Authorization: `Bearer ${token}` } });
-      expect(issuesRes.ok(), await issuesRes.text()).toBeTruthy();
-      const issuesPayload = await issuesRes.json();
-      const diagnosticIssues = (issuesPayload.issues || []).filter((i) => i.diagnostic_id === 4);
-      expect(diagnosticIssues.length).toBeGreaterThan(0);
-    }
-
-    // --- 6. Coverage-honest summary and retained report --------------------
+    // --- 3. Coverage-honest summary ----------------------------------------
     const coverageRes = await request.get(`${API}/v2/items/${itemId}/diagnostics/coverage-summary`,
       { headers: { Authorization: `Bearer ${token}` } });
     expect(coverageRes.ok(), await coverageRes.text()).toBeTruthy();
     const coverage = await coverageRes.json();
     expect(coverage).not.toHaveProperty("health_score");
 
-    const reportRes = await request.get(`${API}/v2/diagnostics/runs/${runId}/report?fmt=pdf`);
-    expect(reportRes.ok(), await reportRes.text().catch(() => "")).toBeTruthy();
-    expect(reportRes.headers()["content-type"]).toContain("pdf");
-    const bytes = await reportRes.body();
-    expect(bytes.subarray(0, 4).toString("latin1")).toBe("%PDF");
-
-    // --- 7. Diagnostic #14 PSI: existing API family + explicit UI dispatch --
+    // --- 4. Diagnostic #14 PSI: existing API family + explicit UI dispatch --
     const launchCard14 = page.locator('[data-testid="diagnostic-card"][data-diagnostic-id="14"]');
     await launchCard14.getByRole("button", { name: "Launch workflow" }).click();
     await expect(page.getByTestId("psi-scope")).toBeVisible();
@@ -330,6 +271,13 @@ test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)
     await card14.getByRole("button", { name: "View results" }).click();
     await expect(page.getByTestId("psi-results")).toBeVisible();
     await expect(page.getByText(/Contextual PSI review/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Download analysis report" })).toBeVisible();
+    await page.getByRole("button", { name: "View evidence" }).first().click();
+    const psiEvidence = page.getByRole("dialog", { name: /population stability evidence/ });
+    await expect(psiEvidence.getByText("Issue decision", { exact: false })).toBeVisible();
+    await expect(psiEvidence.getByText("Baseline feature profile", { exact: true })).toBeVisible();
+    await expect(psiEvidence.getByText("Baseline-to-Current bin contributions", { exact: true })).toBeVisible();
+    await psiEvidence.getByRole("button", { name: "Close" }).click();
     await expect(page.getByRole("button", { name: "Confirm as issue" })).toBeVisible();
     await expect(page.getByText("VIOLATION", { exact: true })).toHaveCount(0);
   });

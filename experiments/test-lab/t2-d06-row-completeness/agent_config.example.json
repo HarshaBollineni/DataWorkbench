@@ -1,0 +1,7 @@
+{
+  "_comment": "Safe template only. Prefer environment variables; never commit a real API key.",
+  "api_key": "",
+  "endpoint": "",
+  "model": "",
+  "style": "openai"
+}

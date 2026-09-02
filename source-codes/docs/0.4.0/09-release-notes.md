@@ -38,7 +38,8 @@ path. The original delivery and its files remain available unchanged.
   `ai.control_plane`, records decisions, and never changes the deterministic
   verdict.
 - `spike_recalibrate.py`, `spike_gx.py`, and `spike_integration.py` now use
-  deterministic, spike-only `backend/spike_fixtures.py` and exit 0. They remain
+  deterministic, spike-only `spike_fixtures.py` and exit 0. They are archived under
+  `experiments/archive/pre-domain-gx-parity/` and remain
   B2 parity evidence only and do not enable PSI or any other pending diagnostic.
 
 ## Controlled expansion (D-22)

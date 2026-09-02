@@ -11,7 +11,7 @@ import CoverageBoard from "./testlab/CoverageBoard";
 import ScopeGate from "./testlab/ScopeGate";
 import RunConsole from "./testlab/RunConsole";
 import FindingsPanel from "./testlab/FindingsPanel";
-import { PsiJourneySummary } from "./testlab/PopulationStabilityResults";
+import { PsiJourneySummary } from "@/features/test-lab/diagnostics/t4-d14-population-stability/PopulationStabilityResults";
 import ScorePanel from "./testlab/ScorePanel";
 import SupportingInvestigations from "./testlab/SupportingInvestigations";
 import { ArtifactRepositoryCard, IssueReviewCard, SavedInventoryViewer } from "./testlab/TestLabOverview";
@@ -156,6 +156,17 @@ export default function TestLab() {
 
   const openScope = async (diagnosticId, boardDraft) => {
     setMessage("");
+    if (diagnosticId === 11 && boardDraft) {
+      setLaunchBusy(true);
+      try {
+        await activateWorkflow(boardDraft.run_id, diagnosticId);
+      } catch (e) {
+        setMessage(e.message);
+      } finally {
+        setLaunchBusy(false);
+      }
+      return;
+    }
     if (diagnosticId === 14 && boardDraft) {
       setDraftChoice({ diagnosticId, draft: boardDraft });
       return;
@@ -164,10 +175,14 @@ export default function TestLab() {
     try {
       // Undefined means an older board response did not carry draft state.
       // Null is authoritative and proceeds directly to clean draft creation.
-      if (diagnosticId === 14 && boardDraft === undefined) {
+      if ([11, 14].includes(diagnosticId) && boardDraft === undefined) {
         const response = await getResumableDiagnosticDraftV2(itemId, diagnosticId);
         if (response.draft) {
-          setDraftChoice({ diagnosticId, draft: response.draft });
+          if (diagnosticId === 11) {
+            await activateWorkflow(response.draft.run_id, diagnosticId);
+          } else {
+            setDraftChoice({ diagnosticId, draft: response.draft });
+          }
           return;
         }
       }
@@ -325,7 +340,7 @@ export default function TestLab() {
 
           {legacyPanes && (
             <div className="grid gap-5">
-              <FindingsPanel results={results} loading={resultsLoading} error={resultsError} onDisposition={disposition} onRecompute={refreshDerived} />
+              <FindingsPanel results={results} loading={resultsLoading} error={resultsError} onDisposition={disposition} onRecompute={refreshDerived} runId={completedRunId || activeRunId} />
               <ScorePanel itemId={itemId} runId={completedRunId || activeRunId} />
             </div>
           )}
@@ -361,14 +376,16 @@ export default function TestLab() {
 }
 
 function DiagnosticWorkflowPage({ item, runId, diagnosticName, onBack, onRunStarted, onDone, onSelectRun, viewResults, liveRun }) {
+  const isDirectionality = /directional\s*\/\s*monotonic/i.test(diagnosticName || "");
   return <main className="min-h-screen bg-slate-50 p-8">
     <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
       <div>
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">Test Lab diagnostic</p>
         <h1 className="mt-1 text-2xl font-bold text-slate-950">
-          Diagnostic workflow{diagnosticName ? ` — ${diagnosticName}` : ""}
+          {isDirectionality ? diagnosticName : <>Diagnostic workflow{diagnosticName ? ` — ${diagnosticName}` : ""}</>}
         </h1>
-        <p className="mt-1 text-sm text-slate-500">{item.name} · review scope and run the selected diagnostic.</p>
+        {isDirectionality && <p className="mt-1 text-base text-slate-700">Compare expected economic relationships with observed empirical direction.</p>}
+        <p className="mt-1 text-sm text-slate-500">{item.name} · {isDirectionality ? "review outcomes, escalate anomalies for RCA, and optionally check segment-level behavior for later runs." : "review scope and run the selected diagnostic."}</p>
       </div>
       <Button variant="outline" onClick={onBack}>Back to Test Lab</Button>
     </div>
@@ -414,7 +431,7 @@ function DiagnosticResults({ itemId, runId, onSelectRun }) {
     {payload?.manifest?.manifest_kind === "population_stability_index" && <PsiJourneySummary manifest={payload.manifest} />}
     <h2 className="text-lg font-semibold">Findings</h2>
     <FindingsPanel results={payload?.results || []} loading={!payload && !error} error={error}
-      onDisposition={disposition} onPromote={promote} onCloseIssue={closeIssue} onRecompute={() => {}} />
+      onDisposition={disposition} onPromote={promote} onCloseIssue={closeIssue} onRecompute={() => {}} runId={runId} />
   </div>;
 }
 

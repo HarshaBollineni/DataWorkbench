@@ -1,0 +1,16 @@
+**/.env
+**/.env.*
+**/system_state*.db*
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.pytest_cache/
+**/tests/
+**/uploads/
+**/kb_storage/
+**/analysis_artifacts/
+.venv/
+.runtime/
+ui/
+node_modules/
+.git/

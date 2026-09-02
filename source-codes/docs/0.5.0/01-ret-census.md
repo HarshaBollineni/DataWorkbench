@@ -411,13 +411,51 @@ tagging). The exact reason text lives in `ui/scripts/keep-reasons.json`,
 keyed `src/api/client.js#<exportName>`, and is cross-checked by the gate
 against this document (§3's classification table names all six).
 
-**Post-census compatibility keeps (3):** later work added or exposed
+**Post-census compatibility keeps (6):** later work added or exposed
 `dispositionFindingV2`, `getAnalysisArtifactV2`, and
 `getAnalysisArtifactTypesV2` without an active UI caller. Their backend
 routes remain live, and the organization refactor explicitly preserves public
 client APIs, so they are retained with compatibility reasons rather than
-silently deleted. The current keep list therefore contains nine exports; the
+silently deleted. The domain-alignment pilot also moved the T2-D06
+`RowCompletenessResults`, `RowCompletenessScopeGate`, and
+`rowCompletenessWorkflow` implementations under `src/features` while retaining
+their former `src/pages/testlab` paths as temporary compatibility exports. The
+current keep list therefore contains nine exports and eighteen files; the
 original six-entry count below remains the historical 0.5.0 census result.
+
+The exact compatibility file keys are:
+
+- `src/pages/testlab/RowCompletenessResults.jsx`
+- `src/pages/testlab/RowCompletenessScopeGate.jsx`
+- `src/pages/testlab/rowCompletenessWorkflow.js`
+
+The T1-D02 domain migration adds three equivalent temporary compatibility files:
+
+- `src/pages/testlab/FeatureTargetResults.jsx`
+- `src/pages/testlab/FeatureTargetScopeGate.jsx`
+- `src/pages/testlab/FeatureTargetEvidence.jsx`
+
+The T4-D14 domain migration adds five equivalent temporary compatibility files:
+
+- `src/pages/testlab/PopulationStabilityResults.jsx`
+- `src/pages/testlab/PopulationStabilityScopeGate.jsx`
+- `src/pages/testlab/PsiBinningWorkspace.jsx`
+- `src/pages/testlab/psiWorkflow.js`
+- `src/pages/testlab/binLabelDisplay.js`
+
+The RCA domain migration adds four temporary compatibility files and retains one governed dormant
+component until its live backend approval flow is either activated or explicitly retired:
+
+- `src/components/RcaCase.jsx`
+- `src/components/RcaSourceEvidence.jsx`
+- `src/pages/issue-rca/TrackedIssueEditor.jsx`
+- `src/components/rca/FixApprovalFlow.jsx`
+- `src/features/rca/components/FixApprovalFlow.jsx`
+
+The AAR domain migration adds two temporary compatibility files:
+
+- `src/pages/artifact-repository/ArtifactRepositoryViews.jsx`
+- `src/pages/artifact-repository/constants.js`
 
 **Deleted files (all 27 — none kept):** the 14 named in requirements §7 plus
 the 13 additional orphans in §4's table. None had a concrete, adopted

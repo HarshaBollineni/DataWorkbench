@@ -165,12 +165,12 @@
       "decision_type": "verdict",
       "stage": "Both",
       "kb_dependency": "HIGH",
-      "workflow_status": "executable",
+      "workflow_status": "workflow_pending",
       "l2_areas": [
         "L2-06",
         "L2-10"
       ],
-      "enabled_by": "D-15 (30 Jul 2026)"
+      "enabled_by": null
     },
     {
       "diagnostic_id": 6,
@@ -217,18 +217,18 @@
       "mode": "relational",
       "name": "Directional / monotonic consistency (segmented)",
       "what_it_computes": "Do two variables relate in the expected direction, by segment?",
-      "metric": "Spearman rank corr; group-band median trend",
+      "metric": "Broad quantile-bin average target shape; Spearman rank correlation; standardized univariate regression (Pearson displayed only)",
       "threshold_based": "Yes - tunable",
-      "threshold_rule_default": "wrong sign, OR |corr| < floor, OR inversions > allowed (per segment; min-sample guard)",
+      "threshold_rule_default": "3/3 directional agreement = strong; 2/3 = moderate; otherwise conflicting, weak/flat, non-monotonic, or insufficient data (optional segmentation; no adjacent-bin inversion count)",
       "det_stat": "Statistical",
       "decision_type": "contextual",
       "stage": "Both",
       "kb_dependency": "HIGH",
-      "workflow_status": "workflow_pending",
+      "workflow_status": "executable",
       "l2_areas": [
         "L2-06"
       ],
-      "enabled_by": null
+      "enabled_by": "T2-D11 governed directional-consistency production contract (1 Sep 2026)"
     },
     {
       "diagnostic_id": 12,
@@ -498,13 +498,28 @@
     },
     {
       "diagnostic_id": 11,
-      "key": "inversions_allowed",
-      "value": 0
+      "key": "min_sample",
+      "value": 30
     },
     {
       "diagnostic_id": 11,
-      "key": "min_sample",
-      "value": 30
+      "key": "regression_floor",
+      "value": 0.1
+    },
+    {
+      "diagnostic_id": 11,
+      "key": "bin_range_floor_sd",
+      "value": 0.1
+    },
+    {
+      "diagnostic_id": 11,
+      "key": "min_binary_class",
+      "value": 10
+    },
+    {
+      "diagnostic_id": 11,
+      "key": "significance_level",
+      "value": 0.05
     },
     {
       "diagnostic_id": 12,
@@ -540,7 +555,7 @@
       "17": 0.16666667,
       "20": 0.16666667
     },
-    "coverage_statement": "FWK-16 coverage honesty: a score must state what it covers. Four of 9 registered diagnostics are executable (#2 feature-target separation, #4 cross-field, #6 row completeness, and #14 population stability); the score panel names executable, run, not-run, and workflow-pending diagnostics and does not present this partial coverage as a weighted health score.",
+    "coverage_statement": "FWK-16 coverage honesty: a score must state what it covers. Four of 9 registered diagnostics are executable (#2 feature-target separation, #6 row completeness, #11 directional consistency, and #14 population stability); #4 cross-field business rule is workflow-pending while it undergoes additional testing and refinement. The score panel names executable, run, not-run, and workflow-pending diagnostics and does not present this partial coverage as a weighted health score.",
     "superseded_scheme_note": "The retired scheme weighted 14 tests by area criticality (fw_family_weights, WEIGHTS Critical=5/High=3/Medium=1). Fixture delta: the old roll-up scored a 3-result fixture (2 units, passed_fraction 0.5 and 1.0) as ~75 'health' while silently covering only the retired registry; the new scheme refuses a headline number under partial 4/9 executable coverage and reports the split instead."
   }
 }

@@ -1,0 +1,667 @@
+{
+  "kb_id": "valuesemantics",
+  "diagnostic": "Value-semantics classification",
+  "pipeline_test": "Test 2 - KB-driven data validation, structural / hard mode",
+  "model_type_dimension": {
+    "purpose": "every rule, every classified entry and every role carries a model_type of PD, LGD or both. The model type is declared at upload and selects which entries run. An entry outside the declared model type is out of scope by declaration and reported as such, which is distinct from UNSCOPED",
+    "values": ["PD", "LGD"],
+    "declared_at_upload": true,
+    "both_types_on_one_upload": "not permitted. A PD panel and an LGD workout table have different grains and different indicators. Two extracts, two runs, two verdicts",
+    "coverage_matrix": {
+      "VS-01 CENSORED": {
+        "LGD": "outcome censoring - the process producing the result has not ended",
+        "PD": "window censoring - the forward observation window has not completed"
+      },
+      "VS-02 STALE-FROZEN": {
+        "LGD": "arrears_measure, priced_rate, sentinel limb",
+        "PD": "arrears_measure, priced_rate, internal_grade, income_measure, utilisation_measure, sentinel limb"
+      },
+      "VS-03 NOT-APPLICABLE": {
+        "LGD": "realisation_fields, regime_stamp, arrears_measure",
+        "PD": "construction_constants, spread_over_benchmark, maturity_conditional_flags, amortisation_fields"
+      }
+    }
+  },
+  "what_this_kb_checks": "What an absent or unchanging value means. Three meanings are recognised: the outcome has not happened yet, the field has stopped moving when it should be moving, and the field does not apply to this row. Nothing else is classified.",
+  "what_a_violation_means": "There are no violations. The output is a sparse set of tags consumed by every other KB. What can go wrong is that a tag cannot be assigned, which is reported as UNCLASSIFIED or UNSCOPED and is itself a finding.",
+  "why_this_is_not_a_test": "Every other diagnostic treats a cell as evidence. An outcome that has not occurred yet, treated as missing, gets imputed and biases the estimate. A field frozen by a broken feed, treated as observed, reports no risk. A field that does not apply, treated as a pass, inflates the pass rate. The classification must happen once, centrally, before the tests run, rather than being re-decided inside each rule.",
+  "what_this_kb_does_not_check": [
+    "whether a populated value is correct - crossfield",
+    "whether a label is internally consistent - labelconsistency, which owns the finished-state declaration and the label horizon this KB reads",
+    "whether rows are missing from the extract - completeness; an absent row has no cell to tag",
+    "whether a value is simply absent - not classified here. Plain absence is a profiling question, and the hard presence rules in labelconsistency and crossfield name the cases that change a verdict",
+    "why a value is absent in the statistical sense - the missingness-mechanism diagnostic, deferred",
+    "whether a documented simulation or injection pattern is present as declared - the simulation-fidelity check, not a semantics tag"
+  ],
+  "grain": {
+    "tag_grain": "cell. A tag is assigned per field per row. Two fields on the same row can carry different tags",
+    "PD": "one row per exposure per reporting period. Forward-looking label carried on surviving rows",
+    "LGD": "one row per case. Outcome fields populated once the process ends"
+  },
+  "dataset_independence": "This KB names no table and no column. Every field it reads is referenced by a declared role, bound at upload against whatever the incoming schema calls it. Candidate names are recorded as binding hints only and no rule depends on them. The bindings block records concrete bindings established for one extract as a worked example; no rule reads it at run time.",
+  "declared_at_upload": [
+    "model type, PD or LGD",
+    "product",
+    "as-of date",
+    "use case, IFRS9 or IRB or both",
+    "role bindings, per the role_bindings block",
+    "LGD: the finished-state list for the outcome_state role, including whether a written-off state counts as finished",
+    "LGD: whether an interim outcome value is ever written before the outcome completes",
+    "PD: the panel end period, read from the extract",
+    "PD: the forward horizon of each forward-looking label, in periods",
+    "PD: whether any forward label was computed against data beyond the panel end",
+    "PD: the exit events that terminate observation of an exposure",
+    "PD: which fields are recorded at a lower frequency than the panel period",
+    "PD: the panel scope exclusions behind any field constant across the whole extract",
+    "the data dictionary, where one exists, as the sole authority for sentinel values",
+    "the variance window and minimum row count for the freeze assessment",
+    "the not-applicable share above which a field is flagged"
+  ],
+  "uploads_are_single_product": true,
+  "role_bindings": {
+    "purpose": "the KB reads roles, not column names. Each role is bound at upload to a column in the incoming schema. An unbound role returns NOT-APPLICABLE or UNSCOPED for the rules that need it, named, and never blocks the others",
+    "roles": {
+      "entity_id": {
+        "model_type": ["PD", "LGD"],
+        "binds_to": "the identifier of the exposure, facility or case",
+        "used_by": "all rules",
+        "look_for": ["loan_id", "facility_id", "account_id"]
+      },
+      "period": {
+        "model_type": ["PD", "LGD"],
+        "binds_to": "the ordered reporting period of the observation. Must be orderable, because the PD limb of VS-01 compares it against the panel end",
+        "used_by": "VS-01 PD limb, VS-02",
+        "look_for": ["reporting_quarter", "observation_date", "snapshot_month"]
+      },
+      "segment": {
+        "model_type": ["PD", "LGD"],
+        "binds_to": "the partition across which population behaviour is assessed",
+        "used_by": "VS-02",
+        "look_for": ["segment", "region", "state", "property_type", "portfolio"]
+      },
+      "outcome_state": {
+        "model_type": ["LGD"],
+        "binds_to": "the column recording whether a recovery or workout process is still running or has ended",
+        "used_by": "VS-01 LGD limb as its indicator",
+        "look_for": ["workout_state", "recovery_status", "case_status"]
+      },
+      "outcome_values": {
+        "model_type": ["LGD"],
+        "binds_to": "the columns holding the realised result of that process, including the loss measure, its currency components and its duration",
+        "used_by": "VS-01 LGD limb as the fields it classifies",
+        "look_for": ["realised_lgd", "realised_loss", "time_to_resolution", "disposal_date", "disposal_proceeds", "legal_costs", "other_costs", "insurance_recovery"]
+      },
+      "return_to_performing": {
+        "model_type": ["LGD"],
+        "binds_to": "the column recording that a case returned to performing without realisation",
+        "used_by": "VS-03 as the indicator for realisation-conditional fields",
+        "look_for": ["cure_indicator", "cure_flag", "restored_flag"]
+      },
+      "realisation_fields": {
+        "model_type": ["LGD"],
+        "binds_to": "the columns that exist only where collateral was realised",
+        "used_by": "VS-03",
+        "look_for": ["disposal_date", "disposal_proceeds", "sale_date", "sale_proceeds"]
+      },
+      "forward_labels": {
+        "model_type": ["PD"],
+        "binds_to": "the columns holding an outcome measured over a window that starts at this period and ends in the future, including the default target and any forward measure derived from it",
+        "used_by": "VS-01 PD limb as the fields it classifies",
+        "look_for": ["default_12m", "target_default_12m", "default_1q", "net_interest_margin", "nim_group"]
+      },
+      "exit_indicators": {
+        "model_type": ["PD"],
+        "binds_to": "the columns recording that observation of an exposure has terminated before the panel end",
+        "used_by": "VS-01 PD limb as part of its indicator",
+        "look_for": ["paid_off_indicator", "matured_performing_balloon_indicator", "closure_flag"]
+      },
+      "arrears_measure": {
+        "model_type": ["PD", "LGD"],
+        "binds_to": "the column recording days or months past due",
+        "used_by": "VS-02 both types, VS-03 LGD only",
+        "look_for": ["DPD", "dpd_current", "days_past_due", "arrears_months"]
+      },
+      "priced_rate": {
+        "model_type": ["PD", "LGD"],
+        "binds_to": "the column holding the exposure's current interest rate",
+        "used_by": "VS-02",
+        "look_for": ["interest_rate", "current_interest_rate", "current_rate"]
+      },
+      "rate_basis": {
+        "model_type": ["PD", "LGD"],
+        "binds_to": "the column distinguishing a rate that tracks a reference rate from one fixed by contract",
+        "used_by": "VS-02 as the scoping condition for priced_rate, VS-03 PD as the indicator for spread_over_benchmark",
+        "look_for": ["interest_type", "rate_type", "product_rate_basis"]
+      },
+      "internal_grade": {
+        "model_type": ["PD"],
+        "binds_to": "the column holding the internal credit grade in force at this period",
+        "used_by": "VS-02",
+        "look_for": ["rating", "internal_grade", "risk_grade"]
+      },
+      "income_measure": {
+        "model_type": ["PD"],
+        "binds_to": "the column holding the income generated by the exposure or its collateral at this period",
+        "used_by": "VS-02",
+        "look_for": ["NOI", "net_operating_income", "rental_income"]
+      },
+      "utilisation_measure": {
+        "model_type": ["PD"],
+        "binds_to": "the column holding a usage or occupancy rate expected to move with market conditions",
+        "used_by": "VS-02",
+        "look_for": ["occupancy", "utilisation", "occupancy_rate"]
+      },
+      "non_arrears_trigger": {
+        "model_type": ["LGD"],
+        "binds_to": "the column recording why an exposure was treated as deteriorated or defaulted, where that reason may be something other than arrears. Under IFRS9 this is the stage-transfer trigger; under IRB it is the definition-of-default basis",
+        "used_by": "VS-03 as the indicator for the arrears measure and the regime stamp",
+        "look_for": ["stage_trigger", "sicr_reason", "transfer_reason", "dod_basis"]
+      },
+      "regime_stamp": {
+        "model_type": ["LGD"],
+        "binds_to": "the column attributing a judgement-based deterioration or default to a policy version",
+        "used_by": "VS-03",
+        "look_for": ["dod_regime", "dod_regime_version", "policy_version"]
+      },
+      "construction_constants": {
+        "model_type": ["PD"],
+        "binds_to": "the columns held at a single value by how the panel was scoped, rather than by how the portfolio behaved. Distinct from origination-time attributes, which are static per exposure but vary across the population",
+        "used_by": "VS-03",
+        "look_for": ["default_reg", "default_1q", "non_accrual_indicator", "foreclosure_in_process_indicator", "bankruptcy_indicator"]
+      },
+      "spread_over_benchmark": {
+        "model_type": ["PD"],
+        "binds_to": "the column holding the margin over a reference rate",
+        "used_by": "VS-03",
+        "look_for": ["spread", "margin"]
+      },
+      "maturity_date": {
+        "model_type": ["PD"],
+        "binds_to": "the column holding contractual maturity",
+        "used_by": "VS-03 as the indicator for maturity_conditional_flags",
+        "look_for": ["maturity_date"]
+      },
+      "maturity_conditional_flags": {
+        "model_type": ["PD"],
+        "binds_to": "the columns that can only be set once contractual maturity has been reached",
+        "used_by": "VS-03",
+        "look_for": ["matured_performing_balloon_indicator", "matured_nonperforming_balloon_indicator"]
+      },
+      "amortisation_basis": {
+        "model_type": ["PD"],
+        "binds_to": "the column distinguishing an exposure that repays principal over its life from one that does not",
+        "used_by": "VS-03 as the indicator for amortisation_fields",
+        "look_for": ["loan_payment_type", "repayment_type"]
+      },
+      "amortisation_fields": {
+        "model_type": ["PD"],
+        "binds_to": "the columns recording principal repayment or balance paydown over the life of the exposure",
+        "used_by": "VS-03",
+        "look_for": ["outstanding_balance", "debt", "current_balance"]
+      },
+      "static_attributes": {
+        "model_type": ["PD", "LGD"],
+        "binds_to": "the columns fixed at origination and never revised. Bound so that VS-02 can exclude them by name rather than by inference",
+        "used_by": "VS-02 as an explicit exclusion list",
+        "look_for": ["original_balance", "loan_limit", "origination_rating", "origination_date", "spread", "loan_type", "original_ltv", "income_at_origination"]
+      }
+    }
+  },
+  "tag_domain": {
+    "CENSORED": "the value does not exist yet because the window it is measured over has not completed. For LGD that window is a workout process; for PD it is a forward observation period. Not a fault. Routes to survival treatment or exclusion, never to imputation",
+    "STALE-FROZEN": "the field carries a value that has stopped changing when it should be changing. Populated and uninformative",
+    "NOT-APPLICABLE": "the field does not apply to this row under the declared process, contract terms or panel scope. Not a fault and not absent",
+    "UNCLASSIFIED": "a determination was attempted and could not be reached. Reported with a count and a reason",
+    "UNSCOPED": "no determination was attempted because the authority that defines it carries no entry. Distinct from UNCLASSIFIED: the reason is a missing declaration, not ambiguous data",
+    "OUT-OF-SCOPE-BY-MODEL-TYPE": "the entry belongs to the other model type and was not evaluated. Reported per entry. Distinct from UNSCOPED, which means a declaration was expected and absent",
+    "MISSING": "retained as a concept because consuming rules reference it, but NOT assigned by this KB",
+    "VALID": "retained as a concept for consumers but NOT assigned by this KB. A cell that no rule claimed carries no tag, which is not the same as having been examined and found sound"
+  },
+  "precedence": "NOT-APPLICABLE, then CENSORED, then STALE-FROZEN. First match wins. There is no residual tag: a cell no rule claims carries no tag at all. The order matters in both model types. For LGD, a realised outcome on an unfinished case is censored rather than frozen, and a field that does not apply is neither. For PD, a field constant by panel scoping is not-applicable rather than frozen, and a value that will never exist is not-applicable rather than censored.",
+  "output_shape": {
+    "form": "a sparse tag set. Only cells claimed by VS-01, VS-02 or VS-03 carry a tag",
+    "no_tag_means": "no rule claimed this cell. It does NOT mean the cell was examined and found sound",
+    "how_unexamined_is_visible": "at field level. For every field in the extract the KB reports which rules had it in scope, and whether each was applied, UNSCOPED, UNCLASSIFIED or OUT-OF-SCOPE-BY-MODEL-TYPE. A field in scope of nothing is reported as unexamined by name",
+    "why_no_residual_tag": "a residual tag is indistinguishable from an assurance once it reaches a consumer. Emitting nothing forces the consumer to read the field-level coverage report, which is where the distinction between ordinary and unexamined lives",
+    "model_type_stamp": "the verdict carries the declared model type and the count of entries reported OUT-OF-SCOPE-BY-MODEL-TYPE, so a consumer can see that a run on a PD extract never attempted the LGD entries"
+  },
+  "consumes": {
+    "labelconsistency": "LGD: the finished-state list for the outcome_state role. PD: the definition and forward horizon of the default label. This KB encodes those declarations and does not make them. Where the two disagree, halt",
+    "completeness": "absent rows are that diagnostic's finding, not a cell-level tag"
+  },
+  "supplies": {
+    "crossfield": "scope filtering. Tagged rows leave a rule's scope before it is evaluated",
+    "directional": "exclusion before computation. This matters most for STALE-FROZEN: a frozen field has zero variance and yields either an undefined correlation or a spuriously clean one",
+    "labelconsistency": "the same scope filtering, applied to label and state fields",
+    "resolutionrate": "LGD: the incomplete-versus-finished split it counts on",
+    "model_training_gate": "PD: the exclusion set. A CENSORED forward label must not enter a training fold as an observed zero",
+    "downstream_statistical_diagnostics": "the gate requiring that statistical screens never run on censored, frozen or not-applicable values"
+  },
+  "shared_guards": {
+    "VG1 PRE-DECLARATION": "no field is classified until its role and indicator are bound. A tag inferred from the data alone is a guess, and a wrong guess propagates silently into every consuming KB. Where no indicator exists, the field's cells are UNCLASSIFIED and counted",
+    "VG2 indicator must be independent": "the field determining the tag must not be the field being tagged. Reading an empty outcome as censored because it is empty is circular; the outcome state is what makes it censored. Where the only available indicator is the field itself, UNCLASSIFIED",
+    "VG3 one tag per cell": "a cell receives exactly one tag, resolved by the declared precedence. Where two rules of equal precedence match, halt and prompt",
+    "VG4 UNCLASSIFIED is reported": "the unclassified count is reported per field, always. A KB that quietly leaves cells untagged is worse than none, because every consuming rule then trusts the silence",
+    "VG5 no imputation": "this KB never fills a value. It labels. A consumer that imputes a CENSORED value is misusing the tag",
+    "VG6 sentinel authority": "a sentinel value is recognised only where the data dictionary declares it for that specific field. There is no inference route: not from value frequency, not from a round number, not from a value outside a plausible range, and not from the same value being a sentinel for a different field. Where the dictionary carries no entry, the sentinel limb of any rule reading it is UNSCOPED and the remaining limbs still run",
+    "VG7 tag stability": "the same field under the same declaration must receive the same tag across runs. A tag that changes without the declaration changing is reported; the indicator's behaviour has changed",
+    "VG8 coverage report": "for every field the consuming KBs read, report the tag distribution. A field largely censored is not a field the downstream can treat as observed",
+    "VG9 never assert soundness": "this KB never emits a tag meaning sound, complete or ordinary. It emits three tags, each of which withholds a value from normal use. Anything else is reported as a count with a reason and never as a positive finding about the cell",
+    "VG10 structure from the extract": "the panel end period, period count and entity count are read from the extract, never from the dictionary. Where the two disagree the disagreement is reported as a hard finding before any rule runs. The dictionary remains the sole authority for sentinel values under VG6, which is a statement about values, not about structure",
+    "VG11 model type declared": "the model type is declared at upload and selects which entries run. It is never inferred from which roles happen to bind. An LGD entry evaluated on a PD extract, or the reverse, produces a tag with the wrong meaning while looking entirely ordinary. Where the model type is not declared, no rule runs and the whole KB returns UNSCOPED"
+  },
+  "guard_config": {
+    "grain": "cell",
+    "shared": [
+      { "code": "VG1 PRE-DECLARATION", "primitive": "role_and_indicator_required" },
+      { "code": "VG2 indicator independent", "primitive": "indicator_distinct_from_target" },
+      { "code": "VG3 one tag per cell", "primitive": "precedence_resolve", "params": { "order": ["NOT-APPLICABLE", "CENSORED", "STALE-FROZEN"] } },
+      { "code": "VG6 sentinel authority", "primitive": "data_dictionary_only" },
+      { "code": "VG10 structure from extract", "primitive": "extract_overrides_dictionary_structure", "params": { "fields": ["panel_end_period", "period_count", "entity_count"] } },
+      { "code": "VG11 model type declared", "primitive": "model_type_selects_entries", "params": { "values": ["PD", "LGD"], "default": null } }
+    ]
+  },
+  "verdicts": {
+    "CLASSIFIED": "every cell in every in-scope field received a determination",
+    "PARTIALLY-CLASSIFIED": "some cells returned UNCLASSIFIED, or an entry returned UNSCOPED; counts and reasons are reported",
+    "NOT-APPLICABLE": "a required role is unbound",
+    "UNSCOPED": "the model type was not declared, so no entry was selected",
+    "NO-VERDICT": "not used. There is nothing here to judge against a threshold"
+  },
+  "severity_status": "assigned per rule",
+  "rules": [
+    {
+      "id": "VS-01",
+      "tag_assigned": "CENSORED",
+      "status": "FINAL",
+      "severity": "CRITICAL",
+      "model_type": ["PD", "LGD"],
+      "use_case": ["IFRS9", "IRB"],
+      "product": ["CRE", "MORTGAGE"],
+      "derived_from": ["MR-21", "MR-04", "MR-05"],
+      "censoring_type": "the value is incomplete because the window it is measured over has not completed within the data that exists. The window differs by model type: a workout process for LGD, a forward observation period for PD",
+      "classifies": [
+        {
+          "entry_id": "VS-01.LGD",
+          "model_type": ["LGD"],
+          "role": "outcome_values",
+          "indicator_role": "outcome_state",
+          "censored_when": "outcome_state is not in the declared finished-state list",
+          "expression": "IF outcome_state NOT IN declared_finished_states THEN tag(outcome_values) = CENSORED",
+          "scope": "every case row whose outcome_state carries a value in the declared domain",
+          "reason": "the result has not occurred yet; nothing has been lost from the data",
+          "note": "an explicit role, not a catch-all. A column not in the outcome_values binding is never censored by this entry. Fields recording events that can complete while the process runs are excluded, since those are completed events rather than pending outcomes, and return_to_performing is excluded because VS-03 uses it as an indicator and tagging it here would be circular"
+        },
+        {
+          "entry_id": "VS-01.PD",
+          "model_type": ["PD"],
+          "role": "forward_labels",
+          "indicator_roles": ["period", "exit_indicators"],
+          "censored_when": "fewer forward periods exist than the declared horizon requires, either because the period is within the horizon of the panel end or because the exposure exits observation first",
+          "expression": "IF period + declared_forward_horizon > panel_end_period OR the entity's last observed period < period + declared_forward_horizon THEN tag(forward_labels) = CENSORED",
+          "scope": "every exposure-period row present in the panel",
+          "reason": "a row in the final horizon of the panel, or an exposure that exits early through payoff or maturity, cannot have an observed forward outcome. The label is censored, not missing",
+          "note": "a derived forward measure inherits the horizon of the label it is derived from and is censored with it"
+        }
+      ],
+      "check": "where the window a value is measured over has not completed within the data that exists, the value is censored rather than absent or observed",
+      "count_unit": "cell",
+      "why_it_matters": "the tag the rest of the set depends on. LGD: treated as absent, these cells are imputed and the loss estimate biases downward; treated as observed zeroes, further downward. The resolution-rate diagnostic counts exactly this population, and the loss reconciliation rules must exclude it before they run. PD: train on these rows as an observed zero and the default rate is diluted downward, and every event-rate calculation, calibration and forward economic estimate inherits the dilution",
+      "if_misclassified": "risk understated in a direction undetectable from the data that arrived, because no individual value is wrong",
+      "asked_once_per_database": {
+        "LGD": [
+          "which outcome_state values mean finished and which do not, including whether a written-off state counts as finished. Received at the data-upload stage as a declaration, not inferred",
+          "whether an interim or partial outcome value is ever written before the process ends, and under which state"
+        ],
+        "PD": [
+          "the panel end period, read from the extract under VG10",
+          "the forward horizon of each forward label, in periods",
+          "whether the label was computed against data beyond the panel end; where it was, the panel-end limb does not fire and the external source is named",
+          "which indicators constitute exit from observation"
+        ]
+      },
+      "asked_once_per_product": "none for the rule itself. The censored share is interpreted against the product declared at upload rather than against a fixed level, because both the expected proportion of unfinished cases and the proportion of exposures exiting within the horizon differ materially by product",
+      "config_not_shown": "none",
+      "guards": {
+        "inherits": "VG1 to VG11",
+        "VS-01a definition owner": "LGD: the finished-state list is owned by the label rule testing outcome presence. PD: the label horizon is owned by the label rules. This rule encodes both and redefines neither. Where the two disagree, halt; two definitions produce two incompatible outcome populations",
+        "VS-01b populated but censored": "a censored cell is frequently populated. LGD: where an interim value is written before the process ends. PD: where a forward label carries a zero. The cell is still tagged CENSORED. The tag describes the window's status, not the cell's emptiness. Consumers must not read the value",
+        "VS-01c unknown state": "LGD: a value outside the declared outcome_state domain returns UNCLASSIFIED for that row. Never treat an unknown state as unfinished, which would move genuine outcomes into the censored population and silently shrink the outcome sample",
+        "VS-01d finished-state declaration": "LGD: whether a write-off or equivalent terminal state counts as finished is supplied at the data-upload stage. The rule does not run until it is supplied. Treating a terminal write-off as unfinished removes the highest-loss cases from every estimate; treating an unfinished state as terminal admits partial outcomes as complete",
+        "VS-01e unlisted outcome or forward field": "a column that behaves as an outcome or forward-looking field but is absent from its binding is reported by name and its cells are UNCLASSIFIED. Never censored by inference from its name or from its correlation with the indicator; the binding is the authority",
+        "VS-01f accumulating components": "LGD: currency and cost components of an outcome accumulate while the process runs, so a value on an unfinished case is real but not final. They are tagged CENSORED rather than left untagged, because every consumer reconstructs a result from them and a partial component produces a partial result that looks complete. The to-date figure remains readable for operational reporting; it is not readable by any estimate",
+        "VS-01g long-duration products": "LGD: where the declared product has a materially longer process duration, a high censored share is structural rather than a data condition. Report the share against the product declared at upload and against the age distribution of unfinished cases, never against a fixed level",
+        "VS-01h panel end from the extract": "PD: the panel end period is read from the extract, never from the dictionary. Where the dictionary claims coverage the extract does not contain, report and halt before running. A wrong end period moves the censored boundary and leaves the true final cohort untagged",
+        "VS-01i label sourced beyond the panel": "PD: a forward label can be legitimately observed where it was computed against data wider than the extract. This must be declared. Undeclared, the population is CENSORED, which is the conservative direction",
+        "VS-01j exit is declared, never inferred": "PD: the events that terminate observation are supplied at upload. An exposure that simply stops appearing without a declared exit indicator returns UNCLASSIFIED for the affected rows",
+        "VS-01k horizon unit": "PD: where the horizon unit and the period unit differ and no conversion is declared, UNCLASSIFIED for that field. Never assume months. A quarter-grained panel with a month-grained horizon misclassifies by a factor of three",
+        "VS-01l derived measure inherits its source window": "PD: a derived forward measure whose horizon is not declared is UNCLASSIFIED rather than assumed equal to the primary label's"
+      }
+    },
+    {
+      "id": "VS-02",
+      "tag_assigned": "STALE-FROZEN",
+      "status": "FINAL",
+      "severity": "MATERIAL",
+      "model_type": ["PD", "LGD"],
+      "use_case": ["IFRS9", "IRB"],
+      "product": ["CRE", "MORTGAGE"],
+      "derived_from": ["MR-08", "MR-06"],
+      "classifies": [
+        {
+          "entry_id": "VS-02.arrears",
+          "model_type": ["PD", "LGD"],
+          "role": "arrears_measure",
+          "condition": "all rows in the segment-period, above the minimum row count",
+          "expected_variation": "arrears move period to period across any population of material size",
+          "assessed_across": "segment and period",
+          "note": "zero is a genuine and common value at row level; the finding exists only at segment-period grain. On a performing-only PD panel the measure is recorded within a narrow band, which raises the chance of genuine low variance and makes the minimum row count and window declarations load-bearing"
+        },
+        {
+          "entry_id": "VS-02.rate",
+          "model_type": ["PD", "LGD"],
+          "role": "priced_rate",
+          "condition": "rate_basis indicates a rate that tracks a reference rate",
+          "expected_variation": "a tracking rate moves whenever the reference rate moves",
+          "assessed_across": "segment and period",
+          "note": "scoped by rate_basis. A contractually fixed rate is flat by design and must never be tagged; an unscoped assessment would tag the fixed population wholesale"
+        },
+        {
+          "entry_id": "VS-02.grade",
+          "model_type": ["PD"],
+          "role": "internal_grade",
+          "condition": "assessed across the grade's own review frequency, never within it",
+          "expected_variation": "an internal grade is reviewed on a declared cycle and moves cycle to cycle across a population of material size",
+          "assessed_across": "segment and review cycle",
+          "note": "where the grade is reviewed less often than the panel period, it is constant within the review cycle by design. An annually reviewed grade on a quarterly panel is constant in three of every four rows, and assessing it at panel-period grain tags all of them"
+        },
+        {
+          "entry_id": "VS-02.income",
+          "model_type": ["PD"],
+          "role": "income_measure",
+          "condition": "all rows in the segment-period, above the minimum row count",
+          "expected_variation": "income moves period to period across a population of material size",
+          "assessed_across": "segment and period"
+        },
+        {
+          "entry_id": "VS-02.utilisation",
+          "model_type": ["PD"],
+          "role": "utilisation_measure",
+          "condition": "all rows in the segment-period, above the minimum row count",
+          "expected_variation": "a usage or occupancy rate moves period to period with market conditions",
+          "assessed_across": "segment and period"
+        }
+      ],
+      "classifies_note": "an explicit, scoped list. A role not named here is not assessed for freezing. Each entry carries both the condition under which the field is expected to vary and the grain at which constancy is judged, because several fields are legitimately constant for part of any population and an unscoped entry would tag that part wholesale. Fields in the static_attributes binding are static by construction, out of scope, and must not be added. Fields held constant by panel scoping rather than by portfolio behaviour belong to VS-03 and are excluded by precedence",
+      "must_not_classify": {
+        "role": "static_attributes",
+        "reason": "fixed at origination and never revised. Excluded by declaration, not by the rule inferring which fields ought to be static",
+        "PD_examples": ["original_balance", "loan_limit", "origination_rating", "origination_date", "loan_type", "original_ltv", "income_at_origination"],
+        "conditional_exclusion": [
+          {
+            "role": "amortisation_fields",
+            "where": "amortisation_basis indicates an exposure that does not repay principal",
+            "reason": "a balance on an interest-only exposure is flat by design. Where the exposure does amortise, the balance is expected to fall and is assessed within exposure rather than across the segment, because amortisation is a contractual property of the individual exposure"
+          },
+          {
+            "role": "spread_over_benchmark",
+            "where": "all rows",
+            "reason": "set at origination and not revised. Belongs to VS-03 where rate_basis indicates a fixed rate"
+          }
+        ]
+      },
+      "indicator": "within-scope variance over the declared window at the grain named on each entry. The sentinel limb has no indicator of its own; it reads the data dictionary",
+      "check": "where a field expected to vary shows no variation across its declared scope and window, its values are frozen rather than observed. The cells are populated and carry no information",
+      "expression": "two independent limbs, reported separately. VARIANCE LIMB: for each classified role, at that entry's declared grain and over the declared window, IF variance = 0 across the window THEN tag = STALE-FROZEN. SENTINEL LIMB: IF the data dictionary declares a sentinel for the bound column AND the value equals that sentinel THEN tag = STALE-FROZEN. Where the dictionary carries no entry for that column, the sentinel limb is UNSCOPED for that column and the variance limb runs alone",
+      "scope": "classified roles within their declared condition, evaluated at the grain named on each entry, above the minimum row count",
+      "count_unit": "cell, aggregated to the grain of the entry",
+      "why_it_matters": "this is the tag protecting the directional diagnostic. A frozen field has zero variance, so a correlation against it is undefined or spuriously clean, and a rule that should have failed reports a pass. It also protects arrears-based rules: a measure frozen at zero reports a population with no arrears. The sentinel limb matters independently, because a sentinel is not merely uninformative but actively wrong in magnitude, and a large negative sentinel entering a mean or a correlation inverts the sign of the result rather than flattening it, while surviving a null check",
+      "if_misclassified": "risk hidden. A capture gap reads as a clean population, and every behavioural feature built on the field is flat for reasons unrelated to borrower behaviour",
+      "asked_once_per_database": [
+        "which roles are expected to vary, over what window and at what grain",
+        "PD: which fields are recorded at a lower frequency than the panel period, and what that frequency is",
+        "the static_attributes exclusion list",
+        "the data dictionary, which is the sole authority for sentinel values per VG6",
+        "whether a sentinel and an ordinary blank in the same column mean different things"
+      ],
+      "asked_once_per_product": "the variance window and the minimum row count. Both are product-sensitive: a portfolio with fewer, larger exposures reaches the minimum row count in fewer segments and needs coarser segmentation or a longer window before zero variance is meaningful. Unsupplied, no default proposed",
+      "config_not_shown": "none",
+      "guards": {
+        "inherits": "VG1 to VG11",
+        "VS-02a legitimate constancy": "a field can be legitimately constant for a single exposure. Except where an entry declares exposure grain, constancy is assessed per segment and period across exposures, precisely to avoid tagging normal behaviour",
+        "VS-02b window declared": "the window over which constancy is judged must be declared. Zero variance over one period is normal for most fields; over many periods it is not. Without a window, UNCLASSIFIED",
+        "VS-02c minimum rows": "a segment-period with too few rows can show zero variance by chance. Below the minimum, UNCLASSIFIED rather than tagged",
+        "VS-02d refer out": "this rule tags. Why the field froze belongs to the disguised-missing diagnostic. The tag stands on its own and does not wait for that diagnostic to exist",
+        "VS-02e scoped entry required": "each classified role carries the condition under which it is expected to vary, and is evaluated only within that condition. Where the condition role is unbound, that entry returns UNSCOPED rather than being assessed unscoped, because an unscoped assessment would tag the legitimately constant population",
+        "VS-02f sentinel limb unscoped": "the sentinel limb requires a data-dictionary entry for the bound column. No entry means UNSCOPED for that limb, never a guess. In an arrears measure zero is the most common genuine value, so inferring it as a sentinel would tag the performing population as frozen. Report the UNSCOPED stamp alongside the variance result so a clean variance pass is not read as a clean field",
+        "VS-02g sparse segments": "where the declared product yields few exposures per segment, the minimum-row guard will return UNCLASSIFIED across most segments and the rule will appear to run cleanly while assessing almost nothing. Report the proportion of segment-periods actually assessed, not only the ones tagged",
+        "VS-02h grain is declared per entry": "each entry names the grain at which it is assessed and the assessment runs at that grain only. Applying one grain across all entries is the largest source of false positives in this rule: a field reviewed less often than the panel period is tagged wholesale, and at exposure grain the static attributes are",
+        "VS-02i sentinel and blank are distinct": "where a column carries both a declared sentinel and an ordinary blank, the sentinel cells are tagged STALE-FROZEN and the blank cells are not tagged at all, because plain absence is not classified by this KB. Collapsing the two loses the distinction between a source system that reported a placeholder and one that reported nothing, and the placeholder is the more dangerous of the two",
+        "VS-02j sentinel excluded from variance": "sentinel cells are removed before the variance limb runs on the same field. A field where every cell is a sentinel has zero variance, and the variance limb would restate a finding the sentinel limb has already made with the correct reason",
+        "VS-02k injected missingness is not a sentinel": "a documented simulation or injection pattern produces ordinary absence, not special semantics, unless the dictionary declares a sentinel value for that specific column. The presence of an injection note against a column is not itself a sentinel declaration",
+        "VS-02l construction constants deferred": "a field constant across the entire extract because the extract was scoped to exclude the values that would vary is not frozen. It is NOT-APPLICABLE and belongs to VS-03. The distinction is the cause: a broken feed against a deliberate scope. Where the cause cannot be established from the declarations, UNCLASSIFIED rather than assigned to either"
+      }
+    },
+    {
+      "id": "VS-03",
+      "tag_assigned": "NOT-APPLICABLE",
+      "status": "FINAL",
+      "severity": "MATERIAL",
+      "model_type": ["PD", "LGD"],
+      "use_case": ["IFRS9", "IRB"],
+      "product": ["CRE", "MORTGAGE"],
+      "derived_from": ["MR-22", "MR-21", "MR-34", "I9-22"],
+      "classifies": [
+        {
+          "entry_id": "VS-03.realisation",
+          "model_type": ["LGD"],
+          "role": "realisation_fields",
+          "not_applicable_when": "return_to_performing indicates the case returned to performing without realisation",
+          "indicator_role": "return_to_performing",
+          "reason": "no realisation occurred, so a realisation date and its proceeds will never exist",
+          "use_case": ["IFRS9", "IRB"],
+          "consumed_by": "the crossfield rule testing that a finished non-cured case carries a realisation date, and the deferred derivation-identity diagnostic"
+        },
+        {
+          "entry_id": "VS-03.regime",
+          "model_type": ["LGD"],
+          "role": "regime_stamp",
+          "not_applicable_when": "non_arrears_trigger indicates the deterioration or default was arrears-based rather than judgement-based",
+          "indicator_role": "non_arrears_trigger",
+          "reason": "a regime stamp attributes a judgement to a policy version; an arrears-based event is not a judgement",
+          "use_case": ["IRB"],
+          "consumed_by": "the label rules testing regime-stamp presence and version match",
+          "note": "IRB only. Where the use case is IFRS9 alone this entry is out of scope by declaration rather than UNSCOPED"
+        },
+        {
+          "entry_id": "VS-03.arrears",
+          "model_type": ["LGD"],
+          "role": "arrears_measure",
+          "not_applicable_when": "non_arrears_trigger indicates a declared non-arrears reason for the deterioration",
+          "indicator_role": "non_arrears_trigger",
+          "reason": "an exposure treated as deteriorated on judgement or on a qualitative indicator has no arrears measurement to carry",
+          "use_case": ["IFRS9", "IRB"],
+          "consumed_by": "the crossfield rule testing arrears presence on deteriorated exposures, and the label rules reading the arrears backstops",
+          "note": "the non_arrears_trigger role binds to the stage-transfer trigger under IFRS9 and to the definition-of-default basis under IRB. Where neither is present this entry returns UNSCOPED and the consuming rules carry their trigger-blind stamp"
+        },
+        {
+          "entry_id": "VS-03.construction",
+          "model_type": ["PD"],
+          "role": "construction_constants",
+          "not_applicable_when": "the panel scope declared at upload excludes the observation types that would make the field vary",
+          "indicator": "the declared panel scope, not a data field",
+          "reason": "a flag held at a single value because the rows that would set it were excluded from the extract does not describe the portfolio. It describes the extract",
+          "use_case": ["IFRS9", "IRB"],
+          "consumed_by": "the label rules testing default-flag consistency, the directional diagnostic which would otherwise screen a constant against the target, and any rule computing an observed event rate from these flags",
+          "note": "the indicator is a declaration rather than a column, which is the exception to the usual pattern and the reason VS-03h exists. A contemporaneous default flag that is all-zero in a performing-only panel carries no information about default; a rule reading it as an observed absence of default reports a portfolio with no defaults at all"
+        },
+        {
+          "entry_id": "VS-03.spread",
+          "model_type": ["PD"],
+          "role": "spread_over_benchmark",
+          "not_applicable_when": "rate_basis indicates a rate fixed by contract rather than tracking a reference rate",
+          "indicator_role": "rate_basis",
+          "reason": "a margin over a reference rate does not apply where no reference rate is tracked",
+          "use_case": ["IFRS9", "IRB"],
+          "consumed_by": "the crossfield rule reconciling the priced rate against its components"
+        },
+        {
+          "entry_id": "VS-03.maturity",
+          "model_type": ["PD"],
+          "role": "maturity_conditional_flags",
+          "not_applicable_when": "the period end precedes the exposure's contractual maturity",
+          "indicator_role": "maturity_date",
+          "reason": "a flag recording an outcome at maturity cannot apply before maturity is reached",
+          "use_case": ["IFRS9", "IRB"],
+          "consumed_by": "the label rules testing maturity-outcome presence",
+          "note": "where maturity_date is unbound this entry returns UNSCOPED and the consuming rules carry their maturity-blind stamp"
+        },
+        {
+          "entry_id": "VS-03.amortisation",
+          "model_type": ["PD"],
+          "role": "amortisation_fields",
+          "not_applicable_when": "amortisation_basis indicates an exposure that does not repay principal over its life",
+          "indicator_role": "amortisation_basis",
+          "reason": "no principal is repaid, so a paydown measure has nothing to record",
+          "use_case": ["IFRS9", "IRB"],
+          "consumed_by": "the crossfield rules reconciling balance movement, and the directional rules reading balance trend",
+          "note": "the balance itself remains readable as a level. It is the paydown interpretation that does not apply, which is why VS-02 excludes the same population from the variance limb rather than tagging it frozen"
+        }
+      ],
+      "classifies_note": "an explicit list. Each entry names the role, the condition under which it does not apply, the independent indicator that decides it, and what downstream depends on the tag. A role not named here is never tagged NOT-APPLICABLE. Nothing was added by inference about what a schema ought to contain",
+      "indicator": "the independent indicator named on each entry. One entry, construction_constants, is decided by a declaration rather than by a column; see VS-03h",
+      "check": "where a field does not apply to a row, its value is neither a fault, nor a pending outcome, nor an observation. A cured case has no realisation date because there was no realisation; a zero recorded where a flag cannot apply is structural",
+      "expression": "IF the declared applicability condition for a classified role is false for this row THEN tag = NOT-APPLICABLE",
+      "scope": "the roles named in classifies, evaluated per row against their declared indicator, the declared use case and the declared model type",
+      "count_unit": "cell",
+      "why_it_matters": "NOT-APPLICABLE is a first-class outcome explicitly distinct from a pass, because the failure mode is silent. A rule evaluated over a population that mostly does not apply reports a high pass rate meaning nothing, and an empty scope reports a pass on no rows at all. On a PD panel the construction_constants entry is the sharpest case: several flags are constant by scoping, and every one of them reads as a clean population to any rule that does not know why",
+      "if_misclassified": "treated as a fault, a false finding on a population behaving correctly; treated as ordinary, an inflated pass rate on rules that never applied, and a constant admitted into a correlation screen",
+      "asked_once_per_database": {
+        "LGD": [
+          "which return_to_performing value means the case was restored without realisation",
+          "which non_arrears_trigger values are non-arrears reasons, and under IRB which value means judgement-based"
+        ],
+        "PD": [
+          "the panel scope, specifically which observation types were excluded and therefore which flags are constant by construction"
+        ],
+        "both": [
+          "the not-applicable share above which a role is flagged, per VS-03c"
+        ]
+      },
+      "asked_once_per_product": "none. The not-applicable share is read against the product declared at upload, because both the mix of judgement-based and arrears-based events and the mix of fixed-rate, interest-only and pre-maturity exposures differ by product",
+      "config_not_shown": "none",
+      "guards": {
+        "inherits": "VG1 to VG11",
+        "VS-03a condition declared": "an applicability condition is a process fact and must be declared. Inferring it from which rows happen to be populated would encode the incoming data's gaps as the rule",
+        "VS-03b distinct from CENSORED": "not-applicable means the value will never exist; censored means it does not exist yet. A cured case's realisation date is the first; an unfinished case's realised result is the second. On a PD panel a flag constant by scoping is the first and a forward label inside the horizon is the second. Collapsing them sends never-will-exist rows into survival treatment",
+        "VS-03c empty scope warning": "where a role is not-applicable on more than the declared share of rows, flag it. Any rule reading that field is running on a fraction of the population and its pass rate must be read accordingly",
+        "VS-03d indicator null": "where the indicator role is itself null, applicability cannot be determined and the cell is UNCLASSIFIED. Never default to applicable, which manufactures violations, nor to not-applicable, which manufactures passes",
+        "VS-03e no indicator binding": "where an entry's indicator role is unbound, that entry returns UNSCOPED rather than being assessed. The LGD arrears entry is the common case: without a trigger role, judgement-based exposures cannot be identified and their arrears cells carry no tag, so every consuming rule reads them as ordinary arrears values. The consuming rules carry a trigger-blind stamp for exactly this, and the UNSCOPED stamp here keeps the two consistent",
+        "VS-03f closed set": "this list is closed to the stated conditions. Extending it requires a declaration, not a judgement that a field looks conditional. A field that is merely often empty is not an applicability question",
+        "VS-03g use-case scoping": "entries carry their own use case. An entry outside the use case declared at upload is out of scope by declaration and reported as such, distinct from UNSCOPED, which means the declaration was expected and absent",
+        "VS-03h declaration as indicator": "the construction_constants entry is decided by the declared panel scope rather than by a column, which is a documented exception to VG2's usual reading. VG2 forbids the tagged field acting as its own indicator; a declaration is external to the field and satisfies it. But because a declaration cannot be checked against the data, this entry does not run at all without the scope declaration and returns UNSCOPED, never a default. Inferring the scope from a column being constant would be exactly the circularity VG2 exists to prevent",
+        "VS-03i constant is not automatically construction-scoped": "a constant column is not evidence of a scoping exclusion. A flag can be constant because the event is rare and the sample is small. Where the declared scope does not name the exclusion, the column is UNCLASSIFIED and reported, not tagged",
+        "VS-03j populated where not applicable": "a cell tagged NOT-APPLICABLE that nonetheless carries a value is tagged and additionally reported in a populated-where-not-applicable count per role. The tag is correct and the population is a finding; both are needed, because the tag alone tells a consumer to ignore the cell and hides that the source system wrote something it should not have",
+        "VS-03k date against period grain": "where an indicator is a date and the period is coarser, the comparison is made against the period end. Where the event falls inside a period, that period is applicable and earlier periods are not"
+      }
+    }
+  ],
+  "rule_count": {
+    "total": 3,
+    "all_final": true,
+    "tags_covered": ["CENSORED", "STALE-FROZEN", "NOT-APPLICABLE"],
+    "entries_by_model_type": {
+      "LGD_only": ["VS-01.LGD", "VS-03.realisation", "VS-03.regime", "VS-03.arrears"],
+      "PD_only": ["VS-01.PD", "VS-02.grade", "VS-02.income", "VS-02.utilisation", "VS-03.construction", "VS-03.spread", "VS-03.maturity", "VS-03.amortisation"],
+      "both": ["VS-02.arrears", "VS-02.rate"]
+    },
+    "entries_total": { "VS-01": 2, "VS-02": 5, "VS-03": 7 },
+    "guards": { "shared": 11, "VS-01": 12, "VS-02": 12, "VS-03": 11 },
+    "use_case_coverage": {
+      "IFRS9_and_IRB": ["VS-01", "VS-02", "VS-03"],
+      "IRB_only_entries": ["VS-03.regime"]
+    },
+    "product_coverage": "all three rules apply to CRE and MORTGAGE under both model types. Product enters through parameters and interpretation, not through rule selection. Model type enters through entry selection",
+    "removed": {
+      "MISSING": "removed at direction. Plain absence is a profiling question; the hard presence rules in labelconsistency and crossfield name the cases that change a verdict",
+      "VALID": "removed at direction. No residual tag is emitted; VG9 carries the principle that this KB never asserts soundness"
+    },
+    "note": "three rules for the three tags. UNCLASSIFIED, UNSCOPED and OUT-OF-SCOPE-BY-MODEL-TYPE are outcomes, not rules. The per-field work is role binding and declaration, not rule-writing"
+  },
+  "bindings": {
+    "purpose": "concrete bindings established against one extract, recorded as a worked example of the declarations each rule requires. No rule reads this block at run time. Where a binding here and an upload declaration disagree, the declaration governs",
+    "profiles": [
+      {
+        "profile_id": "CRE_IFRS9_quarterly",
+        "model_type": "PD",
+        "extract": "diag01_feature_sim_2006Q1_2017Q4.xlsx",
+        "dictionary": "diag01_feature_simulated_dictionary.xlsx",
+        "product": "CRE",
+        "use_case": ["IFRS9"],
+        "grain": "one row per facility per reporting quarter",
+        "observed_structure": { "rows": 30252, "entities": 1829, "periods": 48, "period_range": "2006-Q1 to 2017-Q4" },
+        "panel_scope": "performing observations only; contemporaneous default rows excluded",
+        "role_bindings": {
+          "entity_id": "facility_id",
+          "period": "reporting_quarter",
+          "segment": ["segment", "property_type", "state"],
+          "forward_labels": ["default_12m", "net_interest_margin", "nim_group"],
+          "exit_indicators": ["paid_off_indicator", "matured_performing_balloon_indicator"],
+          "arrears_measure": "DPD",
+          "priced_rate": "interest_rate",
+          "rate_basis": "interest_type",
+          "internal_grade": "rating",
+          "income_measure": "NOI",
+          "utilisation_measure": "occupancy",
+          "construction_constants": ["default_reg", "default_1q"],
+          "spread_over_benchmark": "spread",
+          "maturity_date": "maturity_date",
+          "maturity_conditional_flags": ["matured_performing_balloon_indicator", "matured_nonperforming_balloon_indicator"],
+          "amortisation_basis": "loan_payment_type",
+          "amortisation_fields": ["outstanding_balance", "debt"],
+          "static_attributes": ["original_balance", "loan_limit", "origination_rating", "origination_date", "loan_type", "spread"],
+          "LGD_roles": "not bound. All LGD entries report OUT-OF-SCOPE-BY-MODEL-TYPE"
+        },
+        "declared_parameters": {
+          "forward_horizon": { "default_12m": "4 quarters", "net_interest_margin": "not declared, UNCLASSIFIED per VS-01l", "nim_group": "not declared, inherits net_interest_margin, UNCLASSIFIED per VS-01l" },
+          "internal_grade_review_frequency": "annual, against a quarterly panel",
+          "rate_basis_values": { "tracking": "Floating, 25762 rows", "fixed": "Fixed, 4490 rows" },
+          "amortisation_basis_values": { "amortising": "Amortizing, 3178 rows", "non_amortising": "Interest only, 27074 rows" },
+          "variance_window": "not declared",
+          "minimum_row_count": "not declared",
+          "not_applicable_share_threshold": "not declared"
+        },
+        "sentinel_limb": {
+          "declared_sentinel": -999.0,
+          "declared_for": ["CLTV", "NOI", "occupancy", "debt_yield", "DSCR"],
+          "observed_sentinel_counts": { "CLTV": 1860, "NOI": 1891, "occupancy": 1883, "debt_yield": 1730, "DSCR": 1860 },
+          "coexisting_blank_counts": { "CLTV": 1366, "NOI": 939, "occupancy": 1142, "debt_yield": 3598, "DSCR": 1366 },
+          "in_scope_of_a_classified_role": ["NOI as income_measure", "occupancy as utilisation_measure"],
+          "sentinel_only_no_variance_entry": ["CLTV", "debt_yield", "DSCR"],
+          "no_sentinel_declared": ["property_value", "debt", "score", "rating"],
+          "no_sentinel_note": "these four carry blanks but no dictionary sentinel entry, so the sentinel limb is UNSCOPED for them per VG6"
+        },
+        "structural_findings": [
+          {
+            "finding": "the dictionary Overview states coverage to 2026-Q2, a year range of 2006 to 2026 and 3,316 facilities. The extract contains 48 quarters ending 2017-Q4 and 1,829 facilities",
+            "resolution": "the extract governs under VG10",
+            "severity": "CRITICAL. VS-01's PD entry depends on the panel end period",
+            "action": "report and halt before running"
+          },
+          {
+            "finding": "three constant fields are named as default triggers by the dictionary but not named as panel scope exclusions: non_accrual_indicator, foreclosure_in_process_indicator, bankruptcy_indicator. matured_nonperforming_balloon_indicator is in the same position and is also a maturity_conditional_flag",
+            "resolution": "UNCLASSIFIED under VS-03i until the scope exclusion is declared",
+            "severity": "MATERIAL",
+            "action": "obtain the declaration"
+          }
+        ],
+        "expected_verdict": "PARTIALLY-CLASSIFIED. VS-01's PD entry runs on default_12m and is UNCLASSIFIED on the two NIM fields pending their horizon. VS-02 runs on arrears, rate, grade, income and utilisation, with the sentinel limb scoped to the five declared fields. VS-03 runs on spread, maturity and amortisation, and returns UNSCOPED on construction_constants pending the scope declaration. All four LGD entries report OUT-OF-SCOPE-BY-MODEL-TYPE"
+      }
+    ]
+  },
+  "provenance": {
+    "lineage": "each rule carries derived_from, the identifiers of the source relationship rows whose value-semantics tags and exception conditions it encodes. These identifiers are lineage only. No rule reads them at run time and no rule depends on the schema, contents or any characteristic of the material used during construction",
+    "selection_rule": "no source row is itself a value-semantics rule, so this KB was built from the value-semantics tag column and the verdict-logic sections rather than from rule rows. The distinct non-trivial semantics stated there are outcome censoring, freezing of a normally-varying field, and applicability conditions expressed as exceptions. The PD entries extend each of the three to the case where the window is a forward observation period rather than a process, the varying field is recorded at a different frequency from the period, and the applicability condition is a panel scope rather than a process fact",
+    "generalisation": "field and table names from the construction material were replaced by declared roles. Candidate names are retained in role_bindings as binding hints and carry no authority, and concrete bindings appear only in the bindings block, which no rule reads. The KB runs against any PD panel or LGD workout extract that can satisfy the role bindings for its declared model type"
+  }
+}

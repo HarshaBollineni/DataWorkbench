@@ -185,7 +185,7 @@ class Step4Tests(unittest.TestCase):
         service.process_snapshot(shared["item_id"], start_date="2026-01-31", end_date="2026-02-05", snapshot_label="shared-range")
         self.assertTrue(service.ingest_summary(shared["item_id"])["overlap_warnings"])
         none = self._profile()
-        staged = self._stage(none["asset_id"], label="none-two")
+        staged = self._stage(none["asset_id"], label="none-two", data=b"a,b\n3,4\n4,5\n")
         service.process_snapshot(staged["item_id"], snapshot_label="none-two")
         self.assertEqual(service.ingest_summary(staged["item_id"])["overlap_warnings"], [])
 

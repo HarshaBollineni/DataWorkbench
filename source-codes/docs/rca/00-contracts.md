@@ -28,7 +28,7 @@ Verified directly against the repo, not assumed from the docs above:
   *filename* as if it were a real product version, which it never was) to
   avoid colliding with these bare `rca_*` legacy names. Once the legacy
   stack was confirmed truly dead by the same grep above, it was removed and
-  the new tables/module renamed to the plain `rca_*`/`rca.py` names they
+  the new tables/module renamed to the plain `rca_*`/RCA service names they
   should have had from the start — see the traceability matrix's naming-
   correction note for the full list of renamed identifiers.
 - The live, user-facing RCA today is `backend/ai/v2/issues.py:rca()`, reached
@@ -120,7 +120,7 @@ convention. That collision risk no longer exists — §0's addendum records
 that the legacy stack was later deleted (confirmed dead, no reachable
 writer, no data), at which point the `v10` disambiguator was removed too:
 the tables below are named plain `rca_*`, and the service module is
-`backend/rca.py`. There is now only one `rca_*` table family, so the
+`backend/domains/rca/service.py`. There is now only one `rca_*` table family, so the
 original "never join across the two families" rule is moot — recorded here
 so a future reader of old commit history understands why the tables were
 briefly named `rca_v10_*` before settling on their current names.

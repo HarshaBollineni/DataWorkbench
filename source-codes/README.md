@@ -47,6 +47,25 @@ asset-sourcing boundary is organized as follows:
   reports, and agent-roster routes.
 - `routers/v2_common.py` contains response helpers shared by v2 router modules.
 
+Production capabilities are being grouped incrementally under `backend/domains`
+without changing the stable router or import contracts. T2-D06 Row Completeness
+is the first domain-aligned package at
+`backend/domains/test_lab/diagnostics/t2_d06_row_completeness`; its former
+`dq_diagnostics` paths remain compatibility imports during the migration.
+T1-D02 follows the same pattern at
+`backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation`, while
+cross-diagnostic Information Value/binning lives under
+`backend/domains/test_lab/shared/binning` for reuse by T4-D14.
+T4-D14 Population Stability Index is domain-aligned at
+`backend/domains/test_lab/diagnostics/t4_d14_population_stability`; its former
+engine, manifest, and runner imports remain compatibility aliases.
+T2-D04 Cross-field Business Rule is domain-aligned at
+`backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule`, with
+generic run-state and decision access under `backend/domains/test_lab/shared`.
+RCA is grouped under `backend/domains/rca`, while the governed Analysis
+Artifact Repository is grouped under `backend/domains/aar`. Compatibility
+aliases preserve their former flat and `analysis_runtime` imports.
+
 The frontend API catalog and transport boundary are documented in `ui/README.md`.
 The current user and technical references are `USER_GUIDE.md` and `TSD.md`.
 Workspace-wide documentation maintenance rules and validation are indexed by

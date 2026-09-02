@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowLeft, BookOpenText, CheckCircle2, ChevronDown, Database, FileSpreadsheet, Loader2, Settings2,
 } from "lucide-react";
@@ -7,14 +7,12 @@ import {
 import AgentConsole from "@/components/AgentConsole";
 import AssetPicker from "@/components/AssetPicker";
 import VersionDiff from "@/components/VersionDiff";
-import WorkflowContextBar from "@/components/WorkflowContextBar";
-import { WorkflowContextProvider, useWorkflowContext } from "@/lib/workflowContext";
 import { specialValueIssues } from "@/lib/specialValueValidation";
 import UploadReviewInventory from "@/pages/testlab/UploadReviewInventory";
 import SourcingValidationReview from "@/pages/testlab/SourcingValidationReview";
 import { useAgentStream } from "@/pages/testlab/stream";
 import {
-  FilePicker, SourcingProgress, StepCard, Summary, WarningsPanel,
+  FilePicker, SourcingProgress, StepCard, Summary,
 } from "@/pages/sourcing/SourcingPresentation";
 import { DICTIONARY_HEADER_FIELDS, SOURCING_STAGES } from "@/pages/sourcing/constants";
 import { highConfidenceHeaderMapping, inferTaxonomyValue, periodDate } from "@/pages/sourcing/workflowHelpers";
@@ -37,11 +35,11 @@ const KIND_CARDS = [
 
 function UploadFlow({ kind, onBack, initialAsset = null }) {
   const resumeSnapshotId = initialAsset?.resumable ? initialAsset.resume_snapshot_id : "";
-  const [targetMode, setTargetMode] = useState(initialAsset ? "existing" : "fresh");
+  const [targetMode] = useState(initialAsset ? "existing" : "fresh");
   const [alias, setAlias] = useState("");
   const [timeBasis, setTimeBasis] = useState("none");
   const [nextId, setNextId] = useState(null);
-  const [selectedAsset, setSelectedAsset] = useState(initialAsset);
+  const [selectedAsset] = useState(initialAsset);
   const [itemId, setItemId] = useState(resumeSnapshotId);
   const [file, setFile] = useState(initialAsset?.resume_has_data ? {
     name: initialAsset.resume_file_name || "Retained source", size: 0, retained: true,
@@ -243,14 +241,6 @@ function UploadFlow({ kind, onBack, initialAsset = null }) {
     }
   }, [alias, fileContext, inventoryRows, product, productOptions, selectedAsset?.display_name, useCase, useCaseOptions]);
 
-  const selectExistingAsset = (selected) => {
-    setSelectedAsset(selected);
-    setTargetVariable(selected?.target_variable || "");
-    setTargetSelectionReviewed(Boolean(selected?.target_variable));
-    setUseCase(selected?.use_case || "");
-    setProduct(selected?.product || "");
-  };
-
   const ensureTarget = async () => {
     if (itemId) return itemId;
     const target = await createUploadTargetV2(targetMode === "fresh"
@@ -381,11 +371,16 @@ function UploadFlow({ kind, onBack, initialAsset = null }) {
     catch (err) { setError(err.message); }
   };
 
-  const card = KIND_CARDS.find((entry) => entry.kind === kind);
   const sourceDictionaryInspection = workbookDiscovery.dictionary?.dictionary_inspection
     || workbookDiscovery.data?.dictionary_inspection;
   const usedDictionaryHeaders = new Set(Object.values(dictionaryHeaderMapping).filter(Boolean));
   const dictionaryMappingRequired = Boolean(sourceDictionaryInspection && !dictionaryHeaderMapping.column_name);
+  const startBlockers = [
+    targetMode === "fresh" && !alias ? "enter an alias" : targetMode === "fresh" && aliasError ? "correct the alias" : null,
+    targetMode === "existing" && !selectedAsset ? "select an existing asset" : null,
+    !file ? "choose an input dataset" : null,
+    dictionaryMappingRequired ? "select the dictionary column-name header" : null,
+  ].filter(Boolean);
   const selectedTargetProfile = inventoryRows.find((row) => row.column_name === targetVariable);
   const targetCandidates = inventoryRows.filter((row) => String(row.role || row.dictionary_role || "").toLowerCase() === "target");
   const selectedTargetValues = selectedTargetProfile
@@ -404,27 +399,16 @@ function UploadFlow({ kind, onBack, initialAsset = null }) {
     setEndDate(profile.period_bounds?.end_date || periodDate(profile.max ?? profile.sample_values?.at(-1), true, quarterLike));
   };
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-5">
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-3"><div className="rounded-md bg-amber-100 p-2 text-amber-700"><card.icon className="h-5 w-5" /></div><div><h2 className="font-semibold text-slate-950">{card.title}</h2><p className="text-sm text-slate-500">One progressive surface: sections reveal as their inputs become available.</p></div></div><Button variant="ghost" size="sm" onClick={onBack}><ArrowLeft className="h-4 w-4" /> Change kind</Button></div>
-
-      <details open={sourceOpen} onToggle={(event) => setSourceOpen(event.currentTarget.open)} className="overflow-hidden rounded-lg border border-slate-200">
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5"><span><strong id="target-heading" className="block text-slate-950">STEP 1 — Sourcing data</strong><small className="text-slate-500">Choose the destination, files, parsing controls and context.</small></span><span className="flex items-center gap-2 text-sm text-slate-500">{sourceComplete && <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-medium text-emerald-700">Profiling complete</span>}<ChevronDown className={`h-4 w-4 transition-transform ${sourceOpen ? "rotate-180" : ""}`} /></span></summary>
+    <section>
+      <details open={sourceOpen} onToggle={(event) => setSourceOpen(event.currentTarget.open)} className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5"><span><strong id="target-heading" className="block text-slate-950">STEP 1 — Sourcing data</strong><small className="text-slate-500">Choose the files, parsing controls and context.</small></span><span className="flex items-center gap-2 text-sm text-slate-500"><Button variant="ghost" size="sm" onClick={(event) => { event.preventDefault(); event.stopPropagation(); onBack(); }}><ArrowLeft className="h-4 w-4" /> Back</Button>{sourceComplete && <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-medium text-emerald-700">Profiling complete</span>}<ChevronDown className={`h-4 w-4 transition-transform ${sourceOpen ? "rotate-180" : ""}`} /></span></summary>
         <div className="border-t border-slate-200 p-5">
         {resumingStaged && <div className="mt-3 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-800"><strong>Continuing staged sourcing.</strong> {restoring ? "Restoring the retained files and profiling results…" : "The retained files and profiling results have been restored. Complete the remaining review, intent and storage decisions below."}</div>}
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-2">
-          <button type="button" disabled={Boolean(itemId)} onClick={() => setTargetMode("fresh")} className={`rounded-md border p-3 text-left disabled:opacity-60 ${targetMode === "fresh" ? "border-dq-purple bg-dq-purple/5" : "border-slate-200"}`}><span className="font-semibold">Fresh Upload</span><span className="mt-1 block text-xs text-slate-500">Create a new asset when sourcing starts.</span></button>
-          <button type="button" disabled={Boolean(itemId)} onClick={() => setTargetMode("existing")} className={`rounded-md border p-3 text-left disabled:opacity-60 ${targetMode === "existing" ? "border-dq-purple bg-dq-purple/5" : "border-slate-200"}`}><span className="font-semibold">Existing</span><span className="mt-1 block text-xs text-slate-500">Add a snapshot to an active asset.</span></button>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          <div><div className="flex min-h-6 items-center justify-between"><Label htmlFor="asset-alias">Alias <span aria-hidden="true">*</span></Label><span className="text-[10px] font-semibold uppercase tracking-wide text-dq-purple">Required</span></div><div className={`mt-1 flex h-10 items-center rounded-md border bg-white ${file && !alias ? "border-red-400" : "border-slate-200"}`}><span className="border-r border-slate-200 bg-slate-50 px-3 font-mono text-sm text-slate-500" aria-label="System ID preview">{nextId?.system_id || "…"}-</span><Input id="asset-alias" required aria-required="true" aria-invalid={Boolean(aliasError || (file && !alias))} aria-describedby="asset-alias-help" className="border-0 shadow-none focus-visible:ring-0" value={alias} onChange={(e) => setAlias(e.target.value)} disabled={Boolean(itemId)} placeholder="e.g. q2_cre_source" /></div>{aliasError ? <p className="mt-1 text-xs text-red-700" role="alert">{aliasError}</p> : file && !alias ? <p className="mt-1 text-xs text-red-700" role="alert">Enter an alias to enable Start sourcing.</p> : null}<p id="asset-alias-help" className="mt-1 text-xs text-slate-400">A short, recognizable name for this data asset. The system ID prefix is assigned when sourcing starts.</p></div>
+          <div><div className="flex min-h-6 items-center"><Label htmlFor="time-basis">Does this data cover a reporting period?</Label></div><select id="time-basis" className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={timeBasis} onChange={(e) => setTimeBasis(e.target.value)} disabled={Boolean(itemId)}><option value="period">Yes — month, quarter, year, or another period</option><option value="none">No — not tied to a reporting period</option></select><p className="mt-1 text-xs text-slate-400">Select Yes when each upload represents a defined reporting window. This supports period dates and comparisons between uploads.</p></div>
         </div>
-
-        {targetMode === "fresh" ? (
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            <div><Label htmlFor="asset-alias">Alias</Label><div className="mt-1 flex h-10 items-center rounded-md border border-slate-200 bg-white"><span className="border-r border-slate-200 bg-slate-50 px-3 font-mono text-sm text-slate-500" aria-label="System ID preview">{nextId?.system_id || "…"}-</span><Input id="asset-alias" className="border-0 shadow-none focus-visible:ring-0" value={alias} onChange={(e) => setAlias(e.target.value)} disabled={Boolean(itemId)} placeholder="e.g. q2_cre_source" /></div>{aliasError && <p className="mt-1 text-xs text-red-700" role="alert">{aliasError}</p>}<p className="mt-1 text-xs text-slate-400">Preview only; the allocated system ID is assigned when sourcing starts.</p></div>
-            <div><Label htmlFor="time-basis">Time basis</Label><select id="time-basis" className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={timeBasis} onChange={(e) => setTimeBasis(e.target.value)} disabled={Boolean(itemId)}><option value="period">Period</option><option value="none">No time basis</option></select><p className="mt-1 text-xs text-slate-400">Set once for this asset.</p></div>
-          </div>
-        ) : (
-          <div className="mt-4"><Label>Existing asset</Label><p className="mb-2 text-xs text-slate-400">Selection is required before sourcing starts.</p><AssetPicker kind={kind} value={selectedAsset} onChange={selectExistingAsset} excludeRequiresReupload={false} /></div>
-        )}
 
         <div className="mt-6 grid gap-5 lg:grid-cols-2">
           <FilePicker required file={file} onChange={(next) => inspectSelected(next, "data")} onRemove={file && !itemId ? () => { setFile(null); setWorkbookDiscovery((current) => ({ ...current, data: null })); if (!dictFile) setDictionaryHeaderMapping({}); } : undefined} disabled={busy || sourceComplete} />
@@ -476,12 +460,12 @@ function UploadFlow({ kind, onBack, initialAsset = null }) {
 
         <SourcingProgress progress={progress} fileName={file?.name} />
 
-        <div className="mt-5 flex items-center justify-between gap-4 border-t border-slate-200 pt-4"><p className="text-xs text-slate-500"><Database className="mr-1 inline h-4 w-4" /> Files are retained through the existing DataWorkbench snapshot and dictionary-version model.</p><Button type="button" onClick={startSourcing} disabled={!targetReady || !file || dictionaryMappingRequired || busy || sourceComplete}>{busy && <Loader2 className="h-4 w-4 animate-spin" />}{sourceComplete ? "Source profiling complete" : resumingStaged ? "Continue sourcing" : "Start sourcing"}</Button></div>
+        <div className="mt-5 border-t border-slate-200 pt-4"><div className="flex items-center justify-between gap-4"><p className="text-xs text-slate-500"><Database className="mr-1 inline h-4 w-4" /> Files are retained through the existing DataWorkbench snapshot and dictionary-version model.</p><Button type="button" onClick={startSourcing} disabled={startBlockers.length > 0 || busy || sourceComplete}>{busy && <Loader2 className="h-4 w-4 animate-spin" />}{sourceComplete ? "Source profiling complete" : resumingStaged ? "Continue sourcing" : "Start sourcing"}</Button></div>{!sourceComplete && !busy && startBlockers.length > 0 && <p className="mt-2 text-right text-xs text-amber-700"><strong>Before you can start:</strong> {startBlockers.join("; ")}.</p>}</div>
         </div>
       </details>
 
       <Summary kind={kind} summaries={summaries} />
-      {sourceComplete && <StepCard step="2" title="Review data validations" subtitle="Deterministic reconciliation, generated rules and the observed profile."><SourcingValidationReview ingest={ingest} inventory={inventoryRows} summaries={summaries} />{schemaMismatch && <section className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-4"><p className="font-semibold text-amber-950">Schema differences require confirmation</p><ul className="mt-2 list-disc pl-5 text-sm text-amber-900">{(ingest.schema_check.messages || []).map((message) => <li key={message}>{message}</li>)}</ul><p className="mt-3 text-sm text-amber-900">{intent === "full_replacement" ? "The replacement will establish a new reference schema for future uploads." : "Comparability checks may skip columns whose definitions differ."}</p><label className="mt-3 flex items-start gap-2 text-sm text-amber-950"><input type="checkbox" checked={schemaConfirmed} onChange={(event) => setSchemaConfirmed(event.target.checked)} />I confirm that I reviewed these schema differences.</label></section>}</StepCard>}
+      {sourceComplete && <StepCard step="2" title="Review data validations" subtitle="Review actionable data-quality and schema items, with profile details available for context."><SourcingValidationReview ingest={ingest} inventory={inventoryRows} summaries={summaries} />{schemaMismatch && <section className="mt-4 rounded-lg border border-amber-300 bg-amber-50 p-4"><p className="font-semibold text-amber-950">Schema differences require confirmation</p><ul className="mt-2 list-disc pl-5 text-sm text-amber-900">{(ingest.schema_check.messages || []).map((message) => <li key={message}>{message}</li>)}</ul><p className="mt-3 text-sm text-amber-900">{intent === "full_replacement" ? "The replacement will establish a new reference schema for future uploads." : "Comparability checks may skip columns whose definitions differ."}</p><label className="mt-3 flex items-start gap-2 text-sm text-amber-950"><input type="checkbox" checked={schemaConfirmed} onChange={(event) => setSchemaConfirmed(event.target.checked)} />I confirm that I reviewed these schema differences.</label></section>}</StepCard>}
 
       {sourceComplete && <StepCard step="3" title="Normalize column definitions" subtitle="Review types, roles, valid values and special-value handling."><UploadReviewInventory ref={inventoryRef} item={{ item_id: itemId, kind }} mapping={ingest?.mapping || []} deferSave onRowsLoaded={receiveInventoryRows} onSaved={async () => setIngest(await getIngestV2(itemId))} /></StepCard>}
 
@@ -501,7 +485,6 @@ function UploadFlow({ kind, onBack, initialAsset = null }) {
       {sourceComplete && <StepCard step="5" title="Save and proceed" subtitle="Save normalized definitions and promote the snapshot to Test Lab." testId="upl-step-5"><p className="text-sm text-slate-500">This saves the normalized column definitions and storage decisions together, then makes the snapshot available in Test Lab.</p><div className="mt-4 flex flex-wrap items-center gap-3"><Button disabled={Boolean(completion) || Boolean(processDisabledReasons.length) || processing} onClick={process}>{processing && <Loader2 className="h-4 w-4 animate-spin" />}{processing ? "Saving and proceeding…" : completion ? "Saved and ready" : "Save and Proceed"}</Button>{completion && committedAssetId && <Link to={`/test-lab?asset=${encodeURIComponent(committedAssetId)}`} className="inline-flex h-10 items-center rounded-md bg-dq-purple px-4 text-sm font-medium text-white hover:bg-dq-purple/90">Go to Test Lab</Link>}</div>{!completion && !processing && processDisabledReasons.length > 0 && <p className="mt-2 text-xs text-slate-500">Before you can proceed: {processDisabledReasons.join("; ")}.</p>}{ingest.overlap_warnings?.map((warning) => <p key={warning} className="mt-2 text-sm text-amber-700">{warning}</p>)}</StepCard>}
       {completion && <details data-testid="completion-summary" className="mt-5 overflow-hidden rounded-md border border-emerald-200 bg-emerald-50"><summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4"><h3 className="font-semibold text-emerald-950">Completion summary</h3><span className="text-xs font-medium text-emerald-800">Stored successfully · View details</span></summary><pre className="border-t border-emerald-200 p-4 whitespace-pre-wrap text-xs text-emerald-900">{JSON.stringify(completion, null, 2)}</pre></details>}
       {selectedAsset?.superseded_snapshot_count > 0 && <div className="mt-4 text-sm"><span>View / restore previous version:</span>{(selectedAsset.superseded_versions || []).map((version) => <span key={version} className="ml-2"><button type="button" className="text-dq-purple underline" onClick={() => restore(version)}>Restore v{version}</button><button type="button" className="ml-2 text-dq-purple underline" onClick={() => setRestoreCompareVersion(restoreCompareVersion === version ? null : version)}>Compare</button></span>)}{restoreCompareVersion && <VersionDiff assetId={selectedAsset.asset_id} versionA={restoreCompareVersion} versionB={selectedAsset.current_version_no} />}</div>}
-      {ingest && <WarningsPanel warnings={ingest.warnings} />}
       {error && <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
       <div className="mt-4"><AgentConsole events={stream.events} running={stream.running} /></div>
       {ingest?.status === "ready" && <p className="mt-4 flex items-center gap-2 text-sm text-emerald-700"><CheckCircle2 className="h-4 w-4" /> Ready — warnings remain reviewable and never block the data check.</p>}
@@ -510,17 +493,13 @@ function UploadFlow({ kind, onBack, initialAsset = null }) {
 }
 
 function SourcingScreen() {
+  const navigate = useNavigate();
   const [kind, setKind] = useState("");
   const [pickerKind, setPickerKind] = useState("");
   const [startAsset, setStartAsset] = useState(null);
-  const { asset, setAsset } = useWorkflowContext();
   const chooseExisting = (nextKind) => setPickerKind((current) => current === nextKind ? "" : nextKind);
-  const changeContext = () => { setKind(""); setStartAsset(null); setPickerKind(asset?.kind || "dataset"); };
-  const openAsset = (selected, nextKind) => {
-    setAsset(selected);
-    setStartAsset(selected);
-    setKind(nextKind);
-    setPickerKind("");
+  const viewExisting = (selected) => {
+    navigate(`/test-lab?asset=${encodeURIComponent(selected.asset_id)}`);
   };
   const addNew = (nextKind) => {
     setStartAsset(null);
@@ -531,9 +510,45 @@ function SourcingScreen() {
     setKind("");
     setStartAsset(null);
   };
-  return <main className="min-h-screen bg-slate-50 p-8"><WorkflowContextBar onChange={changeContext} /><div className="mb-8"><h1 className="text-2xl font-bold text-slate-950">Data Sourcing</h1><p className="mt-1 text-sm text-slate-500">Choose a source kind, then work down one progressive upload surface.</p></div>{!kind ? <div className="grid gap-5 xl:grid-cols-2">{KIND_CARDS.map(({ kind: nextKind, title, icon: Icon, text }) => <section key={nextKind} className="rounded-lg border border-slate-200 bg-white p-6"><div className="flex items-center gap-3"><div className="rounded-md bg-amber-100 p-2 text-amber-700"><Icon className="h-5 w-5" /></div><h2 className="text-lg font-semibold text-slate-950">{title}</h2></div><p className="mt-3 text-sm text-slate-600">{text}</p><div className="mt-5 flex flex-wrap gap-2"><button type="button" className="rounded-md border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:border-dq-purple" onClick={() => chooseExisting(nextKind)}>View Existing</button><button type="button" className="rounded-md bg-dq-purple px-3 py-2 text-sm font-medium text-white hover:bg-dq-purple/90" onClick={() => addNew(nextKind)}>Add New</button></div>{pickerKind === nextKind && <div className="relative z-10 mt-3 rounded-md border border-dq-purple/30 bg-slate-50 p-2" data-testid="existing-popover"><AssetPicker kind={nextKind} value={asset?.kind === nextKind ? asset : null} onChange={(selected) => openAsset(selected, nextKind)} excludeRequiresReupload={true} allowResumable /></div>}</section>)}</div> : <UploadFlow key={`${kind}:${startAsset?.resume_snapshot_id || startAsset?.asset_id || "new"}`} kind={kind} initialAsset={startAsset} onBack={backToKinds} />}</main>;
+  return (
+    <main className="min-h-screen bg-slate-50 p-5 md:p-6">
+      <div className="mb-4">
+        <h1 className="text-2xl font-bold text-slate-950">Data Sourcing</h1>
+        <p className="mt-1 text-sm text-slate-500">Create a new data asset or browse data already sourced.</p>
+      </div>
+      {!kind ? (
+        <div className="grid gap-5 xl:grid-cols-2">
+          {KIND_CARDS.map(({ kind: nextKind, title, icon: Icon, text }) => (
+            <section key={nextKind} className="rounded-lg border border-slate-200 bg-white p-6">
+              <div className="flex items-center gap-3">
+                <div className="rounded-md bg-amber-100 p-2 text-amber-700"><Icon className="h-5 w-5" /></div>
+                <h2 className="text-lg font-semibold text-slate-950">{title}</h2>
+              </div>
+              <p className="mt-3 text-sm text-slate-600">{text}</p>
+              <div className="mt-5 flex flex-wrap gap-2">
+                <button type="button" className="rounded-md bg-dq-purple px-3 py-2 text-sm font-medium text-white hover:bg-dq-purple/90" onClick={() => addNew(nextKind)}>Create New {title}</button>
+                <button type="button" className="rounded-md border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:border-dq-purple" onClick={() => chooseExisting(nextKind)}>View Existing {title}s</button>
+                <span className="inline-flex items-center gap-2">
+                  <button type="button" disabled aria-describedby={`future-snapshot-${nextKind}`} className="cursor-not-allowed rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-400">Upload New Snapshot to Existing {title}</button>
+                  <span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-amber-800">Coming soon</span>
+                </span>
+              </div>
+              <p id={`future-snapshot-${nextKind}`} className="mt-3 text-xs text-slate-500">Future capability for adding a separately stored period, segment, region, scenario, or other comparable population to an existing {title.toLowerCase()}.</p>
+              {pickerKind === nextKind && (
+                <div className="relative z-10 mt-3 rounded-md border border-dq-purple/30 bg-slate-50 p-2" data-testid="existing-popover">
+                  <AssetPicker kind={nextKind} value={null} onChange={viewExisting} excludeRequiresReupload={true} allowResumable />
+                </div>
+              )}
+            </section>
+          ))}
+        </div>
+      ) : (
+        <UploadFlow key={`${kind}:${startAsset?.resume_snapshot_id || startAsset?.asset_id || "new"}`} kind={kind} initialAsset={startAsset} onBack={backToKinds} />
+      )}
+    </main>
+  );
 }
 
 export default function DataSourcing() {
-  return <WorkflowContextProvider><SourcingScreen /></WorkflowContextProvider>;
+  return <SourcingScreen />;
 }

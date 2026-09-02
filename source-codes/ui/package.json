@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test:unit": "node --test tests/*.test.js",
+    "test:unit": "node --test \"tests/**/*.test.js\"",
     "preview": "vite preview",
     "test:e2e": "playwright test",
     "check:reachability": "node scripts/check-reachability.mjs"

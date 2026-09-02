@@ -186,7 +186,7 @@ def refresh_derived(asset_id: str, actor: str | None = None, reason: str = "acti
             # Artefact creation is a deterministic projection of retained
             # profile evidence, after the snapshot has reached its committed
             # ready state. It never rewrites variable_inventory.
-            from analysis_runtime.data_sourcing_artifacts import persist_snapshot_profile_artifacts
+            from domains.aar.data_sourcing import persist_snapshot_profile_artifacts
             persist_snapshot_profile_artifacts(item["item_id"], actor=actor)
         recomputed.append(item["item_id"])
     return {"asset_id": asset_id, "reason": reason, "actor": actor,

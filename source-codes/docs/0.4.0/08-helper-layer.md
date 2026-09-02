@@ -21,7 +21,7 @@ decisions, and cannot alter a verdict. The normal run path remains zero-model-ca
 |---|---|
 | `ai/test_kit.py` | THE single governed helper catalogue (CFR-06/APL-37) — registers gx metrics, RCA probes, and tool_registry tools under one flat namespace, callable through one logging path. |
 | `ai/tool_registry.py` | Role-gated, schema-validated, egress-checked wrapper layer over a handful of existing engines; delegates its catalogue entirely to `ai/test_kit.py` (no store of its own). |
-| `ai/rca_helpers.py` | Twelve deterministic pandas/numpy RCA probes (`fn(df, params) -> dict`) an agent or human can point at any loaded DataFrame instead of writing ad hoc analysis code. |
+| `domains/rca/analysis_helpers.py` | Twelve deterministic pandas/numpy RCA probes (`fn(df, params) -> dict`) an agent or human can point at any loaded DataFrame instead of writing ad hoc analysis code. |
 | `ai/code_sandbox.py` | AST-guarded sandbox that validates and executes pandas/numpy/scipy code against a DataFrame and returns `{ok, result/error, traceback}` — never a bare exception. LIVE (`ai/v2/service.py`). |
 | `ai/control_plane.py` | System-owned `{model, house, temperature, effort}` config per agent role — users never pick these knobs. LIVE for normal effort routing and the opt-in `role_mapping_verifier` role used before a Test Lab run freezes. |
 | `ai/llm.py` | Lazy Azure/OpenAI client construction + a schema/stats prompt-block builder; importing it never requires an API key. The optional Test Lab role-verification request calls it once through the control-plane role; normal runs make zero model calls. |
@@ -51,7 +51,7 @@ decisions, and cannot alter a verdict. The normal run path remains zero-model-ca
 | `ai/discovery_state.py` | Deterministic per-column profiling state machine feeding Newton's discovery phase. |
 | `ai/framework_context.py` | The bridge between a database's declared framework mapping and the rest of the platform. |
 | `ai/prompts.py` | Static system/user prompt text for both AI layers. |
-| `ai/rca_checker.py` | RCA Checker agent that judges candidate root causes (call-name Noether). |
+| `domains/rca/effective_challenge.py` | RCA Checker agent that judges candidate root causes (call-name Noether). |
 | `ai/report_pdf.py` | PDF report generator for the Database Understanding report. |
 | `ai/frame_assembler.py` | **Deleted in the 2.10 sweep** — broken at baseline (module-level import of the deleted `database`), zero importers. |
 | `ai/rule_generator.py` | **Deleted in the 2.10 sweep** — broken at baseline, zero importers. |
@@ -145,12 +145,14 @@ allowlists that named them (`backend/tests/test_helpers.py`'s
 `_IMPORT_ALLOWLIST`, `tests/test_reachability.py`'s `KEEP_REASONS`) are now
 empty of those three rows; only `ai/effort.py` (kept — imported relatively
 by `ai/bayes.py`/`credit_risk_domain.py`/`db_understanding.py`/
-`rca_checker.py`), `ai/skill_form.py`, `verify_plan8.py` itself, and the
-PSI-parity `spike_*.py` scripts remain in the keep-list. Historically, F-01
+`rca_checker.py`) and `ai/skill_form.py` remain in the production keep-list. The historical
+`verify_plan8.py` gate now lives under `docs/0.4.0/verification`, and the
+PSI-parity `spike_*.py` scripts are no longer part of the production keep-list. Historically, F-01
 ("references the deleted `database.py`") applied to three of them at the
-baseline. That condition is resolved: `spike_recalibrate.py`, `spike_gx.py`,
+baseline. Those scripts are archived under `experiments/archive/pre-domain-gx-parity`. That
+condition is resolved: `spike_recalibrate.py`, `spike_gx.py`,
 and `spike_integration.py` now use the deterministic, spike-only
-`backend/spike_fixtures.py` adapter and exit 0. They remain parity evidence
+`spike_fixtures.py` adapter and exit 0. They remain parity evidence
 only; they do not enable PSI or any B2 diagnostic.
 
 ## 4. Logging contract
@@ -196,8 +198,8 @@ pages; grep across the tree found zero import sites for each deleted file).
 | `ai/skills.py` | **Live** — imported by `seeds/__init__.py:97` (`seed_agents`, boot path) |
 | `ai/skill_form.py` | Imported lazily by live `ai/skills.py` (`save_prompt`/load validation) |
 | `ai/effort.py` | **Live** — imported (relative) by `ai/bayes.py`/`credit_risk_domain.py`/`db_understanding.py`/`rca_checker.py`, which `ai/skills.py` lazy-loads |
-| `verify_plan8.py` | Validation gate; rebuilt against the new register **in Phase 3** (rule 7) — see the Phase-3 addendum below |
-| `gx/` + `spike_gx.py`, `spike_integration.py`, `spike_metrics.py`, `spike_recalibrate.py`, `spike_fixtures.py` | PSI parity evidence only. The three former F-01 spikes (`spike_gx.py`, `spike_integration.py`, `spike_recalibrate.py`) now use deterministic spike-only fixtures and exit 0; none enables PSI or a B2 diagnostic. |
+| `docs/0.4.0/verification/verify_plan8.py` | Archived validation gate; rebuilt against the register in Phase 3 and superseded by current pytest gates |
+| `experiments/archive/pre-domain-gx-parity/` | Archived PSI parity evidence only; none of these scripts is part of production or enables a diagnostic |
 | `ui/src/api/client.js` retired wizard block | Removed at the Phase-6 cutover. The live v2 client now serves Data Sourcing and the register-driven Test Lab; no retired wizard caller remains. |
 
 **Phase-3 addendum (30–31 Jul 2026).** `ai/test_manager.py` and

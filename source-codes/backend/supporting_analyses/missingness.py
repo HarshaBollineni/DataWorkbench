@@ -7,7 +7,7 @@ from typing import Any
 import pandas as pd
 
 import system_db as db
-from analysis_runtime.artifacts import AnalysisArtifactRepository
+from domains.aar.repository import AnalysisArtifactRepository
 from analysis_runtime.contracts import (
     AnalysisScope,
     FrozenAnalysisManifest,

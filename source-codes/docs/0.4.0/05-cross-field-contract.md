@@ -2,7 +2,7 @@
 
 Derived from S5 (`cross_field_rule_engine.py`), S6 (`report.txt`), S9
 (`KB_cross_field_reference_2.pdf`) and the S10 chart. The engine becomes a **pure core** under
-`backend/dq_diagnostics/engines/cross_field/`; rules come **only** from the published KB (CFR-03);
+`backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/`; rules come **only** from the published KB (CFR-03);
 the structured result is primary and every rendering derives from it (CFR-10).
 
 ## 1. Rule model (CFR-02) — every S9 column accounted for

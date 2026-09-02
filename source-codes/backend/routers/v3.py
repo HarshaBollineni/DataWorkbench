@@ -15,7 +15,7 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, Response, Uplo
 from pydantic import BaseModel
 
 import kb
-import rca
+from domains.rca import service as rca
 import system_db as s
 import taxonomy
 import tenancy
@@ -136,14 +136,14 @@ def _require_kb_reviewer(p: dict) -> None:
 @router.get("/knowledge/diagnostic-packages/6")
 def list_row_completeness_packages(authorization: str | None = Header(default=None)):
     p = _principal(authorization)
-    from dq_diagnostics import row_completeness_knowledge as knowledge
+    from domains.test_lab.diagnostics.t2_d06_row_completeness import knowledge
     return knowledge.list_package_versions(p["tenant_id"])
 
 
 @router.get("/knowledge/diagnostic-packages/6/template")
 def download_row_completeness_template(authorization: str | None = Header(default=None)):
     p = _principal(authorization)
-    from dq_diagnostics import row_completeness_knowledge as knowledge
+    from domains.test_lab.diagnostics.t2_d06_row_completeness import knowledge
     payload = json.dumps(knowledge.editable_template(p["tenant_id"]), indent=2,
                          ensure_ascii=False).encode("utf-8")
     return Response(content=payload, media_type="application/json", headers={
@@ -156,7 +156,7 @@ async def upload_row_completeness_package(file: UploadFile = File(...),
                                           authorization: str | None = Header(default=None)):
     p = _principal(authorization)
     _require_kb_editor(p)
-    from dq_diagnostics import row_completeness_knowledge as knowledge
+    from domains.test_lab.diagnostics.t2_d06_row_completeness import knowledge
     try:
         return knowledge.upload_package_draft(
             await file.read(), file.filename or "row-completeness-rules.json",
@@ -170,7 +170,7 @@ def create_row_completeness_package_draft(body: dict,
                                           authorization: str | None = Header(default=None)):
     p = _principal(authorization)
     _require_kb_editor(p)
-    from dq_diagnostics import row_completeness_knowledge as knowledge
+    from domains.test_lab.diagnostics.t2_d06_row_completeness import knowledge
     try:
         return knowledge.upload_package_draft(
             json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -184,7 +184,7 @@ def activate_row_completeness_package(version_id: str, body: DiagnosticPackageAc
                                       authorization: str | None = Header(default=None)):
     p = _principal(authorization)
     _require_kb_reviewer(p)
-    from dq_diagnostics import row_completeness_knowledge as knowledge
+    from domains.test_lab.diagnostics.t2_d06_row_completeness import knowledge
     try:
         return knowledge.activate_package(
             version_id, body.reason, p["username"], p["tenant_id"])

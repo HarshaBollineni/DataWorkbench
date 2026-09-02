@@ -44,7 +44,7 @@ class RegisterSeedTests(unittest.TestCase):
     def test_exactly_four_executable_rows(self):
         rows = register.list_register()
         executable = [r for r in rows if r["workflow_status"] == "executable"]
-        self.assertEqual([r["diagnostic_id"] for r in executable], [2, 4, 6, 14])
+        self.assertEqual([r["diagnostic_id"] for r in executable], [2, 6, 11, 14])
         pending = [r for r in rows if r["workflow_status"] != "executable"]
         self.assertEqual(len(pending), 5)
         self.assertTrue(all(r["workflow_status"] == "workflow_pending" for r in pending))
@@ -79,10 +79,10 @@ class RegisterSeedTests(unittest.TestCase):
 
     def test_fwk18_enabled_by_only_set_for_executable_rows(self):
         rows = {r["diagnostic_id"]: r for r in register.list_register()}
-        for diag_id in (2, 4, 6, 14):
+        for diag_id in (2, 6, 11, 14):
             self.assertIsNotNone(rows[diag_id]["enabled_by"])
             self.assertNotEqual(rows[diag_id]["enabled_by"], "")
-        for diag_id in EXPECTED_IDS - {2, 4, 6, 14}:
+        for diag_id in EXPECTED_IDS - {2, 6, 11, 14}:
             self.assertIsNone(rows[diag_id]["enabled_by"], f"diagnostic {diag_id} must have enabled_by = null")
 
     def test_fwk07_every_register_row_has_a_valid_decision_type(self):
@@ -101,16 +101,18 @@ class RequireExecutableTests(unittest.TestCase):
         register.seed_register()
 
     def test_require_executable_on_pending_diagnostic_raises_workflow_pending(self):
-        with self.assertRaises(register.WorkflowPendingError) as ctx:
-            register.require_executable(8)
-        self.assertEqual(str(ctx.exception), "workflow not yet defined")
-        self.assertEqual(str(ctx.exception), register.REFUSAL_WORKFLOW_PENDING)
+        for diagnostic_id in (4, 8):
+            with self.subTest(diagnostic_id=diagnostic_id):
+                with self.assertRaises(register.WorkflowPendingError) as ctx:
+                    register.require_executable(diagnostic_id)
+                self.assertEqual(str(ctx.exception), "workflow not yet defined")
+                self.assertEqual(str(ctx.exception), register.REFUSAL_WORKFLOW_PENDING)
 
     def test_require_executable_on_the_executable_diagnostic_succeeds(self):
-        row = register.require_executable(4)
-        self.assertEqual(row["diagnostic_id"], 4)
         self.assertEqual(register.require_executable(2)["diagnostic_id"], 2)
+        self.assertEqual(register.require_executable(6)["diagnostic_id"], 6)
         self.assertEqual(register.require_executable(14)["diagnostic_id"], 14)
+        self.assertEqual(register.require_executable(11)["diagnostic_id"], 11)
 
     def test_unknown_defer_row_id_and_pure_nonsense_id_are_indistinguishable(self):
         """get_diagnostic(3) — a real S8 defer-row id, never registered —
@@ -170,8 +172,8 @@ class CoverageMapTests(unittest.TestCase):
 
     def test_coverage_map_splits_register_executable_vs_pending(self):
         cov = register.coverage_map()
-        self.assertEqual(cov["executable"], [2, 4, 6, 14])
-        self.assertEqual(set(cov["workflow_pending"]), EXPECTED_IDS - {2, 4, 6, 14})
+        self.assertEqual(cov["executable"], [2, 6, 11, 14])
+        self.assertEqual(set(cov["workflow_pending"]), EXPECTED_IDS - {2, 6, 11, 14})
 
     def test_fwk16_scoring_weights_re_derived_with_coverage_honesty(self):
         """3-T10 / FWK-16: weights are re-derived for the 9-row register

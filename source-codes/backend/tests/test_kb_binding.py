@@ -101,7 +101,7 @@ class BindingStatusInvariantTests(unittest.TestCase):
         This is narrower than the Phase-5-era claim ("kb.py never binds
         anything"), which is no longer true of the system as a whole:
         ``publish_rule`` now calls
-        ``dq_diagnostics.engines.cross_field.binder.bind_rule`` (Phase 6,
+        ``domains.test_lab.diagnostics.t2_d04_cross_field_business_rule.binder.bind_rule`` (Phase 6,
         KB-08) as the automatic, signature-exact binding trigger. What
         this test still proves — and the invariant that actually matters —
         is single-writer discipline: the literal string 'bound' is written
@@ -120,7 +120,7 @@ class BindingStatusInvariantTests(unittest.TestCase):
         """Repo-wide proof (not just kb.py): grep every backend .py file
         (excluding tests) for an inline ``"binding_status": "bound"`` /
         ``'binding_status': 'bound'`` literal — it must appear in exactly
-        one file, dq_diagnostics/engines/cross_field/binder.py (KB-08/09:
+        one file, domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/binder.py (KB-08/09:
         a rule reaches 'bound' only through the signature-exact binder,
         never a second ad hoc write path)."""
         backend_root = Path(kb.__file__).resolve().parent
@@ -133,7 +133,7 @@ class BindingStatusInvariantTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8", errors="ignore")
             if pattern.search(text):
                 hits.append(str(rel).replace("\\", "/"))
-        self.assertEqual(hits, ["dq_diagnostics/engines/cross_field/binder.py"])
+        self.assertEqual(hits, ["domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/binder.py"])
 
     def test_require_bound_excludes_reference_only_and_unparsed_from_retrieval(self):
         """Phase 6 wires kb.publish_rule to attempt binding automatically

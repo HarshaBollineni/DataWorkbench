@@ -12,13 +12,22 @@ React and Vite frontend for DataWorkbench.
 - `src/components` contains reusable application components; generated UI
   primitives remain under `src/components/ui`.
 - `src/lib` contains framework-independent display and workflow helpers.
-- `src/pages` contains route-level screens. Feature-specific components should
-  be grouped below a matching page subdirectory, such as `src/pages/testlab`.
+- `src/pages` contains route-level screens and temporary compatibility exports.
+- `src/features` contains domain-owned workflow code. Test Lab diagnostics use
+  `src/features/test-lab/diagnostics/<test-diagnostic-name>`; T2-D06 Row
+  Completeness, T1-D02 Feature Target Separation, T2-D04 Cross-field Business
+  Rule, and T4-D14 Population Stability Index are migrated features.
+- `src/features/test-lab/shared` contains cross-diagnostic presentation such as
+  binning evidence consumed by T1-D02, T4-D14, and RCA.
+- `src/features/rca` owns the RCA case journey and evidence components.
+- `src/features/aar` owns the Analysis Artifact Repository route implementation
+  and its catalogue, lineage, retained-run, and saved-schema views.
 
 When adding an endpoint, put its path and response-specific behavior in
 `client.js`. Extend `transport.js` only when the behavior applies across API
 domains. Keep route-level pages focused on composition; move reusable state and
-behavior into feature hooks, components, or `src/lib`.
+behavior into its domain feature package, a shared feature component, or
+`src/lib`.
 
 ## Development
 
@@ -31,6 +40,9 @@ npm run dev
 ```
 
 ## Verification
+
+Unit tests mirror their feature paths under `tests/unit`; `npm run test:unit`
+discovers both nested domain tests and remaining flat compatibility tests.
 
 ```powershell
 npm run lint

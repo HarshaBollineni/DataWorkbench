@@ -23,7 +23,7 @@ import { BindingBadge, ParseReportPanel, PlaybackSummary } from "@/pages/knowled
 const CATEGORIES = ["structure", "lineage", "domain_fact", "ownership", "case_history"];
 
 function LifecycleBadge({ state }) {
-  const variant = state === "published" ? "success" : state === "archived" ? "secondary"
+  const variant = state === "published" ? "success" : ["archived", "superseded"].includes(state) ? "secondary"
     : state === "under_suspicion" ? "destructive" : state === "pending_review" ? "warning" : "outline";
   return <Badge variant={variant}>{state}</Badge>;
 }
@@ -174,7 +174,9 @@ function DocumentsPanel() {
 
 function PublishRow({ rule, onDone }) {
   const [category, setCategory] = useState(rule.category || "domain_fact");
-  const [relatedTables, setRelatedTables] = useState("");
+  const [relatedTables, setRelatedTables] = useState(
+    (rule.related_tables_json || []).join(", "),
+  );
   const [reason, setReason] = useState("");
   const [error, setError] = useState("");
 
@@ -184,6 +186,7 @@ function PublishRow({ rule, onDone }) {
       await publishKbRuleV3(rule.rule_id, {
         category,
         related_tables: relatedTables.split(",").map((t) => t.trim()).filter(Boolean),
+        related_columns: rule.related_columns_json || [],
       });
       onDone();
     } catch (e) { setError(e.message); }
@@ -253,7 +256,7 @@ function RulesPanel() {
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <select className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm" value={lifecycleFilter} onChange={(e) => setLifecycleFilter(e.target.value)}>
           <option value="">Any lifecycle state</option>
-          {["draft", "pending_review", "published", "under_suspicion", "archived"].map((s) => <option key={s}>{s}</option>)}
+          {["draft", "pending_review", "published", "superseded", "under_suspicion", "archived"].map((s) => <option key={s}>{s}</option>)}
         </select>
         <select className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm" value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
           <option value="">Any category</option>

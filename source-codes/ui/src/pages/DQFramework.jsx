@@ -23,7 +23,7 @@ export default function DQFramework() {
     <main className="min-h-screen bg-slate-50 p-8">
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-slate-950">DQ Framework</h1>
-        <p className="mt-1 text-sm text-slate-500">Two-stage analytics and modeling data-quality framework. The register shows current coverage honestly: cross-field business rules are executable now, while the remaining diagnostics stay workflow pending until their governed run paths are enabled.</p>
+        <p className="mt-1 text-sm text-slate-500">Two-stage analytics and modeling data-quality framework. The register shows current coverage honestly: diagnostics undergoing additional testing and refinement remain workflow pending until their governed run paths are enabled.</p>
       </div>
       <div className="mb-5 flex gap-2">
         {TABS.map(([key, label]) => (
