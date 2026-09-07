@@ -46,6 +46,8 @@ ISSUE_ROUTES = {
 
 DIAGNOSTIC_ROUTES = {
     ("GET", "/api/v2/items/{item_id}/diagnostics/board"),
+    ("GET", "/api/v2/items/{item_id}/diagnostics/board/summary"),
+    ("GET", "/api/v2/items/{item_id}/diagnostics/board/cards/{diagnostic_id}"),
     ("POST", "/api/v2/items/{item_id}/diagnostics/manifest"),
     ("PATCH", "/api/v2/diagnostics/manifests/{run_id}"),
     ("GET", "/api/v2/diagnostics/manifests/{run_id}"),

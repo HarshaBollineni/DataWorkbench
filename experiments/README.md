@@ -15,3 +15,7 @@ lives under [`../source-codes/`](../source-codes/).
 
 The governing naming and placement decision is
 [`../source-codes/docs/architecture/domain-folder-and-naming-convention.md`](../source-codes/docs/architecture/domain-folder-and-naming-convention.md).
+
+New Test Lab diagnostics must begin with the copy-ready
+[`test-lab/_blueprints/new-diagnostic/`](test-lab/_blueprints/new-diagnostic/README.md) experiment
+pack and complete its promotion-readiness record before production handoff.

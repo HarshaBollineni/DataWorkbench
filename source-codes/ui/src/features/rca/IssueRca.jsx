@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft, CheckCircle2, Download, Ticket,
 } from "lucide-react";
@@ -32,6 +32,9 @@ import { CritBadge, StatusChip } from "@/pages/IssueManagement";
 export default function IssueRca() {
   const { issueRowId } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
+  const returnSearch = new URLSearchParams(location.search).get("return") || "";
+  const returnToIssues = `/issues${returnSearch.startsWith("?") ? returnSearch : ""}`;
 
   const [issue, setIssue] = useState(null);
   const [tags, setTags] = useState([]);
@@ -64,7 +67,7 @@ export default function IssueRca() {
   const close = async () => {
     try {
       await closeIssueV2(issueRowId, rationale);
-      navigate("/issues");
+      navigate(returnToIssues);
     } catch (e) { setMessage(e.message); }
   };
 
@@ -90,7 +93,7 @@ export default function IssueRca() {
     <main className="min-h-screen bg-slate-50 p-8">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
         <div>
-          <button type="button" onClick={() => navigate("/issues")}
+          <button type="button" onClick={() => navigate(returnToIssues)}
             className="mb-2 inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-800">
             <ArrowLeft className="h-4 w-4" /> Back to issues
           </button>

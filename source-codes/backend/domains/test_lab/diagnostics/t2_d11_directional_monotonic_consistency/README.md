@@ -1,9 +1,10 @@
 # T2-D11 Directional / Monotonic Consistency
 
 Diagnostic 11 compares the expected economic relationship of each selected numeric variable with
-its observed empirical direction against a target or approved substitute. The overall portfolio is
-always analysed; one governed segment field can optionally add the same evidence within each
-observed segment. Outcomes that disagree with the expected relationship, or otherwise lack clear
+its observed empirical direction against a target or approved substitute. The first run analyses
+the overall portfolio. A later run can use the shared one-snapshot PSI split builder to define one
+accepted segment; only that sample receives additional segment evidence, while its complementary
+sample is recorded as not analysed. Outcomes that disagree with the expected relationship, or otherwise lack clear
 support, are retained for review and root-cause analysis (RCA).
 
 This is a contextual diagnostic, not a final PD, LGD, or EAD model specification. Its regression
@@ -17,6 +18,9 @@ models are univariate directionality evidence only.
 - Empirical evidence never modifies the KB expectation.
 - Exact KB aliases can populate an expectation automatically. Ranked textual candidates and AI
   suggestions remain advisory until the user confirms them.
+- A compatible rerun retains the prior completed run's selected scope, confirmed directions, and
+  target configuration with source-run provenance. It calculates fresh empirical evidence but does
+  not submit those retained columns to AI again.
 - An exact KB match preserves an immutable governed-decision baseline. Reconfirming that same
   concept, representation relationship, and direction cannot create a duplicate KB proposal.
 - Pearson correlation is displayed for context but never votes in the observed-direction class.
@@ -40,9 +44,15 @@ flowchart TD
     C --> F["Select the target or a run-level substitute"]
     E --> F
     F --> G["Confirm whether a higher target value means higher or lower risk"]
-    G --> H["Choose the overall view and an optional segment field"]
-    H --> I["Select numeric columns for analysis"]
-    I --> J{"Exact KB v0.3 match?"}
+    G --> H{"Prior completed overall run?"}
+    H -- "No" --> HO["Keep the overall portfolio"]
+    H -- "Yes" --> HR["Load compatible prior-run target setup and confirmed selected-column decisions"]
+    HR --> HS["Optionally define an analysed segment with the PSI split builder"]
+    HO --> I
+    HS --> I
+    I["Select numeric columns for analysis; retained scope is preselected"] --> IR{"Confirmed decision retained from a compatible completed run?"}
+    IR -- "Yes" --> KR["Reuse the confirmed direction with source-run provenance; do not call AI"]
+    IR -- "No: newly selected or previously excluded column" --> J{"Exact KB v0.3 match?"}
     J -- "Yes" --> K["Apply the KB decision and preserve its immutable governed baseline"]
     J -- "No" --> L["Show cautious ranked KB candidates"]
     L --> M{"Ask AI?"}
@@ -51,8 +61,9 @@ flowchart TD
     N --> P["User confirms or changes the suggestion"]
     O --> P
     K --> Q{"Every selected column resolved?"}
+    KR --> Q
     P --> Q
-    Q -- "No" --> J
+    Q -- "No" --> I
     Q -- "Yes" --> R["Request the run"]
     R --> S{"Eligible KB change proposal queued?"}
     S -- "New decision or changed concept, relationship, or direction" --> T["Atomic freeze: materialize or reuse the governed proposal and run evidence, then persist the frozen manifest"]
@@ -62,8 +73,8 @@ flowchart TD
     T -. "Any freeze failure" .-> RB["Roll back and retain the draft; create no KB proposal or evidence"]
     T --> W["Calculate overall empirical evidence"]
     U --> W
-    W --> X{"Segment selected?"}
-    X -- "Yes" --> Y["Calculate the same evidence within every observed segment"]
+    W --> X{"Analysed segment defined?"}
+    X -- "Yes" --> Y["Calculate the same evidence for the accepted split sample; retain the complement as not analysed"]
     X -- "No" --> Z["Synthesize the observed direction"]
     Y --> Z
     Z --> AA["Compare expected and observed directions"]
@@ -97,9 +108,19 @@ For a binary target, the higher-risk or lower-risk interpretation applies to the
 event class. Target type and positive class can be detected automatically or configured explicitly.
 The orientation is never inferred from a column name or from empirical results.
 
-Overall evidence is always calculated. The user can additionally select one eligible
-`segment`-, `category`-, or `group`-role column. The UI previews the observed groups and row counts
-before the run.
+The first run is always overall-only. After one overall run completes, a rerun exposes the shared
+one-snapshot PSI population builder. The user selects a split field and then defines the accepted
+sample using explicit category values, a numeric cutoff or range, or a date cutoff. Exact snapshot
+values, profile-guided suggestions, split logic, row counts, shares, and imbalance warnings are
+shown before the run. The complementary sample is explicitly marked **Not analysed**.
+
+When the rerun has the same tenant, data item, table, and reference column as its latest completed
+predecessor, D11 carries forward the predecessor's target type, positive class, target orientation,
+and every previously selected applicable variable's confirmed direction. The draft records the
+source run and marks each retained variable in the setup UI. A new segmented run therefore obtains
+new overall and segment evidence without repeating semantic work already completed for the same
+variable. These retained defaults do not skip setup: **Rerun** opens at the start of the complete
+target, analysis-view, column-selection, and relationship-review workflow.
 
 ### 3. Select analysis columns
 
@@ -111,6 +132,11 @@ categorical-association diagnostic, is required for those variables.
 Bulk selection excludes the `target`, `date`, `period`, `ignore`, and `weight` roles. A user can
 still select a technically eligible numeric column manually. The selected reference and segment
 columns can never also enter the independent-variable scope.
+
+Only previously selected, applicable variables are retained. A variable that was not selected in
+the completed run, or was excluded/not applicable and is now brought into scope, must be resolved
+for the new run. That is the point at which optional AI semantic adjudication may be requested (if
+deterministic matching has not already resolved it).
 
 ### 4. Confirm expected risk directions
 
@@ -151,7 +177,7 @@ The KB expectation itself remains increasing-to-risk in both cases.
 
 ## Knowledge matching
 
-`matching.py` loads the central KB v0.3 and terminology v0.2 resources, normalizes column names and
+`matching.py` loads the central KB v0.3 and active terminology v0.3 resources, normalizes column names and
 descriptions, expands governed terminology, and performs two distinct operations:
 
 1. **Deterministic exact matching** against canonical names, representations, and inverse
@@ -168,7 +194,9 @@ the KB rule.
 
 ## Optional semantic adjudication
 
-AI review is optional and is used only when deterministic matching has not resolved the variable.
+AI review is optional and is used only when deterministic matching has not resolved a newly scoped
+variable. A retained decision from a compatible completed run is not eligible for a new semantic
+adjudication request; the server enforces this rule as well as the UI.
 The adjudicator receives:
 
 - the feature name and saved description; and
@@ -263,13 +291,16 @@ inversion count is intentionally outside this classifier.
 ## Segment-level evidence
 
 - Overall evidence is always calculated first.
-- At most one segment column can be selected.
-- A segment field with more than 50 observed non-null values is refused.
-- Null segment values remain in overall evidence but are excluded from segment views.
+- Segment selection becomes available only after a completed overall D11 run.
+- D11 reuses the one-snapshot PSI split builder and its exact-value/profile-guided controls.
+- One split definition identifies the accepted **Analysed segment**.
+- The complementary sample is retained in the split audit as **Not analysed** and is not passed to
+  the directionality engine.
+- Nulls are retained in the analysed side, matching the shared PSI split contract; confirmed
+  special values follow the selected special-value policy.
 - The same frozen reference, feature scope, expected directions, thresholds, and methodology are
-  applied to every segment.
-- Small groups are retained and return explicit `INSUFFICIENT_DATA` evidence rather than silently
-  disappearing.
+  applied to the overall and accepted segment samples.
+- A small accepted sample returns explicit `INSUFFICIENT_DATA` evidence rather than disappearing.
 
 Segment evidence supplements the overall result; it does not replace or modify it.
 
@@ -382,7 +413,7 @@ Each applicable feature produces a governed `directionality_evidence` Analysis A
 
 - the frozen expected relationship and reference contract;
 - overall component evidence and consensus;
-- optional evidence for every segment;
+- optional evidence for the accepted analysed segment plus the audited split definition;
 - expected-versus-observed comparison;
 - bin bounds, counts, feature means, and reference means;
 - fitted regression curve and a bounded chart sample;
@@ -455,7 +486,7 @@ package:
 backend/
 |-- knowledge_base/
 |   |-- pd_directionality_kb_v0_3.yaml
-|   `-- credit_risk_abbreviations_v0_2.yaml
+|   `-- credit_risk_abbreviations_v0_3.yaml
 |-- ai/
 |   `-- agents/
 |       `-- semantic_feature_adjudication_v0_2.txt
@@ -514,6 +545,7 @@ D11 manifest patch kinds are:
 - `reference_orientation`
 - `target_config`
 - `segment_selection`
+- `segment_split`
 - `feature_selection`
 - `candidate_display`
 - `semantic_adjudication`
@@ -566,7 +598,7 @@ regression suite.
 ## Current limitations
 
 - Only numeric variables with meaningful order are analysed.
-- One segment column and at most 50 observed non-null segment values are supported.
+- One PSI-style split definition and one accepted analysed segment are supported per rerun.
 - Candidate ranking has no automatic semantic-acceptance threshold.
 - MVP evidence floors require recalibration against representative portfolios.
 - Regression is directional evidence only, not a final model specification.

@@ -1,0 +1,17 @@
+as_of_date: '2024-12-31'
+ead_target_observation_policy: realised targets observed only at default measurement
+  point
+ead_measurement_point_by_target:
+  EAD_AMT: default date
+  FUT_DRAW: default date
+  CCF: default date
+default_event_domain:
+  '1': default occurred
+commitment_applicability_by_facility_type:
+  REVOLVING: applicable
+  TERM: not applicable
+behavioural_balance_update_frequency: monthly
+field_specific_sentinel_definitions: {}
+variance_window: 3
+minimum_row_count: 3
+not_applicable_share_threshold: 0.8

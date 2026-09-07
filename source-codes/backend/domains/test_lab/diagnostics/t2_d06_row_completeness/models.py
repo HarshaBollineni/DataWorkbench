@@ -66,6 +66,7 @@ class RunScope(StrictModel):
 
 class InferenceDisclosure(StrictModel):
     llm_call_count: int = Field(ge=0)
+    reused_inference_count: int = Field(default=0, ge=0)
     llm_used: bool
     verdict_influenced_by_llm: Literal[False] = False
     statement: str = Field(min_length=1)
@@ -76,8 +77,11 @@ class InferenceDisclosure(StrictModel):
     @model_validator(mode="after")
     def counts_are_honest(self) -> "InferenceDisclosure":
         invoked = sum(bool(event.get("invoked")) for event in self.events)
+        reused = sum(bool(event.get("reused_prior_inference")) for event in self.events)
         if invoked != self.llm_call_count:
             raise ValueError("llm_call_count must equal the number of invoked LLM events")
+        if reused != self.reused_inference_count:
+            raise ValueError("reused_inference_count must equal referenced prior inference events")
         if self.llm_used != (self.llm_call_count > 0):
             raise ValueError("llm_used must reflect llm_call_count")
         if not self.llm_used and "No LLM calls" not in self.statement:

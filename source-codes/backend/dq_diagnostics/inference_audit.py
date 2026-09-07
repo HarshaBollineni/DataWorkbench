@@ -216,6 +216,43 @@ def record_llm_call(
     )
 
 
+def record_reused_llm_inference(
+    run_id: str,
+    *,
+    source_event: dict[str, Any],
+    source_run_id: str,
+    field: str,
+    reuse_identity: str,
+    actor: str,
+    purpose: str = "semantic_role_verification",
+) -> dict[str, Any]:
+    """Reference a prior validated response without recording a new provider call."""
+    if source_event.get("event_kind") != "llm" or source_event.get("status") != "succeeded":
+        raise ValueError("only a successful LLM inference can be reused")
+    payload = {
+        "reason": "reused prior validated inference for the same immutable input identity",
+        "reused_prior_inference": True,
+        "source_run_id": source_run_id,
+        "source_event_id": source_event["event_id"],
+        "field": field,
+        "reuse_identity": reuse_identity,
+        "source_input_hash": source_event.get("input_hash"),
+        "source_response_hash": source_event.get("response_hash"),
+        "metrics_produced": False,
+        "verdict_changed": False,
+    }
+    return _insert(
+        run_id=run_id, event_kind="llm", stage="pre_manifest_freeze",
+        purpose=purpose, status="skipped", invoked=False, payload=payload,
+        actor=actor, provider=source_event.get("provider"), model=source_event.get("model"),
+        provider_api_version=source_event.get("provider_api_version"),
+        prompt_template_id=source_event.get("prompt_template_id"),
+        prompt_template_version=source_event.get("prompt_template_version"),
+        prompt_hash=source_event.get("prompt_hash"), input_hash=source_event.get("input_hash"),
+        response_hash=source_event.get("response_hash"), row_level_data_included=False,
+    )
+
+
 def inference_disclosure(run_id: str) -> dict[str, Any]:
     """Return the bounded projection stored in diagnostic and report artifacts."""
     _require_run(run_id)
@@ -261,12 +298,18 @@ def inference_disclosure(run_id: str) -> dict[str, Any]:
         for row in llm_rows
     ]
     call_count = sum(bool(row["invoked"]) for row in llm_rows)
+    reused_count = sum(bool((row.get("payload_json") or {}).get("reused_prior_inference"))
+                       for row in llm_rows)
     canonical_events = [{key: row[key] for key in row if key != "ts"} for row in rows]
     return {
         "llm_call_count": call_count,
         "llm_used": call_count > 0,
         "verdict_influenced_by_llm": False,
-        "statement": ("No LLM calls were made during this diagnostic journey"
+        "reused_inference_count": reused_count,
+        "statement": (("No LLM calls were made during this diagnostic journey; "
+                       f"{reused_count} prior validated inference(s) were reused")
+                      if call_count == 0 and reused_count else
+                      "No LLM calls were made during this diagnostic journey"
                       if call_count == 0 else f"{call_count} advisory LLM call(s) were made before manifest freeze"),
         "events": llm_events,
         "deterministic_inferences": deterministic,

@@ -1,0 +1,1142 @@
+metadata:
+  name: Value Semantics Knowledge Base
+  version: '0.1'
+  diagnostic_id: t2_d08_valsim
+  purpose: >
+    Match incoming credit-risk variables to canonical semantic roles and select
+    the value-semantics rules applicable to those roles.
+  scope: >
+    Reusable PD, LGD, and EAD datasets. Physical column names, dataset-specific role
+    bindings, sentinel values, state domains, horizons, and run observations
+    are supplied at runtime and are not stored in this Knowledge Base.
+  terminology_resource: credit_risk_abbreviations_v0_2.yaml
+  change_note: >
+    Initial YAML version. Establishes role-first variable matching, descriptive
+    identifiers, bounded semantic adjudication, non-enforcing PD/LGD/EAD context
+    hints, and reusable rule routing without local-run bindings.
+
+conventions:
+  matching_unit: variable
+  matching_target: semantic_role
+  routing_principle: >
+    Match each physical variable to a canonical semantic role before selecting
+    rules. A matched role may route to more than one applicable rule entry.
+  context_hints:
+    enforcement: >
+      Model type, use case, and product are optional semantic hints. They may
+      improve matching, prompts, explanations, and review prioritisation but
+      never select, exclude, or block a role or rule.
+    model_types:
+      PD: Probability-of-default panel data.
+      LGD: Loss-given-default recovery or workout data.
+      EAD: Exposure-at-default, future-drawdown, or credit-conversion-factor data.
+    use_cases:
+      IFRS9: International Financial Reporting Standard 9 use case.
+      IRB: Internal Ratings-Based regulatory use case.
+    products: >
+      Optional product descriptions may inform semantic interpretation but do
+      not create or suppress applicability.
+    field_semantics: >
+      Every model_types, use_cases, and product_scope field elsewhere in this
+      document is a suggestive annotation governed by this non-enforcement policy.
+  binding_cardinality:
+    one: At most one physical variable binds to the role in one dataset.
+    one_or_more: One or more physical variables may bind to the role.
+    zero_or_more: The role is optional and may bind to multiple variables.
+  tag_domain:
+    CENSORED: >
+      The value is not final because the process or forward observation window
+      producing it has not completed. It must not be treated as observed or
+      imputed for analytical use.
+    STALE_FROZEN: >
+      The field carries a populated value that has stopped changing when it is
+      expected to vary, or carries a field-specific sentinel declared by the
+      incoming data dictionary.
+    NOT_APPLICABLE: >
+      The field does not apply to the row under the declared process, contract
+      terms, use case, or dataset scope.
+  assessment_outcomes:
+    UNCLASSIFIED: >
+      An assessment was attempted but available declarations or evidence were
+      insufficient to determine a tag.
+    UNSCOPED: >
+      An assessment was not attempted because a required role or declaration
+      was not supplied.
+    NO_TAG: >
+      No applicable rule claimed the cell. This is not an assertion that the
+      value is valid, complete, or otherwise sound.
+  run_verdicts:
+    FULLY_CLASSIFIED: Every in-scope cell received a determination.
+    PARTIALLY_CLASSIFIED: >
+      At least one in-scope assessment returned UNCLASSIFIED or UNSCOPED.
+  precedence:
+  - NOT_APPLICABLE
+  - CENSORED
+  - STALE_FROZEN
+  interpretation_notes:
+  - A tag is assigned per cell; two fields on the same row may receive different tags.
+  - Plain absence is not classified by this Knowledge Base.
+  - This Knowledge Base never imputes or modifies an input value.
+  - This Knowledge Base never emits a positive assurance such as VALID or SOUND.
+  - Candidate names are matching hints and never override a confirmed runtime declaration.
+  - Dataset observations alone must not be used to invent role bindings or applicability conditions.
+  - Model type, use case, and product hints never determine rule applicability.
+  - Runtime declarations become required only when a role-routed entry explicitly references them; PD, LGD, and EAD declaration groupings are organizational hints.
+
+matching_contract:
+  input_fields:
+    name:
+      required: true
+      purpose: Physical variable name from the incoming schema.
+    description:
+      required: false
+      purpose: Confirmed variable description, preferably from the incoming data dictionary.
+    data_type:
+      required: false
+      purpose: Supporting evidence for semantic adjudication and compatibility checks.
+    role:
+      required: false
+      allowed_values: [identifier, period, target, feature, score, weight, date, ignore, group]
+      purpose: >
+        Production-compatible structural role supplied by the incoming schema or
+        data dictionary. It is matching evidence and does not directly determine
+        the canonical semantic role.
+  preprocessing:
+  - Normalize Unicode, case, camel case, separators, punctuation, and whitespace.
+  - Preserve numeric tokens and expand unambiguous compact duration tokens.
+  - Apply recognized compound-term expansions before token-level expansions.
+  - Keep ambiguous abbreviations unresolved and carry their candidate meanings as evidence.
+  deterministic_acceptance: >
+    Accept only a unique exact match to a canonical role name or representation
+    after terminology processing. Alias collisions require adjudication.
+  candidate_generation:
+    policy: adaptive_high_recall
+    full_catalog_overview:
+      included: true
+      fields: [role, definition, role_kind, model_types]
+      purpose: >
+        Make the complete role choice space visible without attaching every
+        representation and matching note to the first adjudication request.
+    detailed_candidate_subset:
+      minimum_candidates: 5
+      soft_maximum_candidates: 12
+      hard_maximum_candidates: null
+      include_all_within_score_margin: true
+      include_alias_collisions: true
+      include_terminology_ambiguity_candidates: true
+    expansion_policy: >
+      If a plausible role visible in the full catalog is absent from the detailed
+      subset, the adjudicator requests that role by identifier. A second pass
+      supplies its complete definition, representations, and matching notes.
+    acceptance_policy: >
+      Candidate ranking supplies retrieval evidence only. Rank, score, or the
+      soft maximum never excludes a plausibly relevant role and never accepts a
+      role without semantic adjudication.
+  adjudication_decisions:
+    MATCH: One supplied canonical role represents the variable.
+    MULTI_ROLE_MATCH: >
+      More than one supplied canonical role validly applies to the variable and
+      the primary and secondary bindings have been explicitly reviewed.
+    NO_CANDIDATE_MATCH: The variable is understood but none of the supplied roles represents it.
+    INSUFFICIENT_CONTEXT: The available name and description do not establish the variable's meaning.
+    AMBIGUOUS_ROLE: >
+      More than one supplied role remains plausible, but the available evidence
+      does not establish that they are simultaneously valid bindings.
+    CANDIDATE_SET_INCOMPLETE: >
+      A role visible in the complete catalog may be relevant but its detailed
+      evidence was not supplied. This requests expansion and is not a final match decision.
+  adjudication_controls:
+  - The adjudicator may match only a candidate whose detailed evidence was supplied.
+  - The adjudicator may request expansion only for identifiers visible in the supplied full catalog.
+  - The adjudicator must not create a new role or rule.
+  - Similarity scores and runtime rule outcomes are not supplied to the adjudicator.
+  - Every non-exact match requires review until a later policy explicitly changes that requirement.
+  - A reviewed secondary role may be retained when one variable legitimately serves multiple operational roles.
+  match_output_fields:
+  - input_variable
+  - decision
+  - primary_role
+  - reviewed_secondary_roles
+  - match_method
+  - matched_representation
+  - detailed_candidate_roles
+  - requested_expansion_roles
+  - role_catalog_version
+  - unresolved_abbreviations
+  - review_required
+  - reason
+
+required_runtime_declarations:
+  common:
+  - as_of_date
+  - confirmed_role_bindings
+  - field_specific_sentinel_definitions
+  - variance_window
+  - minimum_row_count
+  - not_applicable_share_threshold
+  PD:
+  - panel_end_period
+  - forward_horizon_by_label
+  - external_label_observation_disclosures
+  - declared_exit_events
+  - lower_frequency_fields_and_review_cycles
+  - panel_scope_exclusions
+  LGD:
+  - finished_outcome_states
+  - outcome_state_domain
+  - written_off_state_treatment
+  - interim_outcome_value_policy
+  - return_to_performing_domain
+  - non_arrears_trigger_domain
+  EAD:
+  - ead_target_observation_policy
+  - ead_measurement_point_by_target
+  - default_event_domain
+  - commitment_applicability_by_facility_type
+  - behavioural_balance_update_frequency
+
+optional_runtime_context:
+- model_type
+- use_cases
+- product
+
+semantic_roles:
+- role: entity_id
+  definition: Identifier of the exposure, facility, account, borrower, or workout case.
+  representations:
+  - loan id
+  - facility id
+  - account id
+  - exposure id
+  - case id
+  - account number
+  - borrower id
+  - acct num 
+  - loan number
+  - loan account number
+  - unique identifier
+  - unique id
+  model_types: [PD, LGD, EAD]
+  binding_cardinality: one
+  role_kind: structural
+
+- role: period
+  definition: Ordered reporting period or observation date for a row.
+  representations:
+  - reporting period
+  - reporting quarter
+  - observation date
+  - snapshot month
+  - as of date
+  model_types: [PD, LGD, EAD]
+  binding_cardinality: one
+  role_kind: structural
+
+- role: segment
+  definition: Partition across which population behaviour or variation is assessed.
+  representations:
+  - segment
+  - portfolio
+  - region
+  - state
+  - property type
+  model_types: [PD, LGD, EAD]
+  binding_cardinality: one_or_more
+  role_kind: grouping
+
+- role: outcome_state
+  definition: State indicating whether an LGD recovery or workout process is unfinished or finished.
+  representations:
+  - workout state
+  - recovery status
+  - case status
+  - resolution status
+  model_types: [LGD]
+  binding_cardinality: one
+  role_kind: indicator
+
+- role: outcome_values
+  definition: Realised results and components of an LGD recovery or workout process.
+  representations:
+  - realised LGD
+  - realized LGD
+  - realised loss
+  - realized loss
+  - time to resolution
+  - disposal date
+  - disposal proceeds
+  - legal costs
+  - other costs
+  - insurance recovery
+  model_types: [LGD]
+  binding_cardinality: one_or_more
+  role_kind: classified_value
+
+- role: return_to_performing
+  definition: Indicator that a deteriorated or defaulted case returned to performing without realisation.
+  representations:
+  - cure indicator
+  - cure flag
+  - restored flag
+  - return to performing
+  model_types: [LGD]
+  binding_cardinality: one
+  role_kind: indicator
+
+- role: realisation_fields
+  definition: Variables that exist only when collateral or another asset was realised.
+  representations:
+  - disposal date
+  - disposal proceeds
+  - sale date
+  - sale proceeds
+  model_types: [LGD]
+  binding_cardinality: zero_or_more
+  role_kind: classified_value
+
+- role: forward_labels
+  definition: >
+    Outcomes or derived measures observed over a window beginning at the current
+    PD reporting period and ending in the future.
+  representations:
+  - default 12m
+  - target default 12m
+  - default 1q
+  - forward default label
+  - forward outcome
+  model_types: [PD, EAD]
+  binding_cardinality: one_or_more
+  role_kind: classified_value
+
+- role: exit_indicators
+  definition: Indicators that observation of an exposure ended before the panel end.
+  representations:
+  - paid off indicator
+  - payoff flag
+  - matured performing indicator
+  - closure flag
+  - early exit indicator
+  model_types: [PD, EAD]
+  binding_cardinality: zero_or_more
+  role_kind: indicator
+
+- role: arrears_measure
+  definition: Current contractual payment arrears measured in days, months, or an equivalent severity scale.
+  representations:
+  - DPD
+  - days past due
+  - current days past due
+  - arrears days
+  - arrears months
+  - delinquency severity
+  model_types: [PD, LGD]
+  binding_cardinality: one
+  role_kind: classified_value
+
+- role: priced_rate
+  definition: Current interest rate applied to an exposure.
+  representations:
+  - interest rate
+  - current interest rate
+  - current rate
+  - priced rate
+  model_types: [PD, LGD]
+  binding_cardinality: one
+  role_kind: classified_value
+
+- role: rate_basis
+  definition: Classification distinguishing a contractually fixed rate from a rate tracking a benchmark.
+  representations:
+  - interest type
+  - rate type
+  - product rate basis
+  - fixed or floating
+  - rate basis
+  model_types: [PD, LGD]
+  binding_cardinality: one
+  role_kind: indicator
+
+- role: internal_grade
+  definition: Internal credit grade or rating in force for the current reporting period.
+  representations:
+  - rating
+  - internal rating
+  - internal grade
+  - risk grade
+  - borrower risk rating
+  - obligor risk rating
+  model_types: [PD]
+  binding_cardinality: one
+  role_kind: classified_value
+
+- role: income_measure
+  definition: Income generated by the exposure, borrower, or collateral during the reporting period.
+  representations:
+  - NOI
+  - net operating income
+  - rental income
+  - borrower income
+  - operating income
+  model_types: [PD]
+  binding_cardinality: one_or_more
+  role_kind: classified_value
+
+- role: utilisation_measure
+  definition: Usage, drawdown, capacity, or occupancy measure expected to vary with behaviour or market conditions.
+  representations:
+  - utilisation
+  - utilization
+  - utilisation rate
+  - utilization rate
+  - occupancy
+  - occupancy rate
+  model_types: [PD, EAD]
+  binding_cardinality: one_or_more
+  role_kind: classified_value
+
+- role: non_arrears_trigger
+  definition: >
+    Reason an exposure was treated as deteriorated or defaulted when the reason
+    may be qualitative, judgement-based, or otherwise unrelated to arrears.
+  representations:
+  - stage trigger
+  - SICR reason
+  - transfer reason
+  - definition of default basis
+  - default trigger reason
+  model_types: [LGD]
+  binding_cardinality: one
+  role_kind: indicator
+
+- role: regime_stamp
+  definition: Policy or regime version associated with a judgement-based deterioration or default decision.
+  representations:
+  - definition of default regime
+  - default regime version
+  - policy version
+  - regime stamp
+  model_types: [LGD]
+  binding_cardinality: one
+  role_kind: classified_value
+
+- role: construction_constants
+  definition: >
+    Variables held at a single value because the PD panel excludes observations
+    that would cause them to vary.
+  representations:
+  - contemporaneous default flag
+  - default flag
+  - non accrual indicator
+  - foreclosure in process indicator
+  - bankruptcy indicator
+  - construction constant
+  model_types: [PD]
+  binding_cardinality: zero_or_more
+  role_kind: classified_value
+  matching_note: >
+    A constant observed value is not sufficient evidence for this role. The
+    panel-scope declaration must establish that the variable is constant by construction.
+
+- role: spread_over_benchmark
+  definition: Contractual margin or spread added to a tracked reference rate.
+  representations:
+  - spread
+  - margin over benchmark
+  - credit spread
+  - rate margin
+  model_types: [PD]
+  binding_cardinality: one
+  role_kind: classified_value
+
+- role: maturity_date
+  definition: Contractual date on which the exposure reaches maturity.
+  representations:
+  - maturity date
+  - contractual maturity
+  - loan maturity date
+  model_types: [PD]
+  binding_cardinality: one
+  role_kind: indicator
+
+- role: maturity_conditional_flags
+  definition: Flags that can apply only when contractual maturity has been reached.
+  representations:
+  - matured performing indicator
+  - matured nonperforming indicator
+  - balloon maturity indicator
+  - maturity outcome flag
+  model_types: [PD]
+  binding_cardinality: zero_or_more
+  role_kind: classified_value
+
+- role: amortisation_basis
+  definition: Contractual basis indicating whether principal is repaid over the exposure's life.
+  representations:
+  - loan payment type
+  - repayment type
+  - amortisation type
+  - amortization basis
+  - interest only indicator
+  model_types: [PD]
+  binding_cardinality: one
+  role_kind: indicator
+
+- role: amortisation_fields
+  definition: Variables measuring principal repayment or balance paydown over the exposure's life.
+  representations:
+  - principal repayment
+  - principal paydown
+  - balance paydown
+  - amortisation amount
+  - amortization amount
+  model_types: [PD]
+  binding_cardinality: zero_or_more
+  role_kind: classified_value
+
+- role: static_attributes
+  definition: Attributes fixed at origination and not revised over the exposure's life.
+  representations:
+  - original balance
+  - loan limit
+  - origination rating
+  - origination date
+  - original loan to value
+  - income at origination
+  model_types: [PD, LGD, EAD]
+  binding_cardinality: zero_or_more
+  role_kind: exclusion
+
+- role: default_event
+  definition: Indicator that the contractual or regulatory default event relevant to EAD measurement occurred.
+  representations:
+  - default event
+  - default indicator
+  - default flag
+  - event of default
+  - entered default
+  model_types: [EAD]
+  binding_cardinality: one
+  role_kind: indicator
+
+- role: default_date
+  definition: Date or reporting period at which the relevant default event occurred.
+  representations:
+  - default date
+  - date of default
+  - default period
+  - default quarter
+  model_types: [EAD]
+  binding_cardinality: one
+  role_kind: indicator
+
+- role: drawn_balance
+  definition: Amount currently drawn or outstanding against a facility at the observation point.
+  representations:
+  - drawn balance
+  - drawn amount
+  - outstanding balance
+  - current balance
+  - utilised amount
+  - utilized amount
+  model_types: [EAD]
+  binding_cardinality: one_or_more
+  role_kind: classified_value
+
+- role: undrawn_commitment
+  definition: Contractually committed amount that remains available but undrawn at the observation point.
+  representations:
+  - undrawn commitment
+  - undrawn amount
+  - unused commitment
+  - unused line
+  - off balance sheet commitment
+  model_types: [EAD]
+  binding_cardinality: one_or_more
+  role_kind: classified_value
+  matching_note: >
+    Distinguish a genuine zero on a fully drawn committed facility from a product
+    for which an undrawn commitment does not exist.
+
+- role: credit_limit
+  definition: Current contractual maximum exposure or line limit available to the obligor.
+  representations:
+  - credit limit
+  - facility limit
+  - current limit
+  - line limit
+  - commitment limit
+  model_types: [EAD]
+  binding_cardinality: one_or_more
+  role_kind: classified_value
+
+- role: available_commitment
+  definition: Amount currently available for additional drawing after contractual and operational restrictions.
+  representations:
+  - available commitment
+  - available amount
+  - available credit
+  - drawing availability
+  - remaining availability
+  model_types: [EAD]
+  binding_cardinality: one_or_more
+  role_kind: classified_value
+
+- role: exposure_at_default
+  definition: Exposure amount measured at the declared default measurement point.
+  representations:
+  - EAD
+  - exposure at default
+  - realised exposure at default
+  - realized exposure at default
+  - default exposure
+  model_types: [EAD]
+  binding_cardinality: one_or_more
+  role_kind: classified_value
+  matching_note: >
+    The runtime declaration must distinguish realised EAD from a forecast,
+    estimate, regulatory parameter, or currently observed exposure.
+
+- role: future_drawdown
+  definition: Additional amount drawn between the observation point and the declared default measurement point.
+  representations:
+  - future drawdown
+  - additional drawdown
+  - drawdown to default
+  - post observation drawdown
+  - pre default drawdown
+  model_types: [EAD]
+  binding_cardinality: one_or_more
+  role_kind: classified_value
+
+- role: conversion_factor
+  definition: Factor converting an eligible undrawn or off-balance amount into exposure at default.
+  representations:
+  - CCF
+  - credit conversion factor
+  - EAD conversion factor
+  - EADCF
+  - realised conversion factor
+  - realized conversion factor
+  model_types: [EAD]
+  binding_cardinality: one_or_more
+  role_kind: classified_value
+
+- role: exposure_change_indicators
+  definition: >
+    Independently recorded drawings, repayments, limit changes, cancellations,
+    accruals, or other events expected to change an EAD balance component.
+  representations:
+  - draw amount
+  - repayment amount
+  - balance movement
+  - limit change
+  - commitment cancellation
+  - exposure change indicator
+  - transaction activity
+  model_types: [EAD]
+  binding_cardinality: one_or_more
+  role_kind: indicator
+
+- role: commitment_status
+  definition: Contractual status determining whether an amount is committed, cancellable, available, or closed.
+  representations:
+  - commitment status
+  - line status
+  - availability status
+  - cancellable indicator
+  - committed indicator
+  model_types: [EAD]
+  binding_cardinality: one
+  role_kind: indicator
+
+- role: facility_type
+  definition: Contractual facility structure relevant to drawing rights and exposure-at-default treatment.
+  representations:
+  - facility type
+  - product type
+  - loan type
+  - revolving indicator
+  - term loan indicator
+  - credit line type
+  model_types: [EAD]
+  binding_cardinality: one
+  role_kind: indicator
+
+shared_guards:
+- guard: t2_d08_valsim_guard_role_binding_required
+  category: precondition
+  primitive: role_and_indicator_required
+  definition: >
+    Do not classify a field until its classified role and required indicator
+    roles are bound. Missing bindings return UNSCOPED; indeterminate row-level
+    evidence returns UNCLASSIFIED.
+
+- guard: t2_d08_valsim_guard_independent_indicator
+  category: precondition
+  primitive: indicator_distinct_from_target
+  definition: >
+    The evidence determining a tag must be independent of the field being
+    tagged. Never infer censoring or applicability solely from the field's own value.
+
+- guard: t2_d08_valsim_guard_single_tag_precedence
+  category: resolution
+  primitive: precedence_resolve
+  parameters:
+    order: [NOT_APPLICABLE, CENSORED, STALE_FROZEN]
+    equal_precedence_collision: halt_and_review
+  definition: Each cell receives at most one tag after precedence is applied.
+
+- guard: t2_d08_valsim_guard_report_unclassified
+  category: reporting
+  primitive: report_unclassified_by_field_and_reason
+  definition: Every UNCLASSIFIED result is counted by field and reason.
+
+- guard: t2_d08_valsim_guard_no_imputation
+  category: consumer_control
+  primitive: prohibit_value_mutation
+  definition: The diagnostic assigns tags and never fills or alters values.
+
+- guard: t2_d08_valsim_guard_dictionary_sentinel_only
+  category: authority
+  primitive: field_specific_dictionary_sentinel
+  definition: >
+    Recognize a sentinel only when the incoming data dictionary declares that
+    value for that specific field. Frequency, magnitude, and another field's
+    sentinel declaration are not valid inference routes.
+
+- guard: t2_d08_valsim_guard_tag_stability
+  category: audit
+  primitive: compare_same_declaration_across_runs
+  definition: >
+    Under the same bindings and declarations, a changed tag distribution is
+    reported for review rather than silently accepted.
+
+- guard: t2_d08_valsim_guard_coverage_reporting
+  category: reporting
+  primitive: report_rule_coverage_by_field
+  definition: >
+    Report which rules considered each field and whether each assessment was
+    applied, UNSCOPED, UNCLASSIFIED, or out of scope.
+
+- guard: t2_d08_valsim_guard_no_soundness_assertion
+  category: reporting
+  primitive: prohibit_positive_residual_tag
+  definition: A cell not claimed by a rule receives NO_TAG, never VALID or SOUND.
+
+- guard: t2_d08_valsim_guard_extract_structure_authority
+  category: authority
+  primitive: extract_overrides_dictionary_structure
+  parameters:
+    fields: [panel_end_period, period_count, entity_count]
+    mismatch_action: halt_and_report
+  definition: >
+    Structural facts are measured from the incoming extract. A dictionary may
+    declare field semantics and sentinels but cannot override observed extract structure.
+
+- guard: t2_d08_valsim_guard_context_hints_non_enforcing
+  category: routing
+  primitive: roles_and_declarations_select_entries
+  parameters:
+    optional_contexts: [PD, LGD, EAD, IFRS9, IRB, product]
+  definition: >
+    Model type, use case, and product may inform matching and explanations but
+    never select, exclude, or block a role or rule. Confirmed role bindings,
+    required declarations, and entry conditions determine applicability.
+
+rules:
+- rule: t2_d08_valsim_rule_censored
+  name: Incomplete outcome or observation window
+  tag_assigned: CENSORED
+  severity: CRITICAL
+  model_types: [PD, LGD, EAD]
+  use_cases: [IFRS9, IRB]
+  product_scope: any_credit_product
+  count_unit: cell
+  check: >
+    Tag a value when the process or forward observation window producing it has
+    not completed within the available data.
+  entries:
+  - entry: t2_d08_valsim_censored_lgd_unfinished_outcome
+    model_types: [LGD]
+    target_role: outcome_values
+    indicator_roles: [outcome_state]
+    required_declarations:
+    - finished_outcome_states
+    - outcome_state_domain
+    - interim_outcome_value_policy
+    condition: outcome_state is not in the declared finished outcome states
+    expression: >
+      IF outcome_state NOT IN finished_outcome_states THEN tag outcome_values as CENSORED.
+    unclassified_when:
+    - outcome_state is outside the declared outcome state domain
+    - an outcome-like variable is not included in the reviewed outcome_values binding
+    notes:
+    - A populated interim outcome remains CENSORED because it is not final.
+    - Return-to-performing indicators and independently completed events are not outcome values.
+
+  - entry: t2_d08_valsim_censored_pd_incomplete_forward_window
+    model_types: [PD]
+    target_role: forward_labels
+    indicator_roles: [period, exit_indicators]
+    required_declarations:
+    - panel_end_period
+    - forward_horizon_by_label
+    - declared_exit_events
+    condition: >
+      The required forward horizon extends beyond the panel end or beyond the
+      exposure's last observable period after a declared exit.
+    expression: >
+      IF period plus declared forward horizon exceeds the observable boundary
+      THEN tag the forward label as CENSORED.
+    unclassified_when:
+    - the forward horizon is absent or has an incompatible unit
+    - an apparent exit is not represented by a declared exit event
+    - a forward-looking variable is absent from the reviewed forward_labels binding
+    notes:
+    - A derived forward measure inherits the explicitly declared horizon of its source.
+    - A label computed from data beyond the extract is observed only when that external coverage is declared.
+
+  - entry: t2_d08_valsim_censored_ead_unobserved_exposure_at_default
+    model_types: [EAD]
+    target_role: exposure_at_default
+    indicator_roles: [default_event, default_date, period]
+    required_declarations:
+    - ead_target_observation_policy
+    - ead_measurement_point_by_target
+    - default_event_domain
+    condition: >
+      The variable is declared as a realised exposure-at-default outcome and its
+      default measurement point has not occurred within the observable boundary.
+    expression: >
+      IF the declared EAD measurement point is not observable for the row THEN
+      tag realised exposure_at_default as CENSORED.
+    unclassified_when:
+    - the variable is not declared as realised, forecast, estimated, or currently observed
+    - default status or the applicable observation boundary cannot be determined
+
+  - entry: t2_d08_valsim_censored_ead_unobserved_future_drawdown
+    model_types: [EAD]
+    target_role: future_drawdown
+    indicator_roles: [default_event, default_date, period]
+    required_declarations:
+    - ead_target_observation_policy
+    - ead_measurement_point_by_target
+    - default_event_domain
+    condition: >
+      The additional drawdown is measured to a future default point that has not
+      become observable under the declared target policy.
+    expression: >
+      IF the declared drawdown measurement point is not observable for the row
+      THEN tag future_drawdown as CENSORED.
+
+  - entry: t2_d08_valsim_censored_ead_unobserved_conversion_factor
+    model_types: [EAD]
+    target_role: conversion_factor
+    indicator_roles: [default_event, default_date, period]
+    required_declarations:
+    - ead_target_observation_policy
+    - ead_measurement_point_by_target
+    - default_event_domain
+    condition: >
+      The variable is declared as a realised conversion factor and its default
+      measurement point has not become observable.
+    expression: >
+      IF the declared conversion-factor measurement point is not observable for
+      the row THEN tag realised conversion_factor as CENSORED.
+    unclassified_when:
+    - the variable may instead be a forecast, regulatory parameter, or policy value
+
+  safeguards:
+  - A populated value can still be censored; censoring describes window completion, not nullness.
+  - Unknown states never default to unfinished or finished.
+  - The extract supplies its panel end under t2_d08_valsim_guard_extract_structure_authority.
+  - Long-duration products may have structurally high censored shares; report age and product context.
+  - EAD fields are never censored merely because no default occurred; the declared target observation policy determines observability.
+
+- rule: t2_d08_valsim_rule_stale_frozen
+  name: Unexpectedly frozen or sentinel-valued field
+  tag_assigned: STALE_FROZEN
+  severity: MATERIAL
+  model_types: [PD, LGD, EAD]
+  use_cases: [IFRS9, IRB]
+  product_scope: any_credit_product
+  count_unit: cell
+  check: >
+    Assess explicitly listed roles for zero within-scope variance over their
+    declared windows and independently recognize field-specific dictionary sentinels.
+  evaluation_limbs:
+    variance:
+      expression: >
+        IF within-scope variance equals zero at the entry's declared grain and
+        the minimum row count is satisfied THEN tag the field as STALE_FROZEN.
+      required_declarations: [variance_window, minimum_row_count]
+    sentinel:
+      expression: >
+        IF the incoming dictionary declares a sentinel for the bound field and
+        the cell equals that sentinel THEN tag the cell as STALE_FROZEN.
+      missing_declaration_outcome: UNSCOPED
+  entries:
+  - entry: t2_d08_valsim_stale_frozen_arrears
+    model_types: [PD, LGD]
+    target_role: arrears_measure
+    indicator_roles: [segment, period]
+    expected_variation: Arrears vary across periods for a sufficiently large in-scope population.
+    assessment_grain: segment_and_period
+
+  - entry: t2_d08_valsim_stale_frozen_tracking_rate
+    model_types: [PD, LGD]
+    target_role: priced_rate
+    indicator_roles: [rate_basis, segment, period]
+    condition: rate_basis declares that the rate tracks a reference rate
+    expected_variation: A tracking rate changes when its reference rate changes.
+    assessment_grain: segment_and_period
+
+  - entry: t2_d08_valsim_stale_frozen_internal_grade
+    model_types: [PD]
+    target_role: internal_grade
+    indicator_roles: [segment, period]
+    required_declarations: [lower_frequency_fields_and_review_cycles]
+    expected_variation: Internal grades vary across review cycles for a sufficiently large population.
+    assessment_grain: segment_and_declared_review_cycle
+
+  - entry: t2_d08_valsim_stale_frozen_income
+    model_types: [PD]
+    target_role: income_measure
+    indicator_roles: [segment, period]
+    expected_variation: Income varies across periods for a sufficiently large in-scope population.
+    assessment_grain: segment_and_period
+
+  - entry: t2_d08_valsim_stale_frozen_utilisation
+    model_types: [PD, EAD]
+    target_role: utilisation_measure
+    indicator_roles: [segment, period]
+    expected_variation: Usage or occupancy varies across periods with behaviour or market conditions.
+    assessment_grain: segment_and_period
+
+  - entry: t2_d08_valsim_stale_frozen_ead_drawn_balance
+    model_types: [EAD]
+    target_role: drawn_balance
+    indicator_roles: [entity_id, period, exposure_change_indicators]
+    required_declarations: [behavioural_balance_update_frequency]
+    condition: >
+      An independently recorded drawing, repayment, accrual, or other exposure
+      change should have updated the balance within its declared update cycle.
+    expected_variation: Drawn balances can change through drawings, repayments, fees, or interest accrual.
+    assessment_grain: entity_and_declared_update_cycle
+
+  - entry: t2_d08_valsim_stale_frozen_ead_undrawn_commitment
+    model_types: [EAD]
+    target_role: undrawn_commitment
+    indicator_roles: [entity_id, period, commitment_status, facility_type, exposure_change_indicators]
+    required_declarations:
+    - commitment_applicability_by_facility_type
+    - behavioural_balance_update_frequency
+    condition: >
+      An undrawn component is contractually applicable and an independently
+      recorded drawing, repayment, limit change, or cancellation should have
+      updated it within its declared update cycle.
+    expected_variation: Applicable undrawn commitments can change over their declared update cycle.
+    assessment_grain: entity_and_declared_update_cycle
+
+  - entry: t2_d08_valsim_stale_frozen_ead_available_commitment
+    model_types: [EAD]
+    target_role: available_commitment
+    indicator_roles: [entity_id, period, commitment_status, facility_type, exposure_change_indicators]
+    required_declarations:
+    - commitment_applicability_by_facility_type
+    - behavioural_balance_update_frequency
+    condition: >
+      Drawing availability is applicable and an independently recorded drawing,
+      repayment, restriction, cancellation, or limit change should have updated
+      it within its declared update cycle.
+    expected_variation: Available commitment can change over its declared update cycle.
+    assessment_grain: entity_and_declared_update_cycle
+
+  exclusions:
+  - role: static_attributes
+    reason: These fields are fixed by definition and are never assessed for freezing.
+  - role: spread_over_benchmark
+    reason: Contractual spreads are commonly fixed at origination.
+  - role: amortisation_fields
+    when: amortisation_basis indicates no principal repayment
+    reason: A balance can be flat by contract for a non-amortising exposure.
+  - role: credit_limit
+    reason: A contractual limit may legitimately remain fixed unless a separate declaration says it is behaviourally updated.
+  - role: exposure_at_default
+    reason: A realised or point-in-time EAD value may be fixed by its measurement definition.
+  - role: future_drawdown
+    reason: A realised future-drawdown outcome may be fixed after its measurement point.
+  - role: conversion_factor
+    reason: A realised, regulatory, or policy conversion factor may be fixed by definition.
+  safeguards:
+  - Zero is a common genuine arrears value; never treat it as a row-level sentinel without a field-specific declaration.
+  - Exclude declared sentinel cells before calculating variance for the same field.
+  - Below the minimum row count, return UNCLASSIFIED rather than tagging zero variance.
+  - Apply each entry only at its declared assessment grain.
+  - A condition role that is unbound makes the entry UNSCOPED rather than unconditionally applicable.
+  - A constant caused by declared panel construction belongs to the NOT_APPLICABLE rule.
+  - Report the share of eligible groups actually assessed, not only the groups tagged.
+  - Ordinary blanks and simulated missingness are not sentinels unless explicitly declared as such.
+
+- rule: t2_d08_valsim_rule_not_applicable
+  name: Value does not apply under the declared condition
+  tag_assigned: NOT_APPLICABLE
+  severity: MATERIAL
+  model_types: [PD, LGD, EAD]
+  use_cases: [IFRS9, IRB]
+  product_scope: any_credit_product
+  count_unit: cell
+  check: >
+    Tag a field when an independently declared process, contract, use-case, or
+    panel-scope condition establishes that the field does not apply to the row.
+  entries:
+  - entry: t2_d08_valsim_not_applicable_lgd_no_realisation
+    model_types: [LGD]
+    use_cases: [IFRS9, IRB]
+    target_role: realisation_fields
+    indicator_roles: [return_to_performing]
+    condition: return_to_performing declares that the case returned to performing without realisation
+    reason: No realisation occurred, so realisation date and proceeds will never exist.
+
+  - entry: t2_d08_valsim_not_applicable_lgd_regime_stamp
+    model_types: [LGD]
+    use_cases: [IRB]
+    target_role: regime_stamp
+    indicator_roles: [non_arrears_trigger]
+    condition: the trigger is arrears-based rather than judgement-based
+    reason: A judgement-policy stamp does not apply to an arrears-based event.
+
+  - entry: t2_d08_valsim_not_applicable_lgd_arrears
+    model_types: [LGD]
+    use_cases: [IFRS9, IRB]
+    target_role: arrears_measure
+    indicator_roles: [non_arrears_trigger]
+    condition: a declared qualitative or judgement-based trigger caused the deterioration or default
+    reason: The event did not arise from arrears, so an arrears measure does not apply to that event.
+
+  - entry: t2_d08_valsim_not_applicable_pd_construction_constant
+    model_types: [PD]
+    use_cases: [IFRS9, IRB]
+    target_role: construction_constants
+    indicator_declarations: [panel_scope_exclusions]
+    condition: the declared panel scope excludes the observations that would make the variable vary
+    reason: The variable describes extract construction rather than portfolio behaviour.
+
+  - entry: t2_d08_valsim_not_applicable_pd_fixed_rate_spread
+    model_types: [PD]
+    use_cases: [IFRS9, IRB]
+    target_role: spread_over_benchmark
+    indicator_roles: [rate_basis]
+    condition: rate_basis declares a contractually fixed rate that tracks no benchmark
+    reason: A margin over a benchmark does not apply when no benchmark is tracked.
+
+  - entry: t2_d08_valsim_not_applicable_pd_before_maturity
+    model_types: [PD]
+    use_cases: [IFRS9, IRB]
+    target_role: maturity_conditional_flags
+    indicator_roles: [maturity_date, period]
+    condition: the reporting period end precedes contractual maturity
+    reason: A maturity outcome cannot apply before maturity is reached.
+
+  - entry: t2_d08_valsim_not_applicable_pd_non_amortising
+    model_types: [PD]
+    use_cases: [IFRS9, IRB]
+    target_role: amortisation_fields
+    indicator_roles: [amortisation_basis]
+    condition: amortisation_basis declares that principal is not repaid over the exposure's life
+    reason: A principal-paydown interpretation does not apply to a non-amortising exposure.
+
+  - entry: t2_d08_valsim_not_applicable_ead_undrawn_commitment
+    model_types: [EAD]
+    target_role: undrawn_commitment
+    indicator_roles: [facility_type, commitment_status]
+    required_declarations: [commitment_applicability_by_facility_type]
+    condition: >
+      The declared facility terms contain no committed or off-balance component
+      from which an undrawn amount can arise.
+    reason: An undrawn commitment does not apply to a facility with no commitment concept.
+
+  - entry: t2_d08_valsim_not_applicable_ead_available_commitment
+    model_types: [EAD]
+    target_role: available_commitment
+    indicator_roles: [facility_type, commitment_status]
+    required_declarations: [commitment_applicability_by_facility_type]
+    condition: The declared facility terms provide no contractual right to additional drawing.
+    reason: Drawing availability does not apply when the facility permits no additional drawing.
+
+  - entry: t2_d08_valsim_not_applicable_ead_credit_limit
+    model_types: [EAD]
+    target_role: credit_limit
+    indicator_roles: [facility_type, commitment_status]
+    required_declarations: [commitment_applicability_by_facility_type]
+    condition: The declared facility structure has no revolving, committed, or limit-based amount.
+    reason: A credit-limit field does not apply when the contract has no limit concept.
+
+  - entry: t2_d08_valsim_not_applicable_ead_future_drawdown
+    model_types: [EAD]
+    target_role: future_drawdown
+    indicator_roles: [facility_type, commitment_status]
+    required_declarations: [commitment_applicability_by_facility_type]
+    condition: The declared facility terms provide no amount capable of being drawn after observation.
+    reason: Future drawdown does not apply when no further contractual drawing is possible.
+
+  - entry: t2_d08_valsim_not_applicable_ead_conversion_factor
+    model_types: [EAD]
+    target_role: conversion_factor
+    indicator_roles: [facility_type, commitment_status, undrawn_commitment]
+    required_declarations: [commitment_applicability_by_facility_type]
+    condition: >
+      The declared EAD construction contains no eligible undrawn or off-balance
+      amount to which a conversion factor could apply.
+    reason: A conversion factor does not apply when there is no convertible exposure component.
+
+  expression: >
+    IF the independently declared applicability condition is false for the row
+    THEN tag the target role as NOT_APPLICABLE.
+  safeguards:
+  - Applicability conditions are declared process facts and are never inferred from population patterns alone.
+  - NOT_APPLICABLE means the value will never apply; CENSORED means it is not final yet.
+  - A null indicator returns UNCLASSIFIED and an unbound indicator role returns UNSCOPED.
+  - The rule is closed to its listed entries; frequently empty fields are not added by inference.
+  - A variable that is merely constant is not a construction constant without a panel-scope declaration.
+  - A populated NOT_APPLICABLE cell remains tagged and is additionally counted as populated_where_not_applicable.
+  - Date comparisons against a coarse reporting period use the period end.
+  - Report when the NOT_APPLICABLE share exceeds the declared threshold.
+
+rule_routing_output:
+  grain: variable_and_rule_entry
+  fields:
+  - input_variable
+  - matched_role
+  - rule
+  - entry
+  - context_hints
+  - routing_status
+  - missing_roles
+  - missing_declarations
+  - review_required
+  routing_status_domain:
+  - APPLICABLE
+  - UNSCOPED
+
+classification_output:
+  form: sparse_cell_tag_set
+  fields:
+  - input_variable
+  - row_reference
+  - matched_role
+  - rule
+  - entry
+  - tag
+  - reason_code
+  - context_hints
+  - declaration_version
+  - knowledge_base_version
+  required_reports:
+  - tag_distribution_by_field
+  - assessment_outcomes_by_field_and_rule
+  - unexamined_fields
+  - populated_where_not_applicable_counts
+  - assessed_group_share_for_variance_entries
+  - unscoped_entry_counts
+

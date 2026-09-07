@@ -391,9 +391,9 @@ class EndToEndRunTests(unittest.TestCase):
     def test_coverage_summary_names_covered_and_pending_without_a_health_score(self):
         summary = v2.diagnostics_coverage_summary(self.item_id)
         self.assertEqual(summary["registered_total"], 9)
-        self.assertEqual(summary["executable_total"], 5)
-        self.assertEqual([d["diagnostic_id"] for d in summary["executable"]], [2, 4, 6, 11, 14])
-        self.assertEqual(len(summary["workflow_pending"]), 4)
+        self.assertEqual(summary["executable_total"], 6)
+        self.assertEqual([d["diagnostic_id"] for d in summary["executable"]], [2, 4, 6, 8, 11, 14])
+        self.assertEqual(len(summary["workflow_pending"]), 3)
         self.assertEqual([r["diagnostic_id"] for r in summary["ran"]], [4])
         self.assertIn("VIOLATION", summary["verdict_rollup"])
         self.assertIn("CRITICAL", summary["by_severity"])
@@ -482,6 +482,18 @@ class CoverageBoardTests(unittest.TestCase):
                           "kb_dependency", "workflow_status", "chip", "can_run", "last_run",
                           "run_count", "run_counts", "recent_runs"):
                 self.assertIn(field, card)
+
+    def test_the_board_shell_and_cards_can_load_progressively(self):
+        summary = v2.diagnostics_board_summary(self.item_id)
+        self.assertEqual(len(summary["cards"]), 9)
+        self.assertTrue(all(card["loading"] for card in summary["cards"]))
+        self.assertTrue(all("chip" not in card for card in summary["cards"]))
+
+        card = v2.diagnostics_board_card(self.item_id, 6)
+        self.assertEqual(card["diagnostic_id"], 6)
+        self.assertFalse(card["loading"])
+        self.assertIn("chip", card)
+        self.assertIn("recent_runs", card)
 
     def test_each_card_exposes_latest_completed_and_full_immutable_run_history(self):
         item_id = _make_item(f"history-{uuid.uuid4().hex[:8]}", "IRB / Basel")
@@ -572,10 +584,10 @@ class CoverageBoardTests(unittest.TestCase):
             "status": "Closed", "same_finding": True,
         })
 
-    def test_four_diagnostics_are_enabled_and_the_other_five_are_pending(self):
+    def test_five_diagnostics_are_enabled_and_the_other_four_are_pending(self):
         board = v2.diagnostics_board(self.item_id)
         pending = [c for c in board["cards"] if c["chip"]["status"] == "workflow_pending"]
-        self.assertEqual(len(pending), 5)
+        self.assertEqual(len(pending), 4)
         for card in pending:
             self.assertFalse(card["can_run"])
             self.assertEqual(card["chip"]["reason"], register_mod.REFUSAL_WORKFLOW_PENDING)

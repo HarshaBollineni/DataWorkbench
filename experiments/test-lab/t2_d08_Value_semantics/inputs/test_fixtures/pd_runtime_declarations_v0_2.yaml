@@ -1,0 +1,13 @@
+as_of_date: '2024-12-31'
+forward_horizon_by_label:
+  DFLT_12M: 4 quarters
+panel_end_period: 2024-Q4
+declared_exit_events:
+- PAID_OFF
+panel_scope_exclusions:
+- default observations
+field_specific_sentinel_definitions:
+  NOI: -999.0
+variance_window: 3
+minimum_row_count: 10
+not_applicable_share_threshold: 0.8

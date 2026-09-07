@@ -1,0 +1,124 @@
+﻿Slide,Diagnostic,Name,Status,Full deck slides,Sources
+2,T1-D02,Single-feature target separation,Enabled,27-31,"[D02R] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/README.md
+[D02E] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/adapter.py
+[D02C] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/orchestration.py
+[D02M] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/manifest.py
+[D02X] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/runner.py
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+3,T2-D04,Cross-field business rule,Implemented · paused,32-36,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json
+[D04R] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/README.md
+[D04E] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/engine.py
+[D04M] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/manifest.py
+[D04X] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/runner.py
+[S14] source-codes/backend/ai/v2/issues.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+4,T2-D06,Row-completeness reconciliation,Enabled,37-41,"[D06R] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/README.md
+[D06E] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/engine.py
+[D06M] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/manifest.py
+[D06X] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/runner.py
+[D06T] source-codes/backend/tests/unit/test_lab/diagnostics/t2_d06_row_completeness/test_row_completeness_engine.py
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+5,T2-D08,Value-semantics classification,Enabled,42-46,"[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md
+[D08M] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/manifest.py
+[D08E] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/engine.py
+[D08X] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/runner.py
+[D08K] source-codes/backend/knowledge_base/value_semantics_kb_v0_2.yaml
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+6,T2-D11,Directional / monotonic consistency,Enabled,47-51,"[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md
+[D11M] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/manifest.py
+[D11E] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/engine.py
+[D11X] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/runner.py
+[D11K] source-codes/backend/knowledge_base/pd_directionality_kb_v0_3.yaml
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+7,T4-D14,Population Stability Index (PSI),Enabled,52-56,"[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md
+[D14E] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/engine.py
+[D14M] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/manifest.py
+[D14X] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/runner.py
+[D14T] source-codes/backend/tests/integration/test_lab/diagnostics/t4_d14_population_stability/test_population_stability.py
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+8,SUP-MISS,Missingness Mechanism,Implemented · supporting,57-59,"[S23] source-codes/docs/architecture/phase1b-missingness.md
+[S24] source-codes/backend/supporting_analyses/missingness.py
+[S33] source-codes/backend/tests/test_missingness_capability.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx
+[S15] source-codes/backend/domains/rca/service.py"
+9,T3-D12,Label-consistency rule,Planned · registered,60-60,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S10] source-codes/backend/dq_diagnostics/dispatch.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+10,T5-D17,Resolution / maturity rate by vintage,Planned · registered,61-61,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S10] source-codes/backend/dq_diagnostics/dispatch.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+11,T6-D20,AI-proposal workflow,Planned · registered,62-62,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S10] source-codes/backend/dq_diagnostics/dispatch.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+12,T1-D01,Post-outcome / look-ahead field,Planned · deferred,63-63,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+13,T1-D03,Categorical leakage: association / purity,Planned · deferred,64-64,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+14,T2-D05,Derivation identity,Planned · deferred,65-65,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+15,T2-D07,Disguised missingness / staleness,Planned · deferred,66-66,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+16,T2-D09,Statistical outlier: robust Z,Planned · deferred,67-67,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+17,T2-D10,Boundary / pile-up detection,Planned · deferred,68-68,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+18,T3-D13,Target-rate break / change-point,Planned · deferred,69-69,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+19,T4-D15,KS distance,Planned · deferred,70-70,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+20,T4-D16,Segment coverage,Planned · deferred,71-71,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+21,T5-D18,Resolved-only vs all differential,Planned · deferred,72-72,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"
+22,T5-D19,Seasoning / maturity profile,Planned · deferred,73-73,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx"

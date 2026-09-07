@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
 import { getFrameworkAreasV2, getFrameworkMatrixV2, getFrameworkOverviewV2 } from "@/api/client";
@@ -8,7 +9,9 @@ const heat = { Critical: "bg-red-600 text-white", High: "bg-amber-500 text-white
 const TABS = [["overview", "Overview"], ["areas", "Areas"], ["matrix", "Matrix"]];
 
 export default function DQFramework() {
-  const [tab, setTab] = useState("overview");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get("tab");
+  const [tab, setTab] = useState(() => TABS.some(([key]) => key === requestedTab) ? requestedTab : "overview");
   const [overview, setOverview] = useState(null);
   const [areas, setAreas] = useState([]);
   const [matrix, setMatrix] = useState(null);
@@ -19,6 +22,13 @@ export default function DQFramework() {
     getFrameworkMatrixV2().then(setMatrix);
   }, []);
 
+  const updateLocation = (updates) => setSearchParams((current) => {
+    const next = new URLSearchParams(current);
+    Object.entries(updates).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key));
+    return next;
+  }, { replace: true });
+  const selectTab = (nextTab) => { setTab(nextTab); updateLocation({ tab: nextTab }); };
+
   return (
     <main className="min-h-screen bg-slate-50 p-8">
       <div className="mb-6">
@@ -27,7 +37,7 @@ export default function DQFramework() {
       </div>
       <div className="mb-5 flex gap-2">
         {TABS.map(([key, label]) => (
-          <button key={key} className={`rounded-md px-3 py-2 text-sm font-medium ${tab === key ? "bg-dq-purple text-dq-dark" : "bg-white text-slate-600"}`} onClick={() => setTab(key)}>{label}</button>
+          <button key={key} className={`rounded-md px-3 py-2 text-sm font-medium ${tab === key ? "bg-dq-purple text-dq-dark" : "bg-white text-slate-600"}`} onClick={() => selectTab(key)}>{label}</button>
         ))}
       </div>
 
@@ -49,7 +59,8 @@ export default function DQFramework() {
         </section>
       )}
 
-      {tab === "areas" && <AreasTab areas={areas} />}
+      {tab === "areas" && <AreasTab areas={areas} initialSub={searchParams.get("stage")}
+        onSubChange={(stage) => updateLocation({ stage })} />}
 
       {tab === "matrix" && matrix && (
         <section className="overflow-auto rounded-lg border border-slate-200 bg-white">
@@ -84,8 +95,8 @@ export default function DQFramework() {
 
 // Areas tab (feedback 6.2): Systemic / Specific sub-tabs (areas tagged Both
 // appear in each), grouped under a bold L1 theme heading with L2 cards below.
-function AreasTab({ areas }) {
-  const [sub, setSub] = useState("stage1");
+function AreasTab({ areas, initialSub, onSubChange }) {
+  const [sub, setSub] = useState(() => ["stage1", "stage2"].includes(initialSub) ? initialSub : "stage1");
   const visible = useMemo(
     () => areas.filter((a) => a.stage === sub || a.stage === "both"),
     [areas, sub],
@@ -106,7 +117,7 @@ function AreasTab({ areas }) {
         {[["stage1", "Systemic"], ["stage2", "Specific"]].map(([key, label]) => (
           <button key={key}
             className={`rounded-md px-3 py-1.5 text-sm font-medium ${sub === key ? "bg-slate-900 text-white" : "bg-white text-slate-600 border border-slate-200"}`}
-            onClick={() => setSub(key)}>
+            onClick={() => { setSub(key); onSubChange(key); }}>
             {label}
           </button>
         ))}

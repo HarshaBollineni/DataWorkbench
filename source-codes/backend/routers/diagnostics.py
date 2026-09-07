@@ -29,19 +29,26 @@ def _diagnostic_principal(authorization) -> dict:
     return tenancy.resolve_principal(authorization)
 
 
-def _require_d11_tenant(run: dict, principal: dict) -> None:
+def _require_governed_tenant(run: dict, principal: dict) -> None:
     tenant_id = str((run.get("manifest_json") or {}).get("tenant_id") or "bootstrap")
     if tenant_id != principal["tenant_id"]:
-        raise KeyError("Unknown directionality run")
+        raise KeyError("Unknown diagnostic run")
+
+
+def _require_d11_tenant(run: dict, principal: dict) -> None:
+    """Backward-compatible name retained for existing direct tests."""
+    _require_governed_tenant(run, principal)
 
 
 def _diag_err(exc: Exception):
     """Map deliberate diagnostics refusals onto their public status codes."""
     from dq_diagnostics.engines.base import EngineNotImplementedError
-    from domains.test_lab.shared.run_state import ManifestError
+    from domains.test_lab.shared.run_state import ManifestError, RunAlreadyExecuting
     from dq_diagnostics.register import WorkflowPendingError
 
     if isinstance(exc, WorkflowPendingError):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, RunAlreadyExecuting):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, KeyError):
         raise HTTPException(status_code=404, detail=str(exc).strip("'\"")) from exc
@@ -150,18 +157,24 @@ def _run_history_entry(run: dict, store) -> dict:
     metrics = (summary or {}).get("metrics_json") or {}
     return {"run_id": run["run_id"], "status": run["status"],
         "created_at": run.get("created_at"), "started_at": run.get("started_at"),
-        "finished_at": run.get("finished_at"), "verdict": (summary or {}).get("verdict"),
+        "finished_at": run.get("finished_at"), "heartbeat_at": run.get("heartbeat_at"),
+        "status_detail": run.get("status_detail_json"),
+        "verdict": (summary or {}).get("verdict"),
         "rollup": metrics.get("rollup"), "result_count": len(results),
         "has_results": bool(results),
         "manifest_fingerprint": (run.get("manifest_json") or {}).get("manifest_fingerprint")}
 
 
 def _diagnostic_run_history(item_id: str, diagnostic_id: int, store,
-                            entry_limit: int | None = None) -> dict:
+                            entry_limit: int | None = None,
+                            tenant_id: str | None = None) -> dict:
     runs = [run for run in store.query(
         "diag_runs", item_id=item_id, diagnostic_id=diagnostic_id,
         order_by="created_at DESC, run_id DESC",
-    ) if run["status"] != "discarded"]
+    ) if run["status"] != "discarded" and (
+        tenant_id is None
+        or str((run.get("manifest_json") or {}).get("tenant_id") or "bootstrap") == tenant_id
+    )]
     counts: dict[str, int] = {}
     for run in runs:
         counts[run["status"]] = counts.get(run["status"], 0) + 1
@@ -175,50 +188,63 @@ def _diagnostic_run_history(item_id: str, diagnostic_id: int, store,
             "runs": entries}
 
 
-@router.get("/items/{item_id}/diagnostics/board")
-@_plt04_sanitize
-def diagnostics_board(item_id: str,
-                      authorization: str | None = Header(default=None)):
-    """The Coverage board: EXACTLY one card per register row (9, D-17) with
-    its chip and reason, plus the area-level GAP strip (FWK-14).
+def _latest_diagnostic_draft(item_id: str, diagnostic_id: int,
+                             principal: dict) -> dict | None:
+    """Resolve the diagnostic-specific draft contract behind one shared API."""
+    from domains.test_lab.shared import run_state
 
-    ``chip.status`` is one of ``ready`` · ``not_applicable`` · ``blocked`` ·
-    ``workflow_pending``. ``can_run`` is false for everything but ``ready``,
-    so a pending diagnostic has no run affordance at all (6-T10).
-    """
-    import system_db as _s
-    from dq_diagnostics import readiness as readiness_mod
-    from dq_diagnostics import register as register_mod
-    from dq_diagnostics.register import REFUSAL_WORKFLOW_PENDING, WorkflowPendingError
+    if diagnostic_id in {8, 11}:
+        from dq_diagnostics.dispatch import adapter
+        manifest_mod = adapter(diagnostic_id)["manifest"]
+        return manifest_mod.latest_draft(
+            item_id, tenant_id=principal["tenant_id"],
+            actor=principal["username"],
+        )
+    if diagnostic_id == 14:
+        from dq_diagnostics.dispatch import adapter
+        manifest_mod = adapter(diagnostic_id)["manifest"]
+        return manifest_mod.latest_draft(item_id)
+    return run_state.latest_draft(
+        item_id, diagnostic_id, actor=principal["username"],
+    )
 
-    principal = _diagnostic_principal(authorization)
-    try:
-        item = service.require_item(item_id)
-    except Exception as exc:  # noqa: BLE001
-        _diag_err(exc)
 
-    areas = {a["area_id"]: a for a in _s.query("framework_test_areas")}
-    from domains.test_lab.diagnostics.t2_d11_directional_monotonic_consistency import manifest as direction_manifest
-    from domains.test_lab.diagnostics.t4_d14_population_stability import manifest as psi_manifest
-    cards = []
-    for row in register_mod.list_register():
-        did = row["diagnostic_id"]
-        try:
-            state = readiness_mod.readiness(item_id, did, principal["tenant_id"])
-            chip = state.to_dict()
-        except WorkflowPendingError:
-            chip = {"status": "workflow_pending", "reason": REFUSAL_WORKFLOW_PENDING, "detail": {}}
-        open_draft = (psi_manifest.latest_draft(item_id) if did == 14
-                      else direction_manifest.latest_draft(
-                          item_id, tenant_id=principal["tenant_id"],
-                          actor=principal["username"],
-                      ) if did == 11 else None)
-        last = None; history = {"total": 0, "counts": {}, "latest_completed": None, "runs": []}
-        if row["workflow_status"] == "executable":
-            history = _diagnostic_run_history(item_id, did, _s, entry_limit=5)
-            last = history["latest_completed"]
-        cards.append({
-            "diagnostic_id": did,
+def _discard_diagnostic_drafts(item_id: str, diagnostic_id: int,
+                               principal: dict) -> int:
+    """Archive open drafts using custom cleanup where a diagnostic requires it."""
+    from domains.test_lab.shared import run_state
+
+    if diagnostic_id in {8, 11}:
+        from dq_diagnostics.dispatch import adapter
+        manifest_mod = adapter(diagnostic_id)["manifest"]
+        return manifest_mod.discard_drafts(
+            item_id, actor=principal["username"],
+            tenant_id=principal["tenant_id"],
+        )
+    if diagnostic_id == 14:
+        from dq_diagnostics.dispatch import adapter
+        manifest_mod = adapter(diagnostic_id)["manifest"]
+        return manifest_mod.discard_drafts(
+            item_id, actor=principal["username"],
+        )
+    return run_state.discard_drafts(
+        item_id, diagnostic_id, actor=principal["username"],
+    )
+
+
+def _board_summary(item_id: str, store, register_mod) -> dict:
+    """Return the inexpensive, dataset-independent shape of the board."""
+    item = service.require_item(item_id)
+    areas = {a["area_id"]: a for a in store.query("framework_test_areas")}
+    rows = register_mod.list_register()
+    coverage = register_mod.coverage_map()
+    return {
+        "item_id": item_id,
+        "item": {"item_id": item["item_id"], "name": item.get("name"),
+                 "kind": item.get("kind"), "use_case": item.get("use_case"),
+                 "ingest_status": item.get("ingest_status")},
+        "cards": [{
+            "diagnostic_id": row["diagnostic_id"],
             "name": row["name"],
             "area": row["area"],
             "area_name": (areas.get(row["area"]) or {}).get("name"),
@@ -232,40 +258,125 @@ def diagnostics_board(item_id: str,
             "workflow_status": row["workflow_status"],
             "l2_areas": row["l2_areas_json"] or [],
             "enabled_by": row["enabled_by"],
-            "chip": chip,
-            "can_run": chip["status"] == "ready",
-            "last_run": last,
-            "run_count": history["total"],
-            "run_counts": history["counts"],
-            "recent_runs": history["runs"][:5],
-            # Draft discovery rides with the already-loaded Coverage board so
-            # the resume/start-afresh choice can open without a click-time fetch.
-            "open_draft": open_draft,
-        })
-    coverage = register_mod.coverage_map()
-    return {
-        "item_id": item_id,
-        "item": {"item_id": item["item_id"], "name": item.get("name"),
-                 "kind": item.get("kind"), "use_case": item.get("use_case"),
-                 "ingest_status": item.get("ingest_status")},
-        "cards": cards,
+            "loading": True,
+        } for row in rows],
         "gap_areas": [a for a in coverage["areas"] if a["status"] != "covered"],
         "coverage": {"executable": coverage["executable"],
                      "workflow_pending": coverage["workflow_pending"]},
     }
 
 
+def _board_card(item_id: str, row: dict, areas: dict, principal: dict, store) -> dict:
+    """Resolve one diagnostic's readiness, draft, and result history."""
+    from dq_diagnostics import readiness as readiness_mod
+    from dq_diagnostics.register import REFUSAL_WORKFLOW_PENDING, WorkflowPendingError
+
+    did = row["diagnostic_id"]
+    try:
+        state = readiness_mod.readiness(item_id, did, principal["tenant_id"])
+        chip = state.to_dict()
+    except WorkflowPendingError:
+        chip = {"status": "workflow_pending", "reason": REFUSAL_WORKFLOW_PENDING, "detail": {}}
+    open_draft = _latest_diagnostic_draft(item_id, did, principal)
+    history = {"total": 0, "counts": {}, "latest_completed": None, "runs": []}
+    if row["workflow_status"] == "executable":
+        history = _diagnostic_run_history(
+            item_id, did, store, entry_limit=5,
+            tenant_id=principal["tenant_id"] if did in {8, 11} else None,
+        )
+    return {
+        "diagnostic_id": did,
+        "name": row["name"],
+        "area": row["area"],
+        "area_name": (areas.get(row["area"]) or {}).get("name"),
+        "mode": row["mode"],
+        "stage": row["stage"],
+        "det_stat": row["det_stat"],
+        "decision_type": row["decision_type"],
+        "kb_dependency": row["kb_dependency"],
+        "metric": row["metric"],
+        "what_it_computes": row["what_it_computes"],
+        "workflow_status": row["workflow_status"],
+        "l2_areas": row["l2_areas_json"] or [],
+        "enabled_by": row["enabled_by"],
+        "chip": chip,
+        "can_run": chip["status"] == "ready",
+        "last_run": history["latest_completed"],
+        "run_count": history["total"],
+        "run_counts": history["counts"],
+        "recent_runs": history["runs"][:5],
+        "open_draft": open_draft,
+        "loading": False,
+    }
+
+
+@router.get("/items/{item_id}/diagnostics/board/summary")
+@_plt04_sanitize
+def diagnostics_board_summary(item_id: str,
+                              authorization: str | None = Header(default=None)):
+    """Fast board shell; card-specific state is fetched independently."""
+    import system_db as _s
+    from dq_diagnostics import register as register_mod
+    _diagnostic_principal(authorization)
+    try:
+        return _board_summary(item_id, _s, register_mod)
+    except Exception as exc:  # noqa: BLE001
+        _diag_err(exc)
+
+
+@router.get("/items/{item_id}/diagnostics/board/cards/{diagnostic_id}")
+@_plt04_sanitize
+def diagnostics_board_card(item_id: str, diagnostic_id: int,
+                           authorization: str | None = Header(default=None)):
+    """Return one card so the UI can reveal diagnostics as each is ready."""
+    import system_db as _s
+    from dq_diagnostics import register as register_mod
+    principal = _diagnostic_principal(authorization)
+    try:
+        service.require_item(item_id)
+        row = register_mod.get_diagnostic(diagnostic_id)
+        areas = {a["area_id"]: a for a in _s.query("framework_test_areas")}
+        return _board_card(item_id, row, areas, principal, _s)
+    except Exception as exc:  # noqa: BLE001
+        _diag_err(exc)
+
+
+@router.get("/items/{item_id}/diagnostics/board")
+@_plt04_sanitize
+def diagnostics_board(item_id: str,
+                      authorization: str | None = Header(default=None)):
+    """The complete Coverage board (retained for API compatibility)."""
+    import system_db as _s
+    from dq_diagnostics import register as register_mod
+    principal = _diagnostic_principal(authorization)
+    try:
+        summary = _board_summary(item_id, _s, register_mod)
+        areas = {a["area_id"]: a for a in _s.query("framework_test_areas")}
+        summary["cards"] = [
+            _board_card(item_id, row, areas, principal, _s)
+            for row in register_mod.list_register()
+        ]
+        return summary
+    except Exception as exc:  # noqa: BLE001
+        _diag_err(exc)
+
+
 @router.get("/items/{item_id}/diagnostics/{diagnostic_id}/runs")
 @_plt04_sanitize
-def diagnostic_run_history(item_id: str, diagnostic_id: int):
+def diagnostic_run_history(item_id: str, diagnostic_id: int,
+                           authorization: str | None = Header(default=None)):
     """Immutable run history for one diagnostic on one item, newest first."""
     import system_db as _s
     try:
         service.require_item(item_id)
         if not _s.query_one("diagnostic_register", diagnostic_id=diagnostic_id):
             raise KeyError(f"Unknown diagnostic: {diagnostic_id}")
+        principal = _diagnostic_principal(authorization)
         return {"item_id": item_id, "diagnostic_id": diagnostic_id,
-                **_diagnostic_run_history(item_id, diagnostic_id, _s)}
+                **_diagnostic_run_history(
+                    item_id, diagnostic_id, _s,
+                    tenant_id=principal["tenant_id"] if diagnostic_id in {8, 11} else None,
+                )}
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
 
@@ -284,11 +395,21 @@ def build_diagnostic_manifest(
         require_executable(body.diagnostic_id)
         from dq_diagnostics.dispatch import adapter
         selected = adapter(body.diagnostic_id)
+        principal = _diagnostic_principal(authorization)
+        if body.diagnostic_id not in {8, 11, 14}:
+            if body.start_afresh:
+                _discard_diagnostic_drafts(item_id, body.diagnostic_id, principal)
+            else:
+                saved = _latest_diagnostic_draft(
+                    item_id, body.diagnostic_id, principal,
+                )
+                if saved:
+                    from domains.test_lab.shared.run_state import get_manifest
+                    return get_manifest(saved["run_id"])
         if body.diagnostic_id == 4:
             return selected["manifest"].build_manifest(item_id, body.diagnostic_id,
                 actor="system", tenant_id="bootstrap", use_case_override=body.use_case)
-        if body.diagnostic_id == 11:
-            principal = _diagnostic_principal(authorization)
+        if body.diagnostic_id in {8, 11}:
             if body.start_afresh:
                 selected["manifest"].discard_drafts(
                     item_id, actor=principal["username"],
@@ -315,7 +436,7 @@ def build_diagnostic_manifest(
         if body.diagnostic_id == 14:
             return selected["manifest"].build_manifest(item_id, actor="system",
                 current_snapshot_id=body.current_snapshot_id)
-        if body.diagnostic_id == 11:
+        if body.diagnostic_id in {8, 11}:
             return selected["manifest"].build_manifest(
                 item_id, actor=principal["username"],
                 tenant_id=principal["tenant_id"],
@@ -333,16 +454,32 @@ def resumable_diagnostic_draft(
 ):
     """Discover an open setup before launch; never resumes it implicitly."""
     try:
-        if diagnostic_id not in {11, 14}:
-            return {"draft": None}
-        from dq_diagnostics.dispatch import adapter
-        if diagnostic_id == 11:
-            principal = _diagnostic_principal(authorization)
-            return {"draft": adapter(diagnostic_id)["manifest"].latest_draft(
-                item_id, tenant_id=principal["tenant_id"],
-                actor=principal["username"],
-            )}
-        return {"draft": adapter(diagnostic_id)["manifest"].latest_draft(item_id)}
+        service.require_item(item_id)
+        principal = _diagnostic_principal(authorization)
+        return {"draft": _latest_diagnostic_draft(
+            item_id, diagnostic_id, principal,
+        )}
+    except Exception as exc:  # noqa: BLE001
+        _diag_err(exc)
+
+
+@router.delete("/diagnostics/manifests/{run_id}/draft")
+@_plt04_sanitize
+def discard_diagnostic_draft(
+    run_id: str,
+    authorization: str | None = Header(default=None),
+):
+    """Archive one unfinished setup; completed and running runs are immutable."""
+    try:
+        from domains.test_lab.shared import run_state
+        principal = _diagnostic_principal(authorization)
+        run = run_state.get_run(run_id)
+        service.require_item(run["item_id"])
+        if run["diagnostic_id"] in {8, 11}:
+            _require_governed_tenant(run, principal)
+        return run_state.discard_draft(
+            run_id, actor=principal["username"],
+        )
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
 
@@ -361,9 +498,9 @@ def patch_diagnostic_manifest(
         run = manifest_mod.get_run(run_id)
         from dq_diagnostics.dispatch import adapter
         actor = "system"
-        if run["diagnostic_id"] == 11:
+        if run["diagnostic_id"] in {8, 11}:
             principal = _diagnostic_principal(authorization)
-            _require_d11_tenant(run, principal)
+            _require_governed_tenant(run, principal)
             actor = principal["username"]
         return adapter(run["diagnostic_id"])["manifest"].patch_manifest(
             run_id, body.model_dump(exclude_none=True), actor=actor)
@@ -382,10 +519,10 @@ def get_diagnostic_manifest(
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
     principal = None
-    if run["diagnostic_id"] == 11:
+    if run["diagnostic_id"] in {8, 11}:
         principal = _diagnostic_principal(authorization)
         try:
-            _require_d11_tenant(run, principal)
+            _require_governed_tenant(run, principal)
         except Exception as exc:  # noqa: BLE001
             _diag_err(exc)
     if run["diagnostic_id"] == 2 and run["status"] == manifest_mod.DRAFT:
@@ -398,6 +535,11 @@ def get_diagnostic_manifest(
         from domains.test_lab.diagnostics.t2_d11_directional_monotonic_consistency import manifest as direction_manifest
         run["manifest_json"] = direction_manifest.refresh_draft_scope(
             run_id, actor=principal["username"], tenant_id=principal["tenant_id"],
+        )
+    if run["diagnostic_id"] == 8 and run["status"] == manifest_mod.DRAFT:
+        from domains.test_lab.diagnostics.t2_d08_value_semantics import manifest as semantics_manifest
+        run["manifest_json"] = semantics_manifest.refresh_draft_scope(
+            run_id, tenant_id=principal["tenant_id"],
         )
     return {"run": {k: run[k] for k in ("run_id", "item_id", "diagnostic_id", "status",
                                         "created_at", "started_at", "finished_at")},
@@ -425,32 +567,52 @@ def run_diagnostic_manifest(
         run = manifest_mod.get_run(run_id)
         diagnostic_id = run["diagnostic_id"]
         actor = "system"
-        if diagnostic_id == 11:
+        if diagnostic_id in {8, 11}:
             principal = _diagnostic_principal(authorization)
-            _require_d11_tenant(run, principal)
+            _require_governed_tenant(run, principal)
             actor = principal["username"]
         # FWK-17 — refuse a pending diagnostic with the exact refusal text.
         from dq_diagnostics.register import require_executable
         require_executable(diagnostic_id)
         from dq_diagnostics.dispatch import adapter
         selected = adapter(diagnostic_id)
-        runner, freeze, work_count = selected["runner"], selected["manifest"].freeze, selected["work_count"]
-        if body.stream:
-            if diagnostic_id == 2 and run["status"] == manifest_mod.DRAFT:
-                # Freeze against the final persisted Step 3 schema roles.
+        runner, freeze, work_count = (
+            selected["runner"], selected["manifest"].freeze, selected["work_count"]
+        )
+        # Freeze both streaming and synchronous launches at the shared API
+        # boundary. This closes the former gap where a synchronous exception
+        # could freeze inside a runner and leave the row stranded as RUNNING.
+        if run["status"] == manifest_mod.DRAFT:
+            if diagnostic_id == 2:
                 from domains.test_lab.diagnostics.t1_d02_feature_target_separation import manifest as feature_manifest
                 feature_manifest.refresh_draft_scope(run_id)
-            if diagnostic_id == 11 and run["status"] == manifest_mod.DRAFT:
+            if diagnostic_id == 11:
                 from domains.test_lab.diagnostics.t2_d11_directional_monotonic_consistency import manifest as direction_manifest
                 direction_manifest.refresh_draft_scope(
                     run_id, actor=actor, tenant_id=principal["tenant_id"],
                 )
-            manifest = freeze(run_id, actor=actor) if run["status"] == manifest_mod.DRAFT \
-                else run["manifest_json"]
+            if diagnostic_id == 8:
+                from domains.test_lab.diagnostics.t2_d08_value_semantics import manifest as semantics_manifest
+                semantics_manifest.refresh_draft_scope(
+                    run_id, tenant_id=principal["tenant_id"],
+                )
+            if diagnostic_id == 14:
+                from domains.test_lab.diagnostics.t4_d14_population_stability import manifest as psi_manifest
+                psi_manifest.refresh_draft_scope(run_id)
+            manifest = freeze(run_id, actor=actor)
+        else:
+            manifest = run["manifest_json"]
+        if body.stream:
             return {"run_id": run_id, "status": "running",
                     "stream_url": f"/api/v2/diagnostics/runs/{run_id}/stream",
                     "rules": work_count(manifest)}
-        return runner.execute_now(run_id, actor=actor)
+        if run["status"] == manifest_mod.DONE:
+            return runner.execute_now(run_id, actor=actor)
+        with manifest_mod.managed_run_execution(
+            run_id, channel="synchronous", actor=actor,
+        ) as lease:
+            lease.heartbeat()
+            return runner.execute_now(run_id, actor=actor)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
 
@@ -512,6 +674,17 @@ def preview_psi_bin_revision(run_id: str, feature: str, body: PsiBinRevisionIn):
 def psi_split_feature_options(run_id: str, feature: str, limit: int = 200):
     try:
         from domains.test_lab.diagnostics.t4_d14_population_stability.manifest import split_feature_options
+        return split_feature_options(run_id, feature, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        _diag_err(exc)
+
+
+@router.get("/diagnostics/manifests/{run_id}/directionality-split-options/{feature}")
+@_plt04_sanitize
+def directionality_split_feature_options(run_id: str, feature: str, limit: int = 200):
+    """PSI-compatible split controls for a segmented D11 rerun."""
+    try:
+        from domains.test_lab.diagnostics.t2_d11_directional_monotonic_consistency.manifest import split_feature_options
         return split_feature_options(run_id, feature, limit=limit)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
@@ -589,18 +762,18 @@ def stream_diagnostic_run(run_id: str):
     from domains.test_lab.shared import run_state as manifest_mod
     import system_db as _s
 
-    # D11's authenticated JSON launch is the only operation allowed to freeze
-    # its manifest and materialize queued Knowledge Base proposals.  Native
+    # Governed diagnostics' authenticated JSON launch is the only operation
+    # allowed to freeze their manifests. Native
     # EventSource requests cannot carry that bearer header, so this endpoint is
     # deliberately an observer only once the launch has moved the run out of
     # DRAFT.  Keep the legacy stream-start behavior for other diagnostics.
     requested_run = _s.query_one("diag_runs", run_id=run_id)
-    if (requested_run and requested_run["diagnostic_id"] == 11
+    if (requested_run and requested_run["diagnostic_id"] in {8, 11}
             and requested_run["status"] == manifest_mod.DRAFT):
         raise HTTPException(
             status_code=409,
             detail=(
-                "Launch this directionality workflow through the authenticated "
+                "Launch this governed diagnostic through the authenticated "
                 "run action before opening its event stream."
             ),
         )
@@ -631,11 +804,19 @@ def stream_diagnostic_run(run_id: str):
                 return
             manifest = run.get("manifest_json") or {}
             actor = manifest.get("frozen_by") or manifest.get("created_by") or "system"
-            yield from runner.run(run_id, actor=actor)
+            with manifest_mod.managed_run_execution(
+                run_id, channel="stream", actor=actor,
+            ) as lease:
+                for event in runner.run(run_id, actor=actor):
+                    if manifest_mod.get_run(run_id)["status"] == manifest_mod.RUNNING:
+                        lease.heartbeat()
+                    if event.get("phase") == "error":
+                        manifest_mod.mark_run_failed(
+                            run_id, "execution_failed", actor, owner=lease.owner,
+                        )
+                    yield event
         except Exception:  # noqa: BLE001
             logger.exception("Unhandled error while streaming diagnostic run %s", run_id)
-            _s.update("diag_runs", {"run_id": run_id}, {"status": manifest_mod.FAILED,
-                                                        "finished_at": _s.now_ist()})
             yield {"phase": "error", "agent": locals().get("agent", "diagnostic_engine"),
                    "thought": "internal error"}
     # Execution is process-owned.  The browser is only an observer: closing or
@@ -647,7 +828,8 @@ def stream_diagnostic_run(run_id: str):
 @router.get("/items/{item_id}/diagnostics/results")
 @_plt04_sanitize
 def diagnostic_results(item_id: str, run_id: str | None = None,
-                       diagnostic_id: int | None = None):
+                       diagnostic_id: int | None = None,
+                       authorization: str | None = Header(default=None)):
     """Decision-type-shaped results + per-rule findings for display."""
     import system_db as _s
     try:
@@ -657,6 +839,12 @@ def diagnostic_results(item_id: str, run_id: str | None = None,
             if diagnostic_id is not None:
                 filters["diagnostic_id"] = diagnostic_id
             rows = _s.query("diag_runs", **filters, order_by="finished_at DESC")
+            principal = _diagnostic_principal(authorization)
+            rows = [row for row in rows if (
+                row["diagnostic_id"] not in {8, 11}
+                or str((row.get("manifest_json") or {}).get("tenant_id") or "bootstrap")
+                == principal["tenant_id"]
+            )]
             latest = rows[0] if rows else None
             if not latest:
                 return {"item_id": item_id, "run": None, "results": [], "decisions": [],
@@ -664,6 +852,8 @@ def diagnostic_results(item_id: str, run_id: str | None = None,
             run_id = latest["run_id"]
         from dq_diagnostics.dispatch import adapter
         source_run = _s.query_one("diag_runs", run_id=run_id)
+        if source_run and source_run["diagnostic_id"] in {8, 11}:
+            _require_governed_tenant(source_run, _diagnostic_principal(authorization))
         runner = adapter(source_run["diagnostic_id"])["runner"]
         from assets.staleness import annotate_payload
         payload = annotate_payload(runner.run_results(run_id))
@@ -877,7 +1067,8 @@ def diagnostics_coverage_summary(item_id: str):
 
 @router.get("/diagnostics/runs/{run_id}/report")
 @_plt04_sanitize
-def diagnostic_run_report(run_id: str, fmt: str = "pdf"):
+def diagnostic_run_report(run_id: str, fmt: str = "pdf",
+                          authorization: str | None = Header(default=None)):
     """The report, derived from the structured result (CFR-10) — never a
     second source of truth."""
     try:
@@ -885,11 +1076,13 @@ def diagnostic_run_report(run_id: str, fmt: str = "pdf"):
         from dq_diagnostics.dispatch import adapter
         run = _s.query_one("diag_runs", run_id=run_id)
         if not run: raise KeyError(f"Unknown run: {run_id}")
+        if run["diagnostic_id"] in {8, 11}:
+            _require_governed_tenant(run, _diagnostic_principal(authorization))
         runner = adapter(run["diagnostic_id"])["runner"]
         if fmt == "text":
             return Response(content=runner.report_text(run_id), media_type="text/plain")
         report_metadata = None
-        if run["diagnostic_id"] in {2, 6, 11, 14} and hasattr(runner, "report_document"):
+        if run["diagnostic_id"] in {2, 6, 8, 11, 14} and hasattr(runner, "report_document"):
             payload, report_metadata = runner.report_document(run_id)
         else:
             payload = runner.report_pdf(run_id)
@@ -900,6 +1093,8 @@ def diagnostic_run_report(run_id: str, fmt: str = "pdf"):
         if run["diagnostic_id"] == 6
         else f"feature-target-separation-{run_id}.pdf"
         if run["diagnostic_id"] == 2
+        else f"value-semantics-{run_id}.pdf"
+        if run["diagnostic_id"] == 8
         else f"directional-monotonic-consistency-{run_id}.pdf"
         if run["diagnostic_id"] == 11
         else f"population-stability-{run_id}.pdf"

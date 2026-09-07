@@ -281,6 +281,9 @@ def add_snapshot(asset_id: str, intent: str, actor: str | None = None,
         "use_case": None if intent in {"fresh", "full_replacement"} else asset.get("use_case"),
         "schema_override_flag": int(bool(period_fields.get("schema_override_flag"))),
         "uploaded_by": actor,
+        "sourcing_draft_state": period_fields.get("sourcing_draft_state"),
+        "sourcing_owner": period_fields.get("sourcing_owner"),
+        "sourcing_tenant_id": period_fields.get("sourcing_tenant_id"),
         "dictionary_version_id": period_fields.get("dictionary_version_id"),
         "superseded_at": None, "superseded_by_version_no": None,
     })
@@ -391,8 +394,20 @@ def finalize_staged_snapshot(asset_id: str, snapshot_id: str, intent: str,
         "schema_override_flag": int(bool(fields.get("schema_override_flag"))),
         "uploaded_by": actor or fields.get("uploaded_by"), "updated_at": now,
         "target_variable": target_variable, "use_case": use_case, "product": product,
+        "sourcing_draft_state": None,
     }
     s.update("dq_items", {"item_id": snapshot_id}, changes)
+    if snapshot.get("sourcing_draft_state") in {"active", "recovery"}:
+        recovery = s.execute(
+            "SELECT item_id FROM dq_items WHERE sourcing_tenant_id=? "
+            "AND sourcing_owner=? AND sourcing_draft_state='recovery' "
+            "ORDER BY updated_at DESC, created_at DESC LIMIT 1",
+            (snapshot.get("sourcing_tenant_id"), snapshot.get("sourcing_owner")),
+        )
+        if recovery:
+            s.update("dq_items", {"item_id": recovery[0]["item_id"]}, {
+                "sourcing_draft_state": "active", "updated_at": now,
+            })
     if intent == "full_replacement":
         s.update("dq_asset_versions", {"asset_id": asset_id, "version_no": version_no},
                  {"reference_schema_json": fields.get("column_type_map_json"),

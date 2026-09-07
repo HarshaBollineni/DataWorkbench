@@ -1,0 +1,33 @@
+bindings:
+  FAC_ID:
+  - entity_id
+  OBS_MTH:
+  - period
+  EAD_SEG:
+  - segment
+  DFLT_EVT:
+  - default_event
+  DFLT_DT:
+  - default_date
+  OS_BAL:
+  - drawn_balance
+  UNDRAWN_AMT:
+  - undrawn_commitment
+  FAC_LMT:
+  - credit_limit
+  AVAIL_CR:
+  - available_commitment
+  EAD_AMT:
+  - exposure_at_default
+  FUT_DRAW:
+  - future_drawdown
+  CCF:
+  - conversion_factor
+  COMMIT_ST:
+  - commitment_status
+  FAC_TYPE:
+  - facility_type
+  DRAW_AMT:
+  - exposure_change_indicators
+  UTIL_PCT:
+  - utilisation_measure

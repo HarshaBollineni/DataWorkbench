@@ -8,6 +8,7 @@ import CrossFieldScopeGate from "@/features/test-lab/diagnostics/t2-d04-cross-fi
 import RowCompletenessScopeGate from "@/features/test-lab/diagnostics/t2-d06-row-completeness/RowCompletenessScopeGate";
 import PopulationStabilityScopeGate from "@/features/test-lab/diagnostics/t4-d14-population-stability/PopulationStabilityScopeGate";
 import DirectionalityScopeGate from "@/features/test-lab/diagnostics/t2-d11-directional-monotonic-consistency/DirectionalityScopeGate";
+import ValueSemanticsScopeGate from "@/features/test-lab/diagnostics/t2-d08-value-semantics/ValueSemanticsScopeGate";
 
 export default function ScopeGate({ runId, onRunStarted }) {
   const [run, setRun] = useState(null);
@@ -75,6 +76,9 @@ export default function ScopeGate({ runId, onRunStarted }) {
   }
   if (manifest.manifest_kind === "directional_monotonic_consistency") {
     return <div className="grid gap-4">{diagnosticError}<DirectionalityScopeGate run={run} manifest={manifest} busy={busy} patch={patch} runNow={runNow} /></div>;
+  }
+  if (manifest.manifest_kind === "value_semantics") {
+    return <div className="grid gap-4">{diagnosticError}<ValueSemanticsScopeGate run={run} manifest={manifest} busy={busy} patch={patch} runNow={runNow} /></div>;
   }
   return <CrossFieldScopeGate runId={runId} onRunStarted={onRunStarted} run={run} manifest={manifest}
     decisions={decisions} error={error} busy={busy} patch={patch} runNow={runNow} />;

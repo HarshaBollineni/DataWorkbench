@@ -1,0 +1,37 @@
+bindings:
+  FACILITY_ID:
+  - entity_id
+  RPT_QTR:
+  - period
+  PORTF_SEG:
+  - segment
+  CURR_DPD:
+  - arrears_measure
+  INT_RT:
+  - priced_rate
+  RATE_TYPE:
+  - rate_basis
+  BRR:
+  - internal_grade
+  NOI:
+  - income_measure
+  OCC_PCT:
+  - utilisation_measure
+  DFLT_12M:
+  - forward_labels
+  DEFAULT_FLAG:
+  - construction_constants
+  SPREAD_BPS:
+  - spread_over_benchmark
+  MAT_DT:
+  - maturity_date
+  MAT_BALLOON_IND:
+  - maturity_conditional_flags
+  PMT_TYPE:
+  - amortisation_basis
+  PRIN_PAYDOWN_AMT:
+  - amortisation_fields
+  ORIG_LTV:
+  - static_attributes
+  BAL_AMT:
+  - drawn_balance

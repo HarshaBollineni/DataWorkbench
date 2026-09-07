@@ -1,0 +1,44 @@
+schema_version: 1
+diagnostic_key: "{{DIAGNOSTIC_KEY}}"
+frontend_key: "{{FRONTEND_KEY}}"
+title: "{{TITLE}}"
+experiment_source: "experiments/test-lab/{{DIAGNOSTIC_KEY}}"
+experiment_contract_version: "{{VERSION}}"
+readiness_record: "experiments/test-lab/{{DIAGNOSTIC_KEY}}/promotion/readiness.yaml"
+
+targets:
+  backend_package: "backend/domains/test_lab/diagnostics/{{DIAGNOSTIC_KEY}}"
+  frontend_feature: "ui/src/features/test-lab/diagnostics/{{FRONTEND_KEY}}"
+  unit_tests: "backend/tests/unit/test_lab/diagnostics/{{DIAGNOSTIC_KEY}}"
+  integration_tests: "backend/tests/integration/test_lab/diagnostics/{{DIAGNOSTIC_KEY}}"
+  process_docs: "docs/diagnostics/{{SLUG}}"
+
+resources:
+  knowledge_packages: []
+  terminology_packages: []
+  prompts: []
+  structured_schemas: []
+  upstream_artifact_types: []
+  output_artifact_types: []
+
+integration_points:
+  framework_register: false
+  readiness: false
+  dispatch: false
+  manifest_api: false
+  execution_stream: false
+  results_api: false
+  report_download: false
+  aar_registration: false
+  knowledge_base_publication: false
+  findings_disposition: false
+  issue_rca_handoff: false
+  frontend_scope_dispatch: false
+  frontend_results_dispatch: false
+
+enablement:
+  initial_status: "workflow_pending"
+  acceptance_owner: "{{OWNER}}"
+  accepted_at: null
+  enabled_by: null
+  rollback: "Set this diagnostic register entry to workflow_pending; retain historical records."

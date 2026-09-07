@@ -112,22 +112,40 @@ function RocChart({ rows, auc }) {
 
 function BinProfileChart({ rows, targetType, iv }) {
   if (!rows.length) return <div className="flex min-h-72 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-500">Coarse-bin evidence is unavailable.</div>;
-  const width = Math.max(560, rows.length * 92), height = 310, left = 52, right = 22, top = 48, bottom = 78;
+  const width = 560, height = 310, left = 58, right = 58, top = 48, bottom = 78;
   const multinomialRate = (row) => Math.max(...Object.values(row.class_rates || {}).map(Number), 0);
   const values = rows.map((row) => Number(targetType === "continuous" ? row.target_mean
-    : targetType === "multinomial" ? multinomialRate(row) : row.woe) || 0);
+    : targetType === "multinomial" ? multinomialRate(row) : row.event_rate) || 0);
   const lineLabel = targetType === "continuous" ? "mean target"
-    : targetType === "multinomial" ? "leading class rate" : "WOE";
+    : targetType === "multinomial" ? "leading class rate" : "target rate";
   const maxShare = Math.max(...rows.map((row) => Number(row.population_share) || 0), 0.01);
-  const minValue = Math.min(...values, 0), maxValue = Math.max(...values, 0.01);
+  const rateTarget = targetType !== "continuous";
+  const observedMin = Math.min(...values), observedMax = Math.max(...values);
+  const observedSpan = observedMax-observedMin;
+  const valuePadding = observedMin === observedMax ? Math.max(Math.abs(observedMin) * 0.1, 0.5) : observedSpan * 0.08;
+  const ratePadding = Math.max(observedSpan * 0.12, Math.abs(observedMax) * 0.03, 0.005);
+  const minValue = rateTarget ? Math.max(0, observedMin-ratePadding) : observedMin-valuePadding;
+  const maxValue = rateTarget ? Math.min(1, observedMax+ratePadding) : observedMax+valuePadding;
   const slot = (width-left-right) / rows.length;
-  const y = (value) => top + (maxValue-value) / Math.max(maxValue-minValue, 0.01) * (height-top-bottom);
+  const plotHeight = height-top-bottom;
+  const lineY = (value) => top + (maxValue-value) / Math.max(maxValue-minValue, Number.EPSILON) * plotHeight;
+  const rateDigits = maxValue-minValue < 0.02 ? 2 : maxValue-minValue < 0.2 ? 1 : 0;
+  const rightTick = (value) => rateTarget ? pct(value, rateDigits) : formatProfileNumber(value);
   return <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white p-2 shadow-sm"><svg viewBox={`0 0 ${width} ${height}`} className="block h-auto w-full min-w-[460px]" role="img" aria-label="Coarse bin population and outcome profile">
-    <rect x={left} y={top} width={width-left-right} height={height-top-bottom} fill="#f8fafc" rx="4" /><line x1={left} y1={height-bottom} x2={width-right} y2={height-bottom} stroke="#94a3b8" /><line x1={left} y1={y(0)} x2={width-right} y2={y(0)} stroke="#cbd5e1" strokeDasharray="4 4" />
-    {rows.map((row, index) => { const center = left+slot*(index+0.5); const barHeight = Number(row.population_share || 0)/maxShare*(height-top-bottom); return <g key={row.bin_id}><rect x={center-slot*0.25} y={height-bottom-barHeight} width={slot*0.5} height={barHeight} rx="3" fill={row.kind === "regular" ? "#c7d2fe" : "#bbf7d0"} /><text x={center} y={height-bottom+17} transform={`rotate(-35 ${center} ${height-bottom+17})`} textAnchor="end" fontSize="9" fill="#64748b">{row.label.length > 18 ? `${row.label.slice(0, 17)}…` : row.label}</text></g>; })}
-    <polyline points={rows.map((row, index) => `${left+slot*(index+0.5)},${y(values[index])}`).join(" ")} fill="none" stroke="#e11d48" strokeWidth="3" />
-    {rows.map((row, index) => <circle key={`point-${row.bin_id}`} cx={left+slot*(index+0.5)} cy={y(values[index])} r="5" fill="#e11d48" stroke="white" strokeWidth="2"><title>{`${row.label}: ${lineLabel} ${fmt(values[index])}`}</title></circle>)}
-    <text x={left} y="26" fontSize="14" fontWeight="600" fill="#0f172a">Bin profile · IV {fmt(iv, 3)}</text><text x={width-right} y="26" textAnchor="end" fontSize="10" fill="#64748b">Bars: population · line: {lineLabel}</text>
+    <rect x={left} y={top} width={width-left-right} height={plotHeight} fill="#f8fafc" rx="4" />
+    <line x1={left} y1={top+plotHeight/2} x2={width-right} y2={top+plotHeight/2} stroke="#cbd5e1" strokeDasharray="4 4" />
+    <line x1={left} y1={height-bottom} x2={width-right} y2={height-bottom} stroke="#94a3b8" />
+    <text x={left-7} y={top+4} textAnchor="end" fontSize="9" fill="#6366f1">{pct(maxShare, 0)}</text><text x={left-7} y={height-bottom+3} textAnchor="end" fontSize="9" fill="#6366f1">0%</text>
+    <text x={width-right+7} y={top+4} fontSize="9" fill="#e11d48">{rightTick(maxValue)}</text><text x={width-right+7} y={height-bottom+3} fontSize="9" fill="#e11d48">{rightTick(minValue)}</text>
+    {rows.map((row, index) => { const center = left+slot*(index+0.5); const barHeight = Number(row.population_share || 0)/maxShare*plotHeight; return <g key={row.bin_id}><rect x={center-slot*0.25} y={height-bottom-barHeight} width={slot*0.5} height={barHeight} rx="3" fill={row.kind === "regular" ? "#c7d2fe" : "#bbf7d0"} /><text x={center} y={height-bottom+17} transform={`rotate(-35 ${center} ${height-bottom+17})`} textAnchor="end" fontSize={rows.length > 8 ? "8" : "9"} fill="#64748b">{row.label.length > 18 ? `${row.label.slice(0, 17)}…` : row.label}</text></g>; })}
+    <polyline points={rows.map((row, index) => `${left+slot*(index+0.5)},${lineY(values[index])}`).join(" ")} fill="none" stroke="#e11d48" strokeWidth="3" />
+    {rows.map((row, index) => <circle key={`point-${row.bin_id}`} cx={left+slot*(index+0.5)} cy={lineY(values[index])} r="5" fill="#e11d48" stroke="white" strokeWidth="2"><title>{`${row.label}: ${lineLabel} ${rateTarget ? pct(values[index]) : formatProfileNumber(values[index])}`}</title></circle>)}
+    <text transform={`translate(13 ${top+plotHeight/2}) rotate(-90)`} textAnchor="middle" fontSize="10" fill="#6366f1">Population (%)</text><text transform={`translate(${width-11} ${top+plotHeight/2}) rotate(90)`} textAnchor="middle" fontSize="10" fill="#e11d48">{lineLabel}</text>
+    <text x={left} y="26" fontSize="14" fontWeight="600" fill="#0f172a">Bin profile · IV {fmt(iv, 3)}</text>
+    <g transform={`translate(${width-right-174} 18)`}>
+      <rect x="0" y="0" width="10" height="10" rx="2" fill="#c7d2fe" /><text x="15" y="9" fontSize="9" fill="#475569">Population</text>
+      <line x1="78" y1="5" x2="96" y2="5" stroke="#e11d48" strokeWidth="2.5" /><circle cx="87" cy="5" r="3.5" fill="#e11d48" stroke="white" strokeWidth="1" /><text x="102" y="9" fontSize="9" fill="#475569">{lineLabel}</text>
+    </g>
   </svg></div>;
 }
 

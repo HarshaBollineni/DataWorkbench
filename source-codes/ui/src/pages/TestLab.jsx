@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { History, Lock, RefreshCw, RotateCcw } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
+import { History, Lock, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
-  buildDiagnosticManifestV2, closeIssueV2, getDiagnosticResultsV2, getDiagnosticRunHistoryV2, getDiagnosticsBoardV2, promoteDiagnosticResultV2,
-  getItemsV2, getResumableDiagnosticDraftV2, refreshAssetV2, dispositionFindingV2,
+  buildDiagnosticManifestV2, closeIssueV2, discardDiagnosticDraftV2, getDiagnosticManifestV2, getDiagnosticResultsV2, getDiagnosticRunHistoryV2, getDiagnosticsBoardV2, promoteDiagnosticResultV2,
+  getDiagnosticsBoardCardV2, getDiagnosticsBoardSummaryV2, getItemsV2, getResumableDiagnosticDraftV2, refreshAssetV2, dispositionFindingV2,
 } from "@/api/client";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import CoverageBoard from "./testlab/CoverageBoard";
@@ -14,7 +15,7 @@ import FindingsPanel from "./testlab/FindingsPanel";
 import { PsiJourneySummary } from "@/features/test-lab/diagnostics/t4-d14-population-stability/PopulationStabilityResults";
 import ScorePanel from "./testlab/ScorePanel";
 import SupportingInvestigations from "./testlab/SupportingInvestigations";
-import { ArtifactRepositoryCard, IssueReviewCard, SavedInventoryViewer } from "./testlab/TestLabOverview";
+import { ArtifactRepositoryCard, IssueReviewCard } from "./testlab/TestLabOverview";
 
 // Phase 6 (0.4.0) rewrite — testlab-redesign-0.4.0.md §3/§5.4: the
 // four-step plan/execute/recommend/rollup wizard retires (D-16). One page,
@@ -22,9 +23,6 @@ import { ArtifactRepositoryCard, IssueReviewCard, SavedInventoryViewer } from ".
 // decisions) -> Run (scope gate, human decision #1, then SSE execution) ->
 // Findings (by decision type, human decision #2, + score & report).
 
-const TABS = [
-  { key: "coverage", label: "Coverage" },
-];
 const legacyPanes = false;
 
 const rememberedRunKey = (itemId) => `testlab:last-completed-run:${itemId}`;
@@ -34,10 +32,9 @@ function rememberCompletedRun(itemId, runId) {
 }
 
 export default function TestLab() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [items, setItems] = useState([]);
   const [itemId, setItemId] = useState("");
-  const [tab, setTab] = useState("coverage");
-
   const [board, setBoard] = useState(null);
   const [boardError, setBoardError] = useState("");
 
@@ -51,9 +48,20 @@ export default function TestLab() {
   const [resultsError] = useState("");
   const [message, setMessage] = useState("");
   const [draftChoice, setDraftChoice] = useState(null);
+  const [discardChoice, setDiscardChoice] = useState(null);
+  const [discardError, setDiscardError] = useState("");
+  const [discardedRunIds, setDiscardedRunIds] = useState([]);
   const [launchBusy, setLaunchBusy] = useState(false);
-  const initialAsset = useRef(new URLSearchParams(window.location.search).get("asset"));
+  const [urlReady, setUrlReady] = useState(false);
+  const initialNavigation = useRef({
+    asset: searchParams.get("asset"),
+    item: searchParams.get("item"),
+    diagnostic: Number(searchParams.get("diagnostic")) || null,
+    run: searchParams.get("run"),
+    view: searchParams.get("view"),
+  });
   const initialSelectionDone = useRef(false);
+  const boardRequest = useRef(0);
 
   // ING-07 — the Test Lab consumes only items that have reached the derived
   // `ready` ingest status; nothing profiling/needs_review/failed appears here.
@@ -65,20 +73,54 @@ export default function TestLab() {
       return;
     }
     initialSelectionDone.current = true;
-    if (!initialAsset.current) {
+    const requested = initialNavigation.current;
+    if (!requested.asset && !requested.item) {
       setItemId("");
+      setUrlReady(true);
       return;
     }
-    const match = ready.find((row) => row.dataset_family_id === initialAsset.current || row.asset_id === initialAsset.current);
+    const match = ready.find((row) => row.item_id === requested.item
+      || row.dataset_family_id === requested.asset || row.asset_id === requested.asset);
     if (match) {
       setMessage("");
       setItemId(match.item_id);
+      if (requested.run && requested.diagnostic) {
+        getDiagnosticManifestV2(requested.run).then((payload) => {
+          const run = payload?.run;
+          if (!run || run.item_id !== match.item_id || Number(run.diagnostic_id) !== requested.diagnostic
+            || run.status === "discarded") throw new Error("Saved diagnostic context is no longer available");
+          const status = run.status || "draft";
+          setActiveRunId(requested.run);
+          setActiveDiagnosticId(requested.diagnostic);
+          setViewingResults(["done", "failed"].includes(status));
+          setActiveRunStatus(status);
+        }).catch((error) => {
+          setMessage(`${error.message}. Showing the dataset coverage board instead.`);
+          setActiveRunId("");
+          setActiveDiagnosticId(null);
+        }).finally(() => setUrlReady(true));
+        return;
+      }
+      setUrlReady(true);
       return;
     }
     setItemId("");
-    setMessage("The requested asset has no selectable ready active snapshot; choose an asset here or return to Data Sourcing.");
+    setUrlReady(true);
+    setMessage("The requested workspace item is no longer available; choose a ready active asset or return to Data Sourcing.");
   });
   useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    if (!urlReady) return;
+    const next = new URLSearchParams();
+    if (itemId) next.set("item", itemId);
+    if (itemId && activeRunId) {
+      if (activeDiagnosticId != null) next.set("diagnostic", String(activeDiagnosticId));
+      next.set("run", activeRunId);
+      next.set("view", viewingResults ? "results" : activeRunStatus === "running" ? "progress" : "scope");
+    }
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
+  }, [activeDiagnosticId, activeRunId, activeRunStatus, itemId, searchParams, setSearchParams, urlReady, viewingResults]);
 
   const item = useMemo(() => items.find((r) => r.item_id === itemId), [items, itemId]);
   const activeDiagnosticName = useMemo(() => board?.cards?.find(
@@ -89,14 +131,10 @@ export default function TestLab() {
   // No separate "loading" flag: `board` itself is the loading signal (null
   // until the fetch resolves for THIS item — changeItem clears it up front
   // so a stale previous item's board is never shown mid-switch).
-  const loadBoard = () => {
-    if (!itemId) return;
-    getDiagnosticsBoardV2(itemId).then((data) => {
-      setBoard(data);
-      setBoardError("");
-      const completedRuns = data.cards.flatMap((card) => card.last_run
+  const restoreCompletedRun = (targetItemId, cards) => {
+      const completedRuns = cards.flatMap((card) => card.last_run
         ? [{ ...card.last_run, diagnostic_id: card.diagnostic_id }] : []);
-      const remembered = sessionStorage.getItem(rememberedRunKey(itemId));
+      const remembered = sessionStorage.getItem(rememberedRunKey(targetItemId));
       const restored = completedRuns.find((run) => run.run_id === remembered)
         || (remembered ? { run_id: remembered } : null)
         || [...completedRuns].sort((left, right) => String(right.finished_at || "").localeCompare(String(left.finished_at || "")))[0];
@@ -104,14 +142,68 @@ export default function TestLab() {
         setCompletedRunId(restored.run_id);
         if (restored.diagnostic_id != null) setActiveDiagnosticId(restored.diagnostic_id);
       }
-    }).catch((e) => setBoardError(e.message));
   };
-  useEffect(() => { loadBoard(); }, [itemId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadBoard = async (targetItemId = itemId) => {
+    if (!targetItemId) return;
+    const request = ++boardRequest.current;
+    setBoardError("");
+    try {
+      let summary;
+      try {
+        summary = await getDiagnosticsBoardSummaryV2(targetItemId);
+        if (!summary || !Array.isArray(summary.cards)) throw new Error("Progressive board API is unavailable");
+      } catch {
+        // Compatibility fallback for older API deployments and fixtures.
+        const complete = await getDiagnosticsBoardV2(targetItemId);
+        if (request !== boardRequest.current) return;
+        setBoard(complete);
+        restoreCompletedRun(targetItemId, complete.cards || []);
+        return;
+      }
+      if (request !== boardRequest.current) return;
+      setBoard(summary);
+
+      const settled = await Promise.allSettled((summary.cards || []).map(async (shell) => {
+        try {
+          const card = await getDiagnosticsBoardCardV2(targetItemId, shell.diagnostic_id);
+          if (request === boardRequest.current) {
+            setBoard((current) => current?.item_id === targetItemId ? {
+              ...current,
+              cards: current.cards.map((candidate) => candidate.diagnostic_id === card.diagnostic_id ? card : candidate),
+            } : current);
+          }
+          return card;
+        } catch (error) {
+          if (request === boardRequest.current) {
+            setBoard((current) => current?.item_id === targetItemId ? {
+              ...current,
+              cards: current.cards.map((candidate) => candidate.diagnostic_id === shell.diagnostic_id
+                ? { ...candidate, loading: false, load_error: error.message }
+                : candidate),
+            } : current);
+          }
+          throw error;
+        }
+      }));
+      if (request !== boardRequest.current) return;
+      restoreCompletedRun(targetItemId, settled
+        .filter((result) => result.status === "fulfilled")
+        .map((result) => result.value));
+    } catch (error) {
+      if (request === boardRequest.current) setBoardError(error.message);
+    }
+  };
+  useEffect(() => {
+    loadBoard();
+    return () => { boardRequest.current += 1; };
+  }, [itemId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The item picker is the only place itemId changes by user action — reset
   // the run/findings/board state that belongs to the PREVIOUS item right
   // here (loadBoard's own effect re-fetches the new item's board).
   const changeItem = (id) => {
+    boardRequest.current += 1;
     setItemId(id);
     setBoard(null);
     setBoardError("");
@@ -119,7 +211,7 @@ export default function TestLab() {
     setActiveRunStatus("");
     setActiveDiagnosticId(null);
     setCompletedRunId("");
-    setTab("coverage");
+    setDiscardedRunIds([]);
   };
 
   // No runId -> the item's latest run (backend default), so switching to
@@ -136,7 +228,6 @@ export default function TestLab() {
     setActiveRunStatus("draft");
     setViewingResults(false);
     setDraftChoice(null);
-    setTab("coverage");
   };
 
   const createAndOpenScope = async (diagnosticId, startAfresh = false) => {
@@ -156,18 +247,7 @@ export default function TestLab() {
 
   const openScope = async (diagnosticId, boardDraft) => {
     setMessage("");
-    if (diagnosticId === 11 && boardDraft) {
-      setLaunchBusy(true);
-      try {
-        await activateWorkflow(boardDraft.run_id, diagnosticId);
-      } catch (e) {
-        setMessage(e.message);
-      } finally {
-        setLaunchBusy(false);
-      }
-      return;
-    }
-    if (diagnosticId === 14 && boardDraft) {
+    if (boardDraft) {
       setDraftChoice({ diagnosticId, draft: boardDraft });
       return;
     }
@@ -175,14 +255,10 @@ export default function TestLab() {
     try {
       // Undefined means an older board response did not carry draft state.
       // Null is authoritative and proceeds directly to clean draft creation.
-      if ([11, 14].includes(diagnosticId) && boardDraft === undefined) {
+      if (boardDraft === undefined) {
         const response = await getResumableDiagnosticDraftV2(itemId, diagnosticId);
         if (response.draft) {
-          if (diagnosticId === 11) {
-            await activateWorkflow(response.draft.run_id, diagnosticId);
-          } else {
-            setDraftChoice({ diagnosticId, draft: response.draft });
-          }
+          setDraftChoice({ diagnosticId, draft: response.draft });
           return;
         }
       }
@@ -207,6 +283,24 @@ export default function TestLab() {
     }
   };
 
+  const discardDraft = async () => {
+    if (!discardChoice) return;
+    setLaunchBusy(true);
+    setDiscardError("");
+    try {
+      const discardedRunId = discardChoice.runId;
+      await discardDiagnosticDraftV2(discardedRunId);
+      setDiscardedRunIds((current) => [...current, discardedRunId]);
+      setDiscardChoice(null);
+      setDraftChoice(null);
+      loadBoard();
+    } catch (e) {
+      setDiscardError(e.message);
+    } finally {
+      setLaunchBusy(false);
+    }
+  };
+
   const viewRun = (runId, diagnosticId, status = "done") => {
     if (diagnosticId != null) setActiveDiagnosticId(diagnosticId);
     setCompletedRunId(runId);
@@ -214,7 +308,6 @@ export default function TestLab() {
     setActiveRunId(runId);
     setActiveRunStatus(status);
     setViewingResults(status !== "running");
-    setTab("coverage");
   };
 
   const onRunStarted = () => {}; // ScopeGate already froze; RunConsole takes over rendering.
@@ -243,7 +336,7 @@ export default function TestLab() {
     return <DiagnosticWorkflowPage item={item} runId={activeRunId}
       diagnosticName={activeDiagnosticName}
       onBack={() => { setActiveRunId(""); loadBoard(); }}
-      onRunStarted={() => {}}
+      onRunStarted={() => setActiveRunStatus("running")}
       onDone={onRunDone} onSelectRun={viewRun} viewResults={viewingResults}
       liveRun={activeRunStatus === "running"} />;
   }
@@ -260,7 +353,7 @@ export default function TestLab() {
             <option value="">Choose a ready asset</option>
             {items.map((row) => <option key={row.item_id} value={row.item_id}>{row.name}</option>)}
           </select>
-          <Button variant="outline" onClick={load}><RefreshCw className="h-4 w-4" /> Refresh</Button>
+          <Button variant="outline" onClick={() => { load(); if (itemId) loadBoard(); }}><RefreshCw className="h-4 w-4" /> Refresh</Button>
         </div>
       </div>
 
@@ -278,27 +371,11 @@ export default function TestLab() {
       {!locked && item && (
         <>
           {!activeRunId && <>
-            <SavedInventoryViewer items={items} currentItemId={itemId} />
-            <div className="mb-5 grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)]">
-              <ArtifactRepositoryCard item={item} />
-              <IssueReviewCard item={item} board={board} />
+            <div className="mb-4 grid gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)]">
+              <ArtifactRepositoryCard key={`artifacts-${item.item_id}`} item={item} />
+              <IssueReviewCard key={`issues-${item.item_id}`} item={item} />
             </div>
           </>}
-
-          <div className="mb-5 flex flex-wrap gap-2">
-            {TABS.map((t) => (
-              <button
-                key={t.key}
-                type="button"
-                onClick={() => {
-                  setTab(t.key);
-                }}
-                className={`rounded-full border px-3 py-1.5 text-sm font-medium ${tab === t.key ? "border-dq-purple bg-dq-purple text-dq-dark" : "border-slate-200 bg-white text-slate-600"}`}
-              >
-                {t.label}
-              </button>
-            ))}
-          </div>
           {message && <p className="mb-3 text-sm text-red-600">{message}</p>}
 
           {activeRunId && <div className="mb-6 grid gap-4">
@@ -310,7 +387,14 @@ export default function TestLab() {
           </div>}
 
           <div className="grid gap-6">
-            <CoverageBoard board={board} loading={!board && !boardError} error={boardError} onOpenScope={openScope} onViewRun={viewRun} />
+            <CoverageBoard board={board} loading={!board && !boardError} error={boardError}
+              onOpenScope={openScope} onResumeDraft={activateWorkflow}
+              onDiscardDraft={(runId, diagnosticId) => {
+                setDiscardError("");
+                setDiscardChoice({ runId, diagnosticId });
+              }}
+              discardedRunIds={discardedRunIds}
+              onViewRun={viewRun} />
             <SupportingInvestigations key={itemId} itemId={itemId} />
           </div>
 
@@ -350,23 +434,50 @@ export default function TestLab() {
       <Dialog open={!!draftChoice} onOpenChange={(open) => !open && !launchBusy && setDraftChoice(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Continue saved PSI setup?</DialogTitle>
+            <DialogTitle>Continue saved diagnostic setup?</DialogTitle>
             <DialogDescription>
-              An unfinished PSI setup is saved for this asset. Choose whether to resume it or begin with clean selections.
+              An unfinished setup is saved for this diagnostic and asset. Continue where you left off or discard it and begin with clean selections.
             </DialogDescription>
           </DialogHeader>
           {draftChoice?.draft && <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm">
             <div className="flex items-center gap-2 font-semibold text-slate-900"><History className="h-4 w-4" /> Saved draft</div>
-            <p className="mt-2 text-slate-600">{draftChoice.draft.completed_steps} of {draftChoice.draft.total_steps} steps complete · {draftChoice.draft.selected_feature_count} variables selected · {draftChoice.draft.frozen_bin_count} bins frozen</p>
+            {draftChoice.draft.completed_steps != null && <p className="mt-2 text-slate-600">{draftChoice.draft.completed_steps} of {draftChoice.draft.total_steps} steps complete{draftChoice.draft.selected_feature_count != null ? ` · ${draftChoice.draft.selected_feature_count} variables selected` : ""}{draftChoice.draft.frozen_bin_count != null ? ` · ${draftChoice.draft.frozen_bin_count} bins frozen` : ""}</p>}
+            {draftChoice.draft.completed_steps == null && <p className="mt-2 text-slate-600">Your saved scope and configuration choices are ready to continue.</p>}
             <p className="mt-1 text-xs text-slate-500">Last saved {new Date(draftChoice.draft.last_saved_at).toLocaleString()}</p>
           </div>}
           <p className="text-xs text-slate-500">Starting afresh removes the saved setup from the active workflow. Its discarded audit record is retained, but its selections will not carry forward.</p>
           <DialogFooter>
             <Button variant="outline" disabled={launchBusy} onClick={() => createAndOpenScope(draftChoice?.diagnosticId, true)}>
-              <RotateCcw className="h-4 w-4" /> Start afresh
+              <RotateCcw className="h-4 w-4" /> Discard and start new
             </Button>
             <Button disabled={launchBusy} onClick={resumeDraft}>
-              <History className="h-4 w-4" /> Resume saved setup
+              <History className="h-4 w-4" /> Continue setup
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={!!discardChoice} onOpenChange={(open) => {
+        if (!open && !launchBusy) {
+          setDiscardChoice(null);
+          setDiscardError("");
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Discard this diagnostic draft?</DialogTitle>
+            <DialogDescription>
+              The saved setup will no longer be resumable. Its governed audit record will be retained, and no new workflow will be started.
+            </DialogDescription>
+          </DialogHeader>
+          {discardChoice && <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 font-mono text-xs text-slate-600">{discardChoice.runId}</p>}
+          {discardError && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{discardError}</p>}
+          <DialogFooter>
+            <Button variant="outline" disabled={launchBusy} onClick={() => {
+              setDiscardChoice(null);
+              setDiscardError("");
+            }}>Keep draft</Button>
+            <Button variant="destructive" disabled={launchBusy} onClick={discardDraft}>
+              <Trash2 className="h-4 w-4" /> {launchBusy ? "Discarding…" : "Discard draft"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -377,15 +488,17 @@ export default function TestLab() {
 
 function DiagnosticWorkflowPage({ item, runId, diagnosticName, onBack, onRunStarted, onDone, onSelectRun, viewResults, liveRun }) {
   const isDirectionality = /directional\s*\/\s*monotonic/i.test(diagnosticName || "");
+  const isValueSemantics = /value.?semantics/i.test(diagnosticName || "");
   return <main className="min-h-screen bg-slate-50 p-8">
     <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
       <div>
         <p className="text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">Test Lab diagnostic</p>
         <h1 className="mt-1 text-2xl font-bold text-slate-950">
-          {isDirectionality ? diagnosticName : <>Diagnostic workflow{diagnosticName ? ` — ${diagnosticName}` : ""}</>}
+          {isDirectionality || isValueSemantics ? diagnosticName : <>Diagnostic workflow{diagnosticName ? ` — ${diagnosticName}` : ""}</>}
         </h1>
         {isDirectionality && <p className="mt-1 text-base text-slate-700">Compare expected economic relationships with observed empirical direction.</p>}
-        <p className="mt-1 text-sm text-slate-500">{item.name} · {isDirectionality ? "review outcomes, escalate anomalies for RCA, and optionally check segment-level behavior for later runs." : "review scope and run the selected diagnostic."}</p>
+        {isValueSemantics && <p className="mt-1 text-base text-slate-700">Identify censored, stale/frozen, and not-applicable cells before downstream analysis.</p>}
+        <p className="mt-1 text-sm text-slate-500">{item.name} · {isDirectionality ? "review outcomes, escalate anomalies for RCA, and optionally check segment-level behavior for later runs." : isValueSemantics ? "start with intended use, then confirm roles, rule coverage, and treatment evidence." : "review scope and run the selected diagnostic."}</p>
       </div>
       <Button variant="outline" onClick={onBack}>Back to Test Lab</Button>
     </div>

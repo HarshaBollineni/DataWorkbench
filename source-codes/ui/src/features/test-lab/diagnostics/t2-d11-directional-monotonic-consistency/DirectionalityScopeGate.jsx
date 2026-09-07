@@ -6,9 +6,12 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import PopulationBuilder from "@/components/analysis/PopulationBuilder";
+import { getDirectionalitySplitOptionsV2 } from "@/api/client";
 import {
   aiSuggestionDraft, bulkEligibleScope, candidateSelectionDraft, expectedBucket,
-  governedExactDecisionState, hasUsableAiSuggestion, isBulkEligibleRole, needsAiSuggestion,
+  governedExactDecisionState, hasUsableAiSuggestion, initialRelationshipReviewOpen,
+  isBulkEligibleRole, needsAiSuggestion,
   quickAcceptanceDraft, REFERENCE_DIRECTION_LABELS, requestAiSuggestionsSequentially,
   reviewSuggestionSummary, scopeCandidates, suggestedScope, visibleCandidates,
 } from "./directionalityWorkflow";
@@ -62,7 +65,7 @@ function ScopeFeatureCard({ feature, checked, disabled, onToggle }) {
     className={`min-h-32 rounded-lg border p-3 text-left disabled:cursor-not-allowed disabled:opacity-55 ${checked ? "border-dq-purple bg-dq-purple/5 ring-1 ring-dq-purple/20" : "border-slate-200 bg-white"}`}>
     <span className="flex min-w-0 items-start gap-2"><strong className="min-w-0 flex-1 break-words text-sm text-slate-900">{feature.feature}</strong><span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border ${checked ? "border-dq-purple bg-dq-purple text-white" : "border-slate-300 bg-white"}`}>{checked && <Check className="h-3.5 w-3.5" />}</span></span>
     <span className="mt-1 line-clamp-2 block text-xs leading-5 text-slate-500">{feature.description || "No saved description"}</span>
-    <span className="mt-2 flex flex-wrap gap-1"><Badge variant="secondary">{feature.role || "Role not assigned"}</Badge>{!bulkEligible && <Badge variant="secondary">Manual selection only</Badge>}{feature.classification_source === "KB_V0_3_EXACT" && <Badge>KB match</Badge>}</span>
+    <span className="mt-2 flex flex-wrap gap-1"><Badge variant="secondary">{feature.role || "Role not assigned"}</Badge>{!bulkEligible && <Badge variant="secondary">Manual selection only</Badge>}{feature.reused_decision?.reused_from_completed_run && <Badge>Prior decision retained</Badge>}{feature.classification_source === "KB_V0_3_EXACT" && <Badge>KB match</Badge>}</span>
   </button>;
 }
 
@@ -264,7 +267,7 @@ function ReviewRow({ feature, busy, patch, expanded, onToggle }) {
 export default function DirectionalityScopeGate({ manifest, busy, patch, runNow }) {
   const savedScope = manifest.scope_features || manifest.features.filter((row) => row.scope_selected).map((row) => row.feature);
   const [selectionDraft, setSelectionDraft] = useState(null);
-  const [reviewOpen, setReviewOpen] = useState(savedScope.length > 0);
+  const [reviewOpen, setReviewOpen] = useState(() => initialRelationshipReviewOpen(manifest));
   const [filter, setFilter] = useState(() => manifest.features.some(
     (row) => savedScope.includes(row.feature) && expectedBucket(row) === "NEEDS_REVIEW",
   ) ? "NEEDS_REVIEW" : "ALL");
@@ -273,11 +276,14 @@ export default function DirectionalityScopeGate({ manifest, busy, patch, runNow 
   const [positiveClass, setPositiveClass] = useState(manifest.reference.positive_class ?? "");
   const [bulkAiProgress, setBulkAiProgress] = useState(null);
   const [bulkAiNotice, setBulkAiNotice] = useState(null);
+  const [segmentBuilderOpen, setSegmentBuilderOpen] = useState(Boolean(manifest.segment_definition));
   const selected = selectionDraft ?? savedScope;
   const referenceReady = Boolean(manifest.reference.column && manifest.reference.orientation);
   const referenceCandidates = manifest.reference_candidates || [{ column: manifest.reference.column, is_saved_target: true }];
   const segmentCandidates = (manifest.segment_candidates || []).map((row) => typeof row === "string" ? { column: row } : row)
     .filter((row) => row.column !== manifest.reference.column);
+  const analysisSequence = manifest.analysis_sequence || {};
+  const segmentAnalysisAvailable = Boolean(analysisSequence.segment_analysis_available);
   const selectableFeatures = useMemo(() => scopeCandidates(
     manifest.features, manifest.reference.column, manifest.segment_column,
   ), [manifest.features, manifest.reference.column, manifest.segment_column]);
@@ -299,7 +305,7 @@ export default function DirectionalityScopeGate({ manifest, busy, patch, runNow 
     && !(row.candidates?.length > 0)).length;
   const workflowBusy = busy || Boolean(bulkAiProgress);
   const aiReviewGuidance = bulkAiProgress || bulkAiFeatures.length > 0
-    ? "AI reviews only items that do not already have a suggestion. Every proposed direction still requires your confirmation."
+    ? "AI reviews only newly added pending items that do not already have a suggestion. Retained prior-run decisions are not submitted again. Every proposed direction still requires your confirmation."
     : manualOnlyReviews < remainingReviews
       ? "AI suggestions are ready. Confirm or change each decision before running the analysis."
       : "Open Confirm to classify each remaining item manually.";
@@ -315,8 +321,11 @@ export default function DirectionalityScopeGate({ manifest, busy, patch, runNow 
   };
   const selectReference = async (column) => {
     await patch({ kind: "reference_selection", column });
-    setTargetType("auto"); setPositiveClass(""); setSelectionDraft(null); setReviewOpen(false);
+    setTargetType("auto"); setPositiveClass(""); setSelectionDraft(null); setReviewOpen(false); setSegmentBuilderOpen(false);
   };
+  const previewSegment = ({ feature, expression, specialPolicy }) => patch({
+    kind: "segment_split", feature, value: expression, special_policy: specialPolicy,
+  });
   const askAiForAll = async () => {
     const pending = [...bulkAiFeatures];
     if (!pending.length) return;
@@ -355,6 +364,7 @@ export default function DirectionalityScopeGate({ manifest, busy, patch, runNow 
   </section>;
 
   return <section className="grid gap-4" data-testid="directionality-scope-gate">
+    {manifest.prior_run_reuse?.reused_feature_count > 0 && <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-xs text-indigo-950"><strong>Prior run details retained.</strong> {manifest.prior_run_reuse.reused_feature_count} previously selected variable{manifest.prior_run_reuse.reused_feature_count === 1 ? "" : "s"}, their confirmed directions, and target setup were carried forward from completed run <code>{manifest.prior_run_reuse.source_run_id}</code>. Review the complete workflow and adjust the setup as needed. This rerun will calculate new empirical evidence without making new AI requests for retained variables; Ask AI remains available for newly added unresolved variables.</div>}
     <Step number="1" title="Define the target and analysis view" complete={referenceReady}>
       <p className="mb-3 text-xs text-slate-500">Choose the outcome to assess, map higher target values to risk, and decide whether to analyse the overall portfolio or selected segments.</p>
       <div className="overflow-hidden rounded-lg border border-slate-200">
@@ -367,11 +377,16 @@ export default function DirectionalityScopeGate({ manifest, busy, patch, runNow 
           <details className="mt-3 rounded border border-slate-200 bg-slate-50 px-3 py-2"><summary className="cursor-pointer text-xs font-medium text-slate-700">Target type and event class</summary><div className="mt-2 flex flex-wrap gap-2"><select value={targetType} onChange={(event) => setTargetType(event.target.value)} className="h-9 rounded border border-slate-300 bg-white px-2 text-xs"><option value="auto">Detect automatically</option><option value="binary">Binary</option><option value="continuous">Continuous</option></select><input className="h-9 w-36 rounded border border-slate-300 bg-white px-2 text-xs" value={positiveClass} onChange={(event) => setPositiveClass(event.target.value)} placeholder="Positive class" /><Button size="sm" variant="outline" disabled={busy} onClick={() => patch({ kind: "target_config", target_type: targetType, positive_class: positiveClass || null })}>Save</Button></div></details>
         </section>
         <section className="border-t border-slate-200 bg-slate-50/60 p-3">
-          <header className="mb-3 flex flex-wrap items-start justify-between gap-2"><div><div className="flex items-center gap-2"><GitBranch className="h-4 w-4 text-slate-500" /><h3 className="text-sm font-semibold text-slate-900">Optional segment analysis</h3></div><p className="mt-0.5 text-xs text-slate-500">Overall evidence is calculated first. Re-run the same analysis within a selected segment field when needed.</p></div>{!manifest.segment_column && <Badge variant="secondary">Overall portfolio</Badge>}</header>
-          {!segmentCandidates.length ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2"><div><strong className="text-xs text-slate-800">Overall portfolio</strong><span className="ml-2 text-xs text-slate-500">No eligible Segment-role columns are available.</span></div><Badge className="border-transparent bg-emerald-100 text-emerald-800">Selected</Badge></div> : <>
-            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3"><ChoiceCard icon={GitBranch} title="Overall portfolio" selected={!manifest.segment_column} disabled={busy} onClick={() => patch({ kind: "segment_selection", segment_column: null })} description="Run one portfolio-level analysis." note="No segment field is applied." />{segmentCandidates.map((row) => <ChoiceCard key={row.column} icon={GitBranch} title={row.column} selected={manifest.segment_column === row.column} disabled={busy || (row.cardinality != null && row.cardinality > 50)} onClick={() => patch({ kind: "segment_selection", segment_column: row.column })} description={`Add ${row.cardinality ?? "the observed"} segment-level result${row.cardinality === 1 ? "" : "s"} after the overall analysis.`} note={manifest.segment_column === row.column ? "Selected; other segment fields are ignored. Null values are excluded from segment views." : row.description || "Use this field for segment-level results."} />)}</div>
-            {manifest.segment_preview && <div className="mt-3 rounded-lg border border-teal-200 bg-teal-50 p-3 text-xs text-teal-950"><div className="flex flex-wrap items-center justify-between gap-2"><strong>Selected segments · {manifest.segment_preview.column}</strong><span>{manifest.segment_preview.distinct_values} group(s) · {manifest.segment_preview.null_rows} null row(s) excluded</span></div><div className="mt-2 flex max-h-28 flex-wrap gap-1 overflow-y-auto">{manifest.segment_preview.groups.map((group) => <span key={group.value} className="rounded border border-teal-200 bg-white px-2 py-1">{group.value} · {group.rows.toLocaleString()} rows</span>)}</div></div>}
-          </>}
+          <header className="mb-3 flex flex-wrap items-start justify-between gap-2"><div><div className="flex items-center gap-2"><GitBranch className="h-4 w-4 text-slate-500" /><h3 className="text-sm font-semibold text-slate-900">Optional segment analysis</h3></div><p className="mt-0.5 text-xs text-slate-500">{segmentAnalysisAvailable ? "A completed overall run is available. Keep the overall view or choose one field to add segment-level results to this rerun." : "The first run establishes the overall portfolio result. Segment analysis becomes available on the next run."}</p></div>{!manifest.segment_column && <Badge variant="secondary">Overall portfolio</Badge>}</header>
+          {!segmentAnalysisAvailable ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-3 py-2"><div><strong className="text-xs text-slate-800">First run · overall portfolio</strong><span className="ml-2 text-xs text-slate-500">Complete this run to unlock the PSI-style segment builder for a rerun.</span></div><Badge className="border-transparent bg-emerald-100 text-emerald-800">Selected</Badge></div> : !segmentCandidates.length ? <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2"><div><strong className="text-xs text-amber-900">No eligible split fields found</strong><span className="ml-2 text-xs text-amber-800">A non-constant field other than the target or an identifier is required.</span></div><Badge variant="secondary">Overall portfolio</Badge></div> : <div className="grid gap-3">
+            <div className="grid gap-2 md:grid-cols-2"><ChoiceCard icon={GitBranch} title="Overall portfolio only" selected={!segmentBuilderOpen && !manifest.segment_definition} disabled={busy} onClick={async () => { await patch({ kind: "segment_selection", segment_column: null }); setSegmentBuilderOpen(false); }} description="Calculate the full-portfolio directionality result only." note="No rows are separated for segment-level analysis." /><ChoiceCard icon={GitBranch} title="Analyse a selected segment" selected={segmentBuilderOpen || Boolean(manifest.segment_definition)} disabled={busy} onClick={() => setSegmentBuilderOpen(true)} description="Use the same one-dataset split builder as PSI." note="The selected side is analysed; its complement is explicitly not analysed." /></div>
+            {(segmentBuilderOpen || manifest.segment_definition) && <div className="rounded-md border border-slate-200 bg-white p-3"><PopulationBuilder
+              features={segmentCandidates} disabled={busy} busy={busy}
+              preview={manifest.segment_preview} confirmedDefinition={manifest.segment_definition}
+              loadOptions={(feature) => getDirectionalitySplitOptionsV2(manifest.run_id, feature)}
+              onPreview={previewSegment} baselineLabel="Analysed segment" currentLabel="Not analysed" />
+              <p className="mt-2 text-[11px] leading-4 text-slate-500">The overall portfolio is still calculated first. Only the <strong>Analysed segment</strong> receives an additional directionality result; the complementary sample is retained in the split audit but is not tested.</p></div>}
+          </div>}
         </section>
       </div>
     </Step>

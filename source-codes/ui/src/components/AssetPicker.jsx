@@ -18,7 +18,7 @@ function formatDate(value) {
  * Compact existing-asset selector. `excludeRequiresReupload` is deliberately
  * required: each call site must state whether the recovery path is in scope.
  */
-export default function AssetPicker({ kind, value, onChange, excludeRequiresReupload, allowResumable = false }) {
+export default function AssetPicker({ kind, value, onChange, onResume, excludeRequiresReupload, allowResumable = false }) {
   const [assets, setAssets] = useState([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
@@ -63,15 +63,17 @@ export default function AssetPicker({ kind, value, onChange, excludeRequiresReup
           <tbody>
             {visible.map((asset) => {
               const continuing = Boolean(allowResumable && asset.resumable);
-              const selectable = Boolean(asset.selectable || continuing);
+              const selectable = Boolean(asset.selectable);
+              const actionable = Boolean(selectable || continuing);
               const needsReupload = asset.lifecycle_status === "requires_reupload";
-              const chooseAsset = () => {
+              const chooseAsset = (event) => {
                 selectAssetV2(asset.asset_id).catch(() => {});
-                onChange(asset);
+                const resumeRequested = event.currentTarget.getAttribute("aria-label")?.startsWith("Continue sourcing");
+                (resumeRequested ? onResume || onChange : onChange)(asset);
               };
               return (
                 <Fragment key={asset.asset_id}>
-                <tr className={`border-t border-slate-100 ${selectable ? "hover:bg-dq-purple/5" : "opacity-70"}`}>
+                <tr className={`border-t border-slate-100 ${actionable ? "hover:bg-dq-purple/5" : "opacity-70"}`}>
                   <td className="px-2 py-2">
                     <button type="button" disabled={!selectable} onClick={chooseAsset}
                       className="text-left font-medium text-slate-800 hover:text-dq-purple hover:underline disabled:cursor-not-allowed disabled:no-underline">

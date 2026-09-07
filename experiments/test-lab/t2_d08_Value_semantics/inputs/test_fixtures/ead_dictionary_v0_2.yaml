@@ -1,0 +1,171 @@
+columns:
+- column_name: ROW_ID
+  business_name: Row identifier
+  description: Synthetic technical row reference; not a business entity key
+  data_type: string
+  role: ignore
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: FAC_ID
+  business_name: Facility identifier
+  description: Unique facility identifier
+  data_type: string
+  role: identifier
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: OBS_MTH
+  business_name: Observation month
+  description: Ordered monthly observation period
+  data_type: string
+  role: period
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: EAD_SEG
+  business_name: EAD segment
+  description: Exposure-at-default portfolio segment
+  data_type: string
+  role: group
+  allowed_values: CARDS|SME|CORP|TERM
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: DFLT_EVT
+  business_name: Default event
+  description: Occurrence of EAD measurement default event
+  data_type: integer
+  role: target
+  allowed_values: 0|1
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: DFLT_DT
+  business_name: Default date
+  description: Date default occurred
+  data_type: date
+  role: date
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: OS_BAL
+  business_name: Outstanding balance
+  description: Current drawn and outstanding amount
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: UNDRAWN_AMT
+  business_name: Undrawn amount
+  description: Committed amount not yet drawn
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: FAC_LMT
+  business_name: Facility limit
+  description: Current contractual facility limit
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: AVAIL_CR
+  business_name: Available credit
+  description: Amount currently available to draw
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: EAD_AMT
+  business_name: Exposure at default
+  description: Realised exposure measured at default date
+  data_type: float
+  role: target
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: FUT_DRAW
+  business_name: Future drawdown
+  description: Additional amount drawn between observation and default
+  data_type: float
+  role: target
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: CCF
+  business_name: Credit conversion factor
+  description: Realised conversion factor at default
+  data_type: float
+  role: target
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: COMMIT_ST
+  business_name: Commitment status
+  description: Committed or no-commitment status
+  data_type: string
+  role: feature
+  allowed_values: COMMITTED|NO_COMMITMENT
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: FAC_TYPE
+  business_name: Facility type
+  description: Revolving or term facility structure
+  data_type: string
+  role: feature
+  allowed_values: REVOLVING|TERM
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: DRAW_AMT
+  business_name: Draw amount
+  description: Drawing activity during the month
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''
+- column_name: UTIL_PCT
+  business_name: Utilisation
+  description: Share of facility limit currently drawn
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_EAD
+  notes: ''

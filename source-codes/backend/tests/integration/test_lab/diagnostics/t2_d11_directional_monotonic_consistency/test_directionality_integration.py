@@ -47,7 +47,7 @@ def snapshot(tmp_path, monkeypatch):
                           "default_flag": rng.binomial(1, probability)})
     service._write_table(item_id, "portfolio", frame)
     roles = {"CURRENT_LTV": "Feature", "DSCR": "Feature", "mystery_metric": "Feature",
-             "segment": "Segment", "default_flag": "Target"}
+             "segment": "Feature", "default_flag": "Target"}
     for column in frame.columns:
         db.insert("variable_inventory", {"item_id": item_id, "table_name": "portfolio",
             "column_name": column,
@@ -64,7 +64,19 @@ def snapshot(tmp_path, monkeypatch):
 def test_manifest_scope_segment_run_artifacts_and_results(snapshot):
     assert require_executable(11)["diagnostic_id"] == 11
     assert adapter(11)["agent"] == "directional_monotonic_consistency_engine"
+    now = db.now_ist()
+    db.insert("diag_runs", {"run_id": f"drun_prior_{uuid.uuid4().hex[:8]}",
+        "item_id": snapshot, "diagnostic_id": 11,
+        "manifest_json": {"tenant_id": "bootstrap"}, "status": "done",
+        "engine_versions_json": {}, "created_at": now,
+        "started_at": now, "finished_at": now})
     draft = manifest.build_manifest(snapshot)
+    assert draft["analysis_sequence"] == {
+        "prior_completed_runs": 1, "segment_analysis_available": True,
+    }
+    segment_candidate = next(row for row in draft["segment_candidates"]
+                             if row["column"] == "segment")
+    assert segment_candidate["split_guidance"]["strategy"] == "category_groups"
     by_feature = {row["feature"]: row for row in draft["features"]}
     assert by_feature["CURRENT_LTV"]["canonical_feature"] == "loan_to_value"
     assert by_feature["CURRENT_LTV"]["selected"] is False
@@ -80,10 +92,14 @@ def test_manifest_scope_segment_run_artifacts_and_results(snapshot):
         draft["run_id"], diagnostics_router.ManifestPatch(
             kind="reference_orientation", orientation="HIGHER_IS_WORSE"))
     assert draft["reference"]["orientation"] == "HIGHER_IS_WORSE"
+    options = manifest.split_feature_options(draft["run_id"], "segment")
+    assert {row["value"] for row in options["exact_values"]} == {"Retail", "SME"}
     draft = manifest.patch_manifest(draft["run_id"], {
-        "kind": "segment_selection", "segment_column": "segment"})
-    assert draft["segment_preview"]["distinct_values"] == 2
-    assert {row["value"] for row in draft["segment_preview"]["groups"]} == {"Retail", "SME"}
+        "kind": "segment_split", "feature": "segment",
+        "value": {"operator": "in", "values": ["Retail"]}})
+    assert draft["segment_preview"]["baseline_count"] == 120
+    assert draft["segment_preview"]["current_count"] == 120
+    assert draft["segment_definition"]["complement_disposition"] == "not_analysed"
     draft = manifest.patch_manifest(draft["run_id"], {
         "kind": "feature_selection", "features": ["CURRENT_LTV", "DSCR"]})
     assert draft["ready_to_run"] is True
@@ -104,7 +120,8 @@ def test_manifest_scope_segment_run_artifacts_and_results(snapshot):
                       if row["metrics_json"]["feature"] == "CURRENT_LTV")
     ltv = ltv_result["metrics_json"]
     assert ltv["evidence"]["observed_direction"] == "INCREASING"
-    assert len(ltv["segments"]) == 2
+    assert len(ltv["segments"]) == 1
+    assert ltv["segments"][0]["segment"] == "seg_segment"
     artifact = db.query_one("analysis_artifacts", artifact_id=ltv["artifact_id"])
     assert artifact["artifact_type"] == "directionality_evidence"
     metadata, artifact_payload = AnalysisArtifactRepository().get(ltv["artifact_id"])
@@ -112,6 +129,11 @@ def test_manifest_scope_segment_run_artifacts_and_results(snapshot):
     assert artifact_payload["overall"] == ltv["evidence"]
     assert artifact_payload["comparison"] == ltv["comparison"]
     assert artifact_payload["methodology"] == ltv["methodology"]
+    assert artifact_payload["analysis_view"]["mode"] == "segmented_rerun"
+    assert artifact_payload["analysis_view"]["segmentation"]["choice"] == draft["segment_definition"]
+    assert artifact_payload["analysis_view"]["segmentation"]["population_counts"]["baseline_count"] == 120
+    assert artifact_payload["analysis_view"]["segmentation"]["complement_tested"] is False
+    assert len(artifact_payload["segments"]) == 1
     report, report_artifact, report_reused = runner.report_payload(draft["run_id"])
     assert report_reused is False
     assert report_artifact.artifact_type == "directionality_report"
@@ -122,6 +144,9 @@ def test_manifest_scope_segment_run_artifacts_and_results(snapshot):
     assert report["executor"]
     assert report["requested_bins"] == 5
     assert {row["feature"] for row in report["features"]} >= {"CURRENT_LTV", "DSCR"}
+    report_ltv = next(row for row in report["features"] if row["feature"] == "CURRENT_LTV")
+    assert report_ltv["analysis_view"]["mode"] == "segmented_rerun"
+    assert report_ltv["segment_results"][0]["label"] == "seg_segment"
     assert all(row["expected_rationale"] for row in report["features"])
     report_text = runner.report_text(draft["run_id"])
     assert "1. ANALYSIS OVERVIEW" in report_text
@@ -136,6 +161,59 @@ def test_manifest_scope_segment_run_artifacts_and_results(snapshot):
         ltv_result["result_id"], diagnostics_router.PsiResultPromotionIn(
             reason="SME override: investigate this aligned result through RCA."))
     assert override["issue_row_id"]
+
+
+def test_first_run_is_overall_only_and_segment_fields_unlock_after_completion(snapshot):
+    draft = manifest.build_manifest(snapshot)
+    assert draft["analysis_sequence"] == {
+        "prior_completed_runs": 0, "segment_analysis_available": False,
+    }
+    split_fields = {row["column"] for row in draft["segment_candidates"]}
+    assert "segment" in split_fields
+    assert "default_flag" not in split_fields
+    with pytest.raises(manifest.ManifestError, match="after the first overall"):
+        manifest.patch_manifest(draft["run_id"], {
+            "kind": "segment_split", "feature": "segment",
+            "value": {"operator": "in", "values": ["Retail"]}})
+
+
+def test_segmented_rerun_reuses_confirmed_scope_without_a_new_llm_call(snapshot, monkeypatch):
+    first = manifest.build_manifest(snapshot)
+    first = manifest.patch_manifest(first["run_id"], {
+        "kind": "reference_orientation", "orientation": "HIGHER_IS_WORSE"})
+    first = manifest.patch_manifest(first["run_id"], {
+        "kind": "feature_selection", "features": ["mystery_metric"]})
+    first = manifest.patch_manifest(first["run_id"], {
+        "kind": "feature_classification", "feature": "mystery_metric",
+        "expected_direction": "NO_CLEAR_DIRECTION",
+        "rationale": "The metric was reviewed and has no stable expected direction.",
+        "include_in_kb": False})
+    runner.execute_now(first["run_id"])
+
+    rerun = manifest.build_manifest(snapshot)
+    carried = next(row for row in rerun["features"] if row["feature"] == "mystery_metric")
+    assert rerun["reference"]["orientation"] == "HIGHER_IS_WORSE"
+    assert rerun["prior_run_reuse"] == {
+        "source_run_id": first["run_id"], "source_reference_column": "default_flag",
+        "reused_features": ["mystery_metric"], "reused_feature_count": 1,
+    }
+    assert carried["scope_selected"] is True
+    assert carried["selected"] is True
+    assert carried["expected_direction"] == "NO_CLEAR_DIRECTION"
+    assert carried["reused_decision"]["source_run_id"] == first["run_id"]
+    with pytest.raises(manifest.ManifestError, match="carried forward"):
+        manifest.patch_manifest(rerun["run_id"], {
+            "kind": "semantic_adjudication", "feature": "mystery_metric"})
+    assert not db.query("diag_inference_events", run_id=rerun["run_id"], invoked=1)
+
+    rerun = manifest.patch_manifest(rerun["run_id"], {
+        "kind": "segment_split", "feature": "segment",
+        "value": {"operator": "in", "values": ["Retail"]}})
+    assert rerun["ready_to_run"] is True
+    runner.execute_now(rerun["run_id"])
+    report, _artifact, _reused = runner.report_payload(rerun["run_id"])
+    assert report["inference_disclosure"]["llm_call_count"] == 0
+    assert report["features"][0]["feature"] == "mystery_metric"
 
 
 def test_directionality_kb_is_visible_as_one_approved_system_document(snapshot):
@@ -199,6 +277,7 @@ def test_llm_failure_preserves_candidates_and_manual_fallback(snapshot, monkeypa
     assert report["ai_reviews"][0]["confirmed_by"] == "system"
     assert "Reviewed directly" in report["ai_reviews"][0]["final_rationale"]
     assert report["features"][0]["classification_source"] == "USER_CONFIRMED"
+    assert report["features"][0]["analysis_view"]["mode"] == "overall_only"
     assert any(row["kind"] == "role_verification_change"
                for row in report["decision_actions"])
 

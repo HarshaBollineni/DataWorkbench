@@ -50,7 +50,7 @@ function Shell() {
 }
 
 function Gate() {
-  const { user, loading } = useAuth();
+  const { user, sessionExpired, loading } = useAuth();
   const location = useLocation();
 
   if (loading) {
@@ -62,7 +62,14 @@ function Gate() {
   }
   if (!user) {
     if (location.pathname === '/login') return <Suspense fallback={<RouteFallback />}><Login /></Suspense>;
-    return <Navigate to="/login" replace />;
+    return <Navigate
+      to="/login"
+      replace
+      state={{
+        from: `${location.pathname}${location.search}${location.hash}`,
+        sessionExpired,
+      }}
+    />;
   }
   if (location.pathname === '/login') return <Navigate to="/" replace />;
   return (

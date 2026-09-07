@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { CheckCircle2, Download, Eye, EyeOff, RefreshCw, Ticket } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -41,19 +41,30 @@ function thresholdSummary(row) {
 
 export default function IssueManagement() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [items, setItems] = useState([]);
   const [itemId, setItemId] = useState(() => searchParams.get("item") || "");
-  const [statusFilter, setStatusFilter] = useState("");
-  const [critFilter, setCritFilter] = useState("");
-  const [tableFilter, setTableFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState(() => searchParams.get("status") || "");
+  const [critFilter, setCritFilter] = useState(() => searchParams.get("criticality") || "");
+  const [tableFilter, setTableFilter] = useState(() => searchParams.get("table") || "");
   const [payload, setPayload] = useState(null); // per-item {issues, could_not_assess, all_passed}
   const [register, setRegister] = useState([]);
   const [passed, setPassed] = useState([]);
-  const [showPassed, setShowPassed] = useState(false);
+  const [showPassed, setShowPassed] = useState(() => searchParams.get("passed") === "show");
   const [message, setMessage] = useState("");
 
   useEffect(() => { getItemsV2().then(setItems); }, []);
+
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (itemId) next.set("item", itemId);
+    if (statusFilter) next.set("status", statusFilter);
+    if (critFilter) next.set("criticality", critFilter);
+    if (tableFilter) next.set("table", tableFilter);
+    if (showPassed) next.set("passed", "show");
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
+  }, [critFilter, itemId, searchParams, setSearchParams, showPassed, statusFilter, tableFilter]);
 
   const load = () => {
     if (itemId) {
@@ -165,7 +176,7 @@ export default function IssueManagement() {
               {rows.map((r) => (
                 <tr key={r.issue_row_id}
                   className="cursor-pointer border-t border-slate-100 hover:bg-slate-50"
-                  onClick={() => navigate(`/issues/${r.issue_row_id}`)}>
+                  onClick={() => navigate(`/issues/${r.issue_row_id}?return=${encodeURIComponent(location.search)}`)}>
                   <td className="px-3 py-2 font-medium text-slate-900">{r.test_name}</td>
                   {!itemId && <td className="px-3 py-2 text-slate-600">{r.item_name}</td>}
                   <td className="px-3 py-2 text-slate-600">{r.table_name}</td>

@@ -1,0 +1,49 @@
+schema_version: 1
+diagnostic_key: "{{DIAGNOSTIC_KEY}}"
+experiment_contract_version: "{{VERSION}}"
+status: "draft"
+reviewed_by: []
+reviewed_at: null
+
+required_files:
+  intake: "intake.yaml"
+  contract: "experiment-contract.yaml"
+  process_record: "process-record.md"
+  artifact_inventory: "promotion/artifact-inventory.md"
+  known_limitations: "promotion/known-limitations.md"
+
+gates:
+  user_question_and_non_goals_stable: false
+  scope_and_general_context_behavior_defined: false
+  roles_and_declarations_explicit: false
+  stable_rule_ids_and_outcomes_defined: false
+  missing_prerequisites_fail_closed: false
+  precedence_and_ties_deterministic: false
+  positive_negative_boundary_ambiguous_fixtures_pass: false
+  invariant_tests_pass: false
+  report_and_aar_outputs_designed: false
+  kb_versions_and_history_plan_defined: false
+  ai_boundary_and_human_gate_defined_or_not_applicable: false
+  ai_rerun_reuse_identity_lineage_and_invalidation_tested_or_not_applicable: false
+  sensitive_data_and_tenancy_policy_defined: false
+  issue_and_rca_handoff_defined: false
+  rerun_history_and_replay_contract_defined: false
+  draft_deduplication_and_interruption_recovery_defined: false
+  scale_envelope_recorded: false
+  known_limitations_accepted: false
+  promotion_inventory_complete: false
+
+evidence:
+  test_commands: []
+  test_results: []
+  fixture_manifests: []
+  benchmark_results: []
+  notebook_references: []
+  resource_hashes: {}
+
+handoff:
+  target_backend_package: "backend/domains/test_lab/diagnostics/{{DIAGNOSTIC_KEY}}"
+  target_frontend_feature: "ui/src/features/test-lab/diagnostics/{{FRONTEND_KEY}}"
+  target_process_docs: "docs/diagnostics/{{SLUG}}"
+  compatibility_or_migration_notes: []
+  accepted_exclusions: []

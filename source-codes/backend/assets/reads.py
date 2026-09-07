@@ -13,8 +13,48 @@ from typing import Any
 import system_db as s
 
 
+def list_sourcing_drafts(owner: str, tenant_id: str) -> list[dict[str, Any]]:
+    """Return every unresolved draft the principal must resume or discard."""
+    drafts = [
+        row for row in s.query("dq_items", order_by="updated_at DESC, created_at DESC")
+        if row.get("sourcing_draft_state") in {"active", "recovery"}
+        and row.get("sourcing_tenant_id") == tenant_id
+        and row.get("sourcing_owner") in {owner, "__legacy__"}
+    ]
+    result: list[dict[str, Any]] = []
+    for draft in drafts:
+        asset = s.query_one("dq_assets", asset_id=draft.get("dataset_family_id")) or {}
+        files = s.query("dq_item_files", item_id=draft["item_id"])
+        data_files = sorted(
+            (row for row in files if row.get("role") == "data"),
+            key=lambda row: row.get("completed_at") or "",
+        )
+        dictionary_files = sorted(
+            (row for row in files if row.get("role") == "dictionary"),
+            key=lambda row: row.get("completed_at") or "",
+        )
+        result.append({
+            **asset,
+            "kind": draft.get("kind") or asset.get("kind"),
+            "resumable": True,
+            "resume_snapshot_id": draft["item_id"],
+            "resume_ingest_status": draft.get("ingest_status"),
+            "resume_intent": draft.get("intent"),
+            "resume_file_name": data_files[-1].get("filename") if data_files else None,
+            "resume_dictionary_file_name": (
+                dictionary_files[-1].get("filename") if dictionary_files else None
+            ),
+            "resume_has_data": bool(data_files),
+            "draft_state": draft.get("sourcing_draft_state"),
+            "draft_updated_at": draft.get("updated_at") or draft.get("created_at"),
+        })
+    return result
+
+
 def list_assets(kind: str | None = None,
-                exclude_lifecycle: list[str] | None = None) -> list[dict[str, Any]]:
+                exclude_lifecycle: list[str] | None = None,
+                sourcing_owner: str | None = None,
+                sourcing_tenant_id: str | None = None) -> list[dict[str, Any]]:
     """SRC-05's basic data source — one row per ``dq_assets`` row, enriched
     with its active-snapshot count and its most recent upload timestamp.
 
@@ -50,6 +90,13 @@ def list_assets(kind: str | None = None,
         unfinished = [r for r in active if (
             r.get("ingest_status") != "ready"
             or str(r.get("snapshot_label") or "").startswith("__staged_")
+        ) and (
+            sourcing_owner is None
+            or (
+                r.get("sourcing_draft_state") in {"active", "recovery"}
+                and r.get("sourcing_tenant_id") == sourcing_tenant_id
+                and r.get("sourcing_owner") in {sourcing_owner, "__legacy__"}
+            )
         )]
         unfinished.sort(key=lambda row: row.get("updated_at") or row.get("created_at") or "")
         resumable = unfinished[-1] if unfinished else None

@@ -25,6 +25,17 @@ system_db.restore_from_backup()
 # demo *reset* action is surgical (see system_db.reset_demo) and does NOT reseed
 # users, so it must not be used for the cold-start path.
 system_db.init_schema()
+# A RUNNING diagnostic is backed by a short persisted worker lease. Recover
+# leases that expired while the API was offline before serving Test Lab state;
+# active leases from another process are preserved.
+from domains.test_lab.shared.run_state import recover_expired_runs  # noqa: E402
+
+_diagnostic_recovery = recover_expired_runs()
+if _diagnostic_recovery["recovered"]:
+    print(
+        f"[test-lab] recovered {_diagnostic_recovery['recovered']} interrupted diagnostic run(s)",
+        flush=True,
+    )
 # Plan 6 — sync the agent topology on every boot (idempotent): backfills `seq`
 # and the Lovelace->Newton rename even when users already exist (cold-start
 # below would otherwise skip seeding on a pre-existing system_state.db).
@@ -46,12 +57,13 @@ retire_old_framework()
 # taxonomy, seeded every boot (idempotent) for the same reason as above.
 from seeds import (  # noqa: E402
     seed_directionality_knowledge, seed_platform_and_taxonomy,
-    seed_row_completeness_knowledge,
+    seed_row_completeness_knowledge, seed_value_semantics_knowledge,
 )
 
 seed_platform_and_taxonomy()
 seed_row_completeness_knowledge()
 seed_directionality_knowledge()
+seed_value_semantics_knowledge()
 # Repair confirmed supporting-analysis observations whose issue rows were
 # removed by the pre-fix retirement migration on an earlier restart.
 from analysis_runtime.runs import repair_confirmed_observation_issues  # noqa: E402
@@ -99,6 +111,11 @@ def _backup_loop() -> None:
 _TIME_BOX_SWEEP_INTERVAL = int(os.environ.get("RCA_TIME_BOX_SWEEP_INTERVAL", "3600"))
 _time_box_stop = threading.Event()
 
+_DIAGNOSTIC_RUN_SWEEP_INTERVAL = max(
+    10, int(os.environ.get("DIAGNOSTIC_RUN_SWEEP_INTERVAL", "30"))
+)
+_diagnostic_run_stop = threading.Event()
+
 
 def _time_box_sweep_loop() -> None:
     from domains.rca import service as rca  # deferred: service imports system_db after boot setup
@@ -110,20 +127,42 @@ def _time_box_sweep_loop() -> None:
             print(f"[rca] time-box sweep failed: {exc}", flush=True)
 
 
+def _diagnostic_run_sweep_loop() -> None:
+    """Finalize workers whose persisted lease expired without a terminal state."""
+    while not _diagnostic_run_stop.wait(_DIAGNOSTIC_RUN_SWEEP_INTERVAL):
+        try:
+            outcome = recover_expired_runs()
+            if outcome["recovered"]:
+                print(
+                    f"[test-lab] recovered {outcome['recovered']} interrupted diagnostic run(s)",
+                    flush=True,
+                )
+        except Exception as exc:  # never let recovery stop the service
+            print(f"[test-lab] diagnostic run recovery failed: {exc}", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     thread = None
     time_box_thread = None
+    diagnostic_run_thread = None
     if system_db.SYS_DB_BACKUP_PATH:
         thread = threading.Thread(target=_backup_loop, name="db-backup", daemon=True)
         thread.start()
     time_box_thread = threading.Thread(target=_time_box_sweep_loop, name="rca-time-box-sweep", daemon=True)
     time_box_thread.start()
+    diagnostic_run_thread = threading.Thread(
+        target=_diagnostic_run_sweep_loop,
+        name="diagnostic-run-recovery",
+        daemon=True,
+    )
+    diagnostic_run_thread.start()
     try:
         yield
     finally:
         _backup_stop.set()
         _time_box_stop.set()
+        _diagnostic_run_stop.set()
         if system_db.SYS_DB_BACKUP_PATH:
             try:
                 system_db.backup_to_volume()  # final snapshot on graceful shutdown

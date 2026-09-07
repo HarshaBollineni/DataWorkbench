@@ -196,20 +196,19 @@
       "area": "T2",
       "mode": "hard",
       "name": "Value-semantics classification",
-      "what_it_computes": "Classify each field/null as valid / missing / censored / stale / N-A",
-      "metric": "rule-based classification vs KB",
+      "what_it_computes": "Assign CENSORED / STALE_FROZEN / NOT_APPLICABLE cell tags and report NO_TAG / UNCLASSIFIED / UNSCOPED coverage outcomes",
+      "metric": "role-routed cell classification and coverage vs versioned KB",
       "threshold_based": "No - classification",
       "threshold_rule_default": "tag per KB rule (no cutoff) — OUTPUT other tests consume",
       "det_stat": "Deterministic",
       "decision_type": "classification_output",
       "stage": "Stage 1",
       "kb_dependency": "HIGH",
-      "workflow_status": "workflow_pending",
+      "workflow_status": "executable",
       "l2_areas": [
         "L2-10"
       ],
-      "enabled_by": null,
-      "_next_to_enable": "DIA-01"
+      "enabled_by": "T2D8 production acceptance gate (07 Sep 2026)"
     },
     {
       "diagnostic_id": 11,
@@ -555,7 +554,7 @@
       "17": 0.16666667,
       "20": 0.16666667
     },
-    "coverage_statement": "FWK-16 coverage honesty: a score must state what it covers. Four of 9 registered diagnostics are executable (#2 feature-target separation, #6 row completeness, #11 directional consistency, and #14 population stability); #4 cross-field business rule is workflow-pending while it undergoes additional testing and refinement. The score panel names executable, run, not-run, and workflow-pending diagnostics and does not present this partial coverage as a weighted health score.",
-    "superseded_scheme_note": "The retired scheme weighted 14 tests by area criticality (fw_family_weights, WEIGHTS Critical=5/High=3/Medium=1). Fixture delta: the old roll-up scored a 3-result fixture (2 units, passed_fraction 0.5 and 1.0) as ~75 'health' while silently covering only the retired registry; the new scheme refuses a headline number under partial 4/9 executable coverage and reports the split instead."
+    "coverage_statement": "FWK-16 coverage honesty: a score must state what it covers. Five of 9 registered diagnostics are executable (#2 feature-target separation, #6 row completeness, #8 value semantics, #11 directional consistency, and #14 population stability); #4, #12, #17, and #20 remain workflow-pending. The score panel names executable, run, not-run, and workflow-pending diagnostics and does not present this partial coverage as a weighted health score.",
+    "superseded_scheme_note": "The retired scheme weighted 14 tests by area criticality (fw_family_weights, WEIGHTS Critical=5/High=3/Medium=1). Fixture delta: the old roll-up scored a 3-result fixture (2 units, passed_fraction 0.5 and 1.0) as ~75 'health' while silently covering only the retired registry; the new scheme refuses a headline number under partial 5/9 executable coverage and reports the split instead."
   }
 }

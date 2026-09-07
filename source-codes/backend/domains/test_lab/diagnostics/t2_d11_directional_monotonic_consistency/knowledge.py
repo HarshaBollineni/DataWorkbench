@@ -16,7 +16,7 @@ from .matching import load_kb, load_terminology, prepare_feature_matcher
 
 BACKEND_DIR = Path(__file__).resolve().parents[4]
 KB_PATH = BACKEND_DIR / "knowledge_base" / "pd_directionality_kb_v0_3.yaml"
-TERMINOLOGY_PATH = BACKEND_DIR / "knowledge_base" / "credit_risk_abbreviations_v0_2.yaml"
+TERMINOLOGY_PATH = BACKEND_DIR / "knowledge_base" / "credit_risk_abbreviations_v0_3.yaml"
 PROMPT_PATH = BACKEND_DIR / "ai" / "agents" / "semantic_feature_adjudication_v0_2.txt"
 
 PROPOSAL_KIND = "t2_d11_expected_direction"

@@ -3,15 +3,48 @@ from __future__ import annotations
 
 import json
 import queue
+import sqlite3
 import threading
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
 from ai.v2 import service
 from routers.v2_common import raise_api_error, sanitize_internal_errors, stream_events
+import tenancy
 
 router = APIRouter()
+
+
+def _sourcing_principal(authorization) -> dict:
+    if authorization is not None and not isinstance(authorization, str):
+        return {"username": "system", "tenant_id": "bootstrap", "authz_roles": []}
+    return tenancy.resolve_principal(authorization)
+
+
+def _drafts_for(principal: dict) -> list[dict]:
+    from assets import reads
+
+    return reads.list_sourcing_drafts(principal["username"], principal["tenant_id"])
+
+
+def _draft_conflict(principal: dict) -> HTTPException:
+    return HTTPException(status_code=409, detail={
+        "code": "active_sourcing_draft",
+        "message": "Finish or discard your existing sourcing draft before creating another dataset.",
+        "drafts": _drafts_for(principal),
+    })
+
+
+def _require_draft_access(item_id: str, principal: dict) -> dict:
+    item = service.require_item(item_id)
+    if item.get("sourcing_draft_state") not in {"active", "recovery"}:
+        raise HTTPException(status_code=400, detail="This item is not an active sourcing draft.")
+    if item.get("sourcing_tenant_id") != principal["tenant_id"] or item.get("sourcing_owner") not in {
+        principal["username"], "__legacy__",
+    }:
+        raise HTTPException(status_code=404, detail="Unknown sourcing draft.")
+    return item
 
 
 class ItemIn(BaseModel):
@@ -77,6 +110,15 @@ def abandon_upload(item_id: str, step: int = 2):
     return service.abandon_upload(item_id, step)
 
 
+@router.delete("/items/{item_id}/draft")
+@sanitize_internal_errors
+def discard_staged_upload(item_id: str,
+                          authorization: str | None = Header(default=None)):
+    principal = _sourcing_principal(authorization)
+    _require_draft_access(item_id, principal)
+    return service.discard_staged_upload(item_id, actor=principal["username"])
+
+
 @router.get("/assets/next-id")
 def next_asset_id(kind: str):
     """Read-only preview; unlike allocate(), this never inserts or increments."""
@@ -90,20 +132,36 @@ def next_asset_id(kind: str):
 
 
 @router.get("/assets")
-def list_assets(kind: str | None = None):
+def list_assets(kind: str | None = None,
+                authorization: str | None = Header(default=None)):
     from assets import reads
 
-    return reads.list_assets(kind=kind)
+    principal = _sourcing_principal(authorization)
+    return reads.list_assets(
+        kind=kind,
+        sourcing_owner=principal["username"],
+        sourcing_tenant_id=principal["tenant_id"],
+    )
+
+
+@router.get("/assets/sourcing-drafts")
+def sourcing_drafts(authorization: str | None = Header(default=None)):
+    return {"drafts": _drafts_for(_sourcing_principal(authorization))}
 
 
 @router.post("/assets/upload-target")
-def create_upload_target(body: UploadTargetIn):
+def create_upload_target(body: UploadTargetIn,
+                         authorization: str | None = Header(default=None)):
     """Create a snapshot target only when the user drops the data file."""
     try:
         import uuid
 
         import system_db
         from assets import service as assets_service
+
+        principal = _sourcing_principal(authorization)
+        if _drafts_for(principal):
+            raise _draft_conflict(principal)
 
         if body.asset_id:
             asset = assets_service.require_asset(body.asset_id)
@@ -119,18 +177,36 @@ def create_upload_target(body: UploadTargetIn):
             snapshot = assets_service.add_snapshot(
                 body.asset_id,
                 intent="add_period",
-                actor=None,
+                actor=principal["username"],
                 start_date=latest.get("start_date"),
                 end_date=latest.get("end_date"),
                 snapshot_label=f"__staged_{uuid.uuid4().hex[:10]}",
+                sourcing_draft_state="active",
+                sourcing_owner=principal["username"],
+                sourcing_tenant_id=principal["tenant_id"],
             )
         else:
             if not body.alias:
                 raise ValueError("An alias is required for a Fresh Upload.")
-            asset = assets_service.create_asset(body.kind, body.alias, body.time_basis, actor=None)
-            snapshot = assets_service.add_snapshot(
-                asset["asset_id"], intent="fresh", actor=None, _staged=True
+            asset = assets_service.create_asset(
+                body.kind, body.alias, body.time_basis, actor=principal["username"]
             )
+            try:
+                snapshot = assets_service.add_snapshot(
+                    asset["asset_id"], intent="fresh", actor=principal["username"], _staged=True,
+                    sourcing_draft_state="active",
+                    sourcing_owner=principal["username"],
+                    sourcing_tenant_id=principal["tenant_id"],
+                )
+            except sqlite3.IntegrityError as exc:
+                # The partial unique index closes the two-tab race. Remove the
+                # empty asset shell created by the losing request; allocated
+                # system IDs intentionally remain non-recyclable.
+                for table in ("dq_asset_events", "dq_asset_versions", "dq_assets"):
+                    system_db.delete(table, asset_id=asset["asset_id"])
+                if "sourcing" in str(exc).lower() or "sourcing_owner" in str(exc).lower():
+                    raise _draft_conflict(principal) from exc
+                raise
         service._item_dir(snapshot["item_id"])
         return {
             "asset": assets_service.require_asset(snapshot["dataset_family_id"]),
@@ -138,6 +214,8 @@ def create_upload_target(body: UploadTargetIn):
             "item_id": snapshot["item_id"],
             "asset_id": snapshot["dataset_family_id"],
         }
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise_api_error(exc)
 
@@ -233,8 +311,15 @@ def refresh_asset(asset_id: str):
 
 
 @router.post("/items/{item_id}/process")
-def process_snapshot(item_id: str, body: ProcessSnapshotIn):
+def process_snapshot(item_id: str, body: ProcessSnapshotIn,
+                     authorization: str | None = Header(default=None)):
     try:
+        item = service.require_item(item_id)
+        uploaded_by = body.uploaded_by
+        if item.get("sourcing_draft_state") in {"active", "recovery"}:
+            principal = _sourcing_principal(authorization)
+            _require_draft_access(item_id, principal)
+            uploaded_by = principal["username"]
         return service.process_snapshot(
             item_id,
             intent=body.intent,
@@ -257,8 +342,10 @@ def process_snapshot(item_id: str, body: ProcessSnapshotIn):
                 or body.replacement_confirmation
                 or body.full_replacement_confirmation
             ),
-            uploaded_by=body.uploaded_by,
+            uploaded_by=uploaded_by,
         )
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise_api_error(exc)
 

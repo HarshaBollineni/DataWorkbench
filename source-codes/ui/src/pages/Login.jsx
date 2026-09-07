@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { ShieldCheck } from "lucide-react";
 
 import { BrandLogo } from "@/components/BrandLogo";
@@ -12,6 +12,7 @@ import { useAuth } from "@/context/AuthContext";
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { login } = useAuth();
   const [username, setUsername] = useState("anirban");
   const [password, setPassword] = useState("");
@@ -24,7 +25,12 @@ export default function Login() {
     setError(null);
     try {
       await login(username.trim(), password);
-      navigate("/");
+      const destination = typeof location.state?.from === "string"
+        && location.state.from.startsWith("/")
+        && !location.state.from.startsWith("/login")
+        ? location.state.from
+        : "/";
+      navigate(destination, { replace: true });
     } catch (err) {
       setError(err.message?.includes("401") ? "Invalid username or password" : err.message);
     } finally {
@@ -51,6 +57,12 @@ export default function Login() {
             </div>
           </div>
         </div>
+
+        {location.state?.sessionExpired && !error && (
+          <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+            Your session expired. Sign in again to continue where you left off.
+          </div>
+        )}
 
         {error && (
           <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">

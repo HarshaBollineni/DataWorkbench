@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft, BookOpenText, CheckCircle2, ChevronDown, Database, FileSpreadsheet, Loader2, Settings2,
 } from "lucide-react";
@@ -23,7 +23,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
-  createUploadTargetV2, getIngestV2, getNextAssetIdV2,
+  createUploadTargetV2, discardSourcingDraftV2, getIngestV2, getNextAssetIdV2,
+  getSourcingDraftsV2,
   getItemTablesV2, getSupersedePreviewV2, getTaxonomyDimensionsV3, processSnapshotV2,
   profileStreamUrlV2, restoreAssetVersionV2, inspectSourceV2, uploadSourceBundleV2WithProgress,
 } from "@/api/client";
@@ -32,12 +33,13 @@ const KIND_CARDS = [
   { kind: "database", title: "Database", icon: Database, text: "A multi-table source workbook." },
   { kind: "dataset", title: "Dataset", icon: FileSpreadsheet, text: "A single model-ready table." },
 ];
+const SOURCING_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
 
-function UploadFlow({ kind, onBack, initialAsset = null }) {
+function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, onDraftIdentified, initialAsset = null }) {
   const resumeSnapshotId = initialAsset?.resumable ? initialAsset.resume_snapshot_id : "";
-  const [targetMode] = useState(initialAsset ? "existing" : "fresh");
-  const [alias, setAlias] = useState("");
-  const [timeBasis, setTimeBasis] = useState("none");
+  const [targetMode] = useState(!initialAsset || initialAsset.resume_intent === "fresh" ? "fresh" : "existing");
+  const [alias, setAlias] = useState(initialAsset?.alias || "");
+  const [timeBasis, setTimeBasis] = useState(initialAsset?.time_basis || "none");
   const [nextId, setNextId] = useState(null);
   const [selectedAsset] = useState(initialAsset);
   const [itemId, setItemId] = useState(resumeSnapshotId);
@@ -85,6 +87,7 @@ function UploadFlow({ kind, onBack, initialAsset = null }) {
   const [metadataConfirmed, setMetadataConfirmed] = useState(false);
   const inventoryRef = useRef(null);
   const stream = useAgentStream();
+
   const receiveInventoryRows = useCallback((rows) => {
     setInventoryRows(rows);
     setError((current) => /atomic source codes|confirmed special or missing values/i.test(current) ? "" : current);
@@ -179,6 +182,28 @@ function UploadFlow({ kind, onBack, initialAsset = null }) {
   const sourceComplete = Boolean(ingest && summaries.length);
   const resumingStaged = Boolean(resumeSnapshotId);
   const resumingFresh = resumingStaged && initialAsset?.resume_intent === "fresh";
+
+  useEffect(() => {
+    if (!itemId || completion || busy) return undefined;
+    let timeoutId;
+    const resetTimeout = () => {
+      window.clearTimeout(timeoutId);
+      timeoutId = window.setTimeout(() => onTimeout({
+        ...(initialAsset || {}), kind, resumable: true,
+        resume_snapshot_id: itemId,
+        display_name: initialAsset?.display_name || alias || "Incomplete data sourcing",
+      }), SOURCING_INACTIVITY_TIMEOUT_MS);
+    };
+    resetTimeout();
+    window.addEventListener("pointerdown", resetTimeout);
+    window.addEventListener("keydown", resetTimeout);
+    return () => {
+      window.clearTimeout(timeoutId);
+      window.removeEventListener("pointerdown", resetTimeout);
+      window.removeEventListener("keydown", resetTimeout);
+    };
+  }, [alias, busy, completion, initialAsset, itemId, kind, onTimeout]);
+
   const inferredLabel = basis === "period" && startDate && endDate ? `${startDate} → ${endDate}` : snapshotLabel;
   const useCaseOptions = useMemo(() => taxonomyDimensions.find((dimension) => dimension.key === "use_case")?.values || [], [taxonomyDimensions]);
   const productOptions = useMemo(() => taxonomyDimensions.find((dimension) => dimension.key === "product")?.values || [], [taxonomyDimensions]);
@@ -247,6 +272,7 @@ function UploadFlow({ kind, onBack, initialAsset = null }) {
       ? { kind, alias, time_basis: timeBasis }
       : { kind, asset_id: selectedAsset.asset_id });
     setItemId(target.item_id);
+    onDraftIdentified?.(target.item_id);
     return target.item_id;
   };
 
@@ -325,6 +351,10 @@ function UploadFlow({ kind, onBack, initialAsset = null }) {
           percent: 100, completed: SOURCING_STAGES.length, message: "Data foundation is ready for review." }));
       }
     } catch (err) {
+      if (err.status === 409 && err.detail?.code === "active_sourcing_draft") {
+        onDraftConflict?.(err.detail.drafts || []);
+        return;
+      }
       setError(typeof err.detail === "string" ? err.detail : err.message);
       setProgress((previous) => ({ ...(previous || {}), state: "error", message: err.message }));
     }
@@ -404,6 +434,8 @@ function UploadFlow({ kind, onBack, initialAsset = null }) {
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5"><span><strong id="target-heading" className="block text-slate-950">STEP 1 — Sourcing data</strong><small className="text-slate-500">Choose the files, parsing controls and context.</small></span><span className="flex items-center gap-2 text-sm text-slate-500"><Button variant="ghost" size="sm" onClick={(event) => { event.preventDefault(); event.stopPropagation(); onBack(); }}><ArrowLeft className="h-4 w-4" /> Back</Button>{sourceComplete && <span className="rounded-full bg-emerald-100 px-2.5 py-1 font-medium text-emerald-700">Profiling complete</span>}<ChevronDown className={`h-4 w-4 transition-transform ${sourceOpen ? "rotate-180" : ""}`} /></span></summary>
         <div className="border-t border-slate-200 p-5">
         {resumingStaged && <div className="mt-3 rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm text-indigo-800"><strong>Continuing staged sourcing.</strong> {restoring ? "Restoring the retained files and profiling results…" : "The retained files and profiling results have been restored. Complete the remaining review, intent and storage decisions below."}</div>}
+
+        {resumingStaged && !restoring && <div className="mt-2 flex justify-end"><Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => onStartFresh(initialAsset)}>Discard draft and start fresh</Button></div>}
 
         <div className="mt-4 grid gap-3 md:grid-cols-2">
           <div><div className="flex min-h-6 items-center justify-between"><Label htmlFor="asset-alias">Alias <span aria-hidden="true">*</span></Label><span className="text-[10px] font-semibold uppercase tracking-wide text-dq-purple">Required</span></div><div className={`mt-1 flex h-10 items-center rounded-md border bg-white ${file && !alias ? "border-red-400" : "border-slate-200"}`}><span className="border-r border-slate-200 bg-slate-50 px-3 font-mono text-sm text-slate-500" aria-label="System ID preview">{nextId?.system_id || "…"}-</span><Input id="asset-alias" required aria-required="true" aria-invalid={Boolean(aliasError || (file && !alias))} aria-describedby="asset-alias-help" className="border-0 shadow-none focus-visible:ring-0" value={alias} onChange={(e) => setAlias(e.target.value)} disabled={Boolean(itemId)} placeholder="e.g. q2_cre_source" /></div>{aliasError ? <p className="mt-1 text-xs text-red-700" role="alert">{aliasError}</p> : file && !alias ? <p className="mt-1 text-xs text-red-700" role="alert">Enter an alias to enable Start sourcing.</p> : null}<p id="asset-alias-help" className="mt-1 text-xs text-slate-400">A short, recognizable name for this data asset. The system ID prefix is assigned when sourcing starts.</p></div>
@@ -494,19 +526,124 @@ function UploadFlow({ kind, onBack, initialAsset = null }) {
 
 function SourcingScreen() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedResumeId = useRef(searchParams.get("resume"));
+  const requestedKind = useRef(["database", "dataset"].includes(searchParams.get("new")) ? searchParams.get("new") : "");
   const [kind, setKind] = useState("");
-  const [pickerKind, setPickerKind] = useState("");
+  const [pickerKind, setPickerKind] = useState(() => ["database", "dataset"].includes(searchParams.get("browse")) ? searchParams.get("browse") : "");
   const [startAsset, setStartAsset] = useState(null);
-  const chooseExisting = (nextKind) => setPickerKind((current) => current === nextKind ? "" : nextKind);
+  const [recoveryAsset, setRecoveryAsset] = useState(null);
+  const [recoveryError, setRecoveryError] = useState("");
+  const [discarding, setDiscarding] = useState(false);
+  const [drafts, setDrafts] = useState([]);
+  const [draftsLoading, setDraftsLoading] = useState(true);
+  const [draftsError, setDraftsError] = useState("");
+  const updateLocation = useCallback((updates) => setSearchParams((current) => {
+    const next = new URLSearchParams(current);
+    Object.entries(updates).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key));
+    return next;
+  }, { replace: true }), [setSearchParams]);
+  const loadDrafts = useCallback(async () => {
+    setDraftsLoading(true);
+    setDraftsError("");
+    try {
+      const result = await getSourcingDraftsV2();
+      setDrafts(result.drafts || []);
+    } catch (error) {
+      setDraftsError(error.message);
+    } finally {
+      setDraftsLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    let cancelled = false;
+    getSourcingDraftsV2()
+      .then((result) => {
+        if (cancelled) return;
+        const availableDrafts = result.drafts || [];
+        setDrafts(availableDrafts);
+        const requestedDraft = availableDrafts.find((draft) => draft.resume_snapshot_id === requestedResumeId.current
+          && draft.draft_state === "active");
+        if (requestedDraft) {
+          setStartAsset(requestedDraft);
+          setKind(requestedDraft.kind);
+          setPickerKind("");
+        } else if (!availableDrafts.length && requestedKind.current) {
+          setKind(requestedKind.current);
+        } else if (requestedResumeId.current) {
+          updateLocation({ resume: null });
+        }
+      })
+      .catch((error) => { if (!cancelled) setDraftsError(error.message); })
+      .finally(() => { if (!cancelled) setDraftsLoading(false); });
+    return () => { cancelled = true; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const chooseExisting = (nextKind) => {
+    const next = pickerKind === nextKind ? "" : nextKind;
+    setPickerKind(next);
+    updateLocation({ browse: next, new: null, resume: null });
+  };
   const viewExisting = (selected) => {
     navigate(`/test-lab?asset=${encodeURIComponent(selected.asset_id)}`);
   };
+  const resumeExisting = (selected) => {
+    setRecoveryAsset(null);
+    setRecoveryError("");
+    setStartAsset(selected);
+    setKind(selected.kind);
+    setPickerKind("");
+    updateLocation({ resume: selected.resume_snapshot_id, browse: null, new: null });
+  };
+  const handleTimeout = useCallback((draft) => {
+    setDrafts((current) => current.some((row) => row.resume_snapshot_id === draft.resume_snapshot_id)
+      ? current
+      : [draft, ...current]);
+    setRecoveryAsset(draft);
+    setRecoveryError("");
+    setStartAsset(null);
+    setKind("");
+    setPickerKind("");
+    updateLocation({ resume: draft.resume_snapshot_id, new: null, browse: null });
+  }, [updateLocation]);
+  const startFresh = useCallback(async (draft) => {
+    const snapshotId = draft?.resume_snapshot_id;
+    if (!snapshotId) return;
+    if (!window.confirm("Discard this incomplete sourcing draft and start again? The incomplete upload and its saved progress will be permanently removed.")) return;
+    setDiscarding(true);
+    setRecoveryError("");
+    try {
+      await discardSourcingDraftV2(snapshotId);
+      const remaining = await getSourcingDraftsV2();
+      const nextDrafts = remaining.drafts || [];
+      setDrafts(nextDrafts);
+      setRecoveryAsset(null);
+      setStartAsset(null);
+      setPickerKind("");
+      setKind(nextDrafts.length ? "" : draft.kind);
+      updateLocation({ resume: null, new: nextDrafts.length ? null : draft.kind });
+    } catch (error) {
+      setRecoveryError(error.message);
+    } finally {
+      setDiscarding(false);
+    }
+  }, [updateLocation]);
+  const unresolvedDrafts = drafts.length > 0;
   const addNew = (nextKind) => {
     setStartAsset(null);
     setKind(nextKind);
     setPickerKind("");
+    updateLocation({ new: nextKind, browse: null, resume: null });
   };
   const backToKinds = () => {
+    setKind("");
+    setStartAsset(null);
+    updateLocation({ new: null, browse: null, resume: null });
+    loadDrafts();
+  };
+  const handleDraftConflict = (conflictingDrafts) => {
+    setDrafts(conflictingDrafts);
+    setDraftsError("");
+    setDraftsLoading(false);
     setKind("");
     setStartAsset(null);
   };
@@ -516,6 +653,10 @@ function SourcingScreen() {
         <h1 className="text-2xl font-bold text-slate-950">Data Sourcing</h1>
         <p className="mt-1 text-sm text-slate-500">Create a new data asset or browse data already sourced.</p>
       </div>
+      {!kind && draftsLoading && <div className="mb-4 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-500"><Loader2 className="mr-2 inline h-4 w-4 animate-spin" />Checking for unfinished sourcing…</div>}
+      {!kind && draftsError && <div className="mb-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800" role="alert"><strong>Unfinished sourcing could not be checked.</strong> New dataset creation is paused to prevent duplicate drafts.<Button type="button" size="sm" variant="outline" className="ml-3" onClick={loadDrafts}>Retry</Button></div>}
+      {!kind && !recoveryAsset && !draftsLoading && !draftsError && unresolvedDrafts && <section className="mb-4 rounded-lg border border-indigo-200 bg-indigo-50/70 p-4" aria-labelledby="unfinished-sourcing-title"><h2 id="unfinished-sourcing-title" className="font-semibold text-indigo-950">You have unfinished data sourcing</h2><p className="mt-1 text-sm text-indigo-800">Continue where you left off, or discard the retained draft before creating another data source.</p><div className="mt-3 space-y-2">{drafts.map((draft) => <div key={draft.resume_snapshot_id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-indigo-200 bg-white px-3 py-3"><div><p className="font-medium text-slate-900">{draft.display_name || "Incomplete data sourcing"}</p><p className="text-xs text-slate-500">{String(draft.resume_ingest_status || "incomplete").replaceAll("_", " ")} · Last updated {draft.draft_updated_at ? new Date(draft.draft_updated_at).toLocaleString() : "not available"}{draft.draft_state === "recovery" ? " · Older draft requiring resolution" : ""}</p></div><div className="flex flex-wrap gap-2">{draft.draft_state === "active" ? <Button type="button" size="sm" onClick={() => resumeExisting(draft)}>Continue sourcing</Button> : <span className="self-center text-xs font-medium text-indigo-700">Resolve the current draft first</span>}<Button type="button" size="sm" variant="destructive" disabled={discarding} onClick={() => startFresh(draft)}>{discarding ? "Discarding draft…" : drafts.length === 1 ? `Discard draft and create new ${draft.kind || "dataset"}` : "Discard draft"}</Button></div></div>)}</div></section>}
+      {recoveryAsset && !kind && <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="status"><p><strong>Data sourcing is still in progress.</strong> This page returned here after 30 minutes without activity. Your draft was retained.</p><p className="mt-1 text-amber-800">Continue the retained sourcing steps, or discard the incomplete draft and start a new data source.</p><div className="mt-3 flex flex-wrap gap-2"><Button type="button" size="sm" onClick={() => resumeExisting(recoveryAsset)}>Continue sourcing</Button><Button type="button" size="sm" variant="destructive" disabled={discarding} onClick={() => startFresh(recoveryAsset)}>{discarding ? "Discarding draft…" : `Discard draft and create new ${recoveryAsset.kind || "dataset"}`}</Button></div>{recoveryError && <p className="mt-2 text-red-700" role="alert">{recoveryError}</p>}</div>}
       {!kind ? (
         <div className="grid gap-5 xl:grid-cols-2">
           {KIND_CARDS.map(({ kind: nextKind, title, icon: Icon, text }) => (
@@ -526,7 +667,7 @@ function SourcingScreen() {
               </div>
               <p className="mt-3 text-sm text-slate-600">{text}</p>
               <div className="mt-5 flex flex-wrap gap-2">
-                <button type="button" className="rounded-md bg-dq-purple px-3 py-2 text-sm font-medium text-white hover:bg-dq-purple/90" onClick={() => addNew(nextKind)}>Create New {title}</button>
+                {!draftsLoading && !draftsError && !unresolvedDrafts && <button type="button" className="rounded-md bg-dq-purple px-3 py-2 text-sm font-medium text-white hover:bg-dq-purple/90" onClick={() => addNew(nextKind)}>Create New {title}</button>}
                 <button type="button" className="rounded-md border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:border-dq-purple" onClick={() => chooseExisting(nextKind)}>View Existing {title}s</button>
                 <span className="inline-flex items-center gap-2">
                   <button type="button" disabled aria-describedby={`future-snapshot-${nextKind}`} className="cursor-not-allowed rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm font-medium text-slate-400">Upload New Snapshot to Existing {title}</button>
@@ -536,14 +677,15 @@ function SourcingScreen() {
               <p id={`future-snapshot-${nextKind}`} className="mt-3 text-xs text-slate-500">Future capability for adding a separately stored period, segment, region, scenario, or other comparable population to an existing {title.toLowerCase()}.</p>
               {pickerKind === nextKind && (
                 <div className="relative z-10 mt-3 rounded-md border border-dq-purple/30 bg-slate-50 p-2" data-testid="existing-popover">
-                  <AssetPicker kind={nextKind} value={null} onChange={viewExisting} excludeRequiresReupload={true} allowResumable />
+                  <AssetPicker kind={nextKind} value={null} onChange={viewExisting} onResume={resumeExisting} excludeRequiresReupload={true} allowResumable />
                 </div>
               )}
             </section>
           ))}
         </div>
       ) : (
-        <UploadFlow key={`${kind}:${startAsset?.resume_snapshot_id || startAsset?.asset_id || "new"}`} kind={kind} initialAsset={startAsset} onBack={backToKinds} />
+        <UploadFlow key={`${kind}:${startAsset?.resume_snapshot_id || startAsset?.asset_id || "new"}`} kind={kind} initialAsset={startAsset} onBack={backToKinds} onTimeout={handleTimeout} onStartFresh={startFresh} onDraftConflict={handleDraftConflict}
+          onDraftIdentified={(snapshotId) => updateLocation({ resume: snapshotId, new: null, browse: null })} />
       )}
     </main>
   );

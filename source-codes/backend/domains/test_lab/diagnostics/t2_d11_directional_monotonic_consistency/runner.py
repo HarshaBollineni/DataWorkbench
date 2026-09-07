@@ -65,19 +65,33 @@ def _comparison(feature: dict[str, Any], manifest: dict[str, Any],
                 "REVIEW_RECOMMENDED", "CONFLICTING_EVIDENCE", "WEAK_OR_NO_RELATIONSHIP"}}
 
 
-def _segments(frame: pd.DataFrame, segment_column: str | None,
+def _segments(frame: pd.DataFrame, segment_definition: dict[str, Any] | None,
               min_sample: int) -> list[tuple[str, pd.DataFrame]]:
-    if not segment_column:
+    del min_sample  # small selected samples are retained as insufficient-data evidence
+    if not segment_definition:
         return []
-    values = frame[segment_column].dropna().unique().tolist()
-    if len(values) > 50:
-        raise ValueError("segment column has more than 50 distinct values")
-    result = []
-    for value in sorted(values, key=lambda item: str(item)):
-        subset = frame.loc[frame[segment_column] == value]
-        # Preserve small segments as explicit insufficient-data evidence.
-        result.append((str(value), subset))
-    return result
+    from domains.test_lab.diagnostics.t4_d14_population_stability.population import split_population
+    feature = segment_definition["split_feature"]
+    split = split_population(
+        frame, feature, segment_definition["expression"],
+        null_policy=segment_definition.get("null_policy") or "baseline",
+        special_values=segment_definition.get("special_values") or [],
+        special_policy=segment_definition.get("special_policy") or "exclude",
+    )
+    # Overall evidence is always calculated. Only the explicitly accepted side
+    # receives a segment result; its complement is intentionally not analysed.
+    return [(_segment_name(segment_definition), split["baseline"])]
+
+
+def _segment_name(segment_definition: dict[str, Any]) -> str:
+    """Return a stable short name; predicate details remain separate metadata."""
+    feature = str(segment_definition.get("split_feature") or "segment")
+
+    def compact(value: str) -> str:
+        cleaned = "".join(character if character.isalnum() else "_" for character in value)
+        return "_".join(part for part in cleaned.split("_") if part)[:40] or "selected"
+
+    return f"seg_{compact(feature)}"
 
 
 def _save_artifact(manifest: dict[str, Any], feature: dict[str, Any],
@@ -88,7 +102,7 @@ def _save_artifact(manifest: dict[str, Any], feature: dict[str, Any],
               if row["feature"] == manifest["reference"]["column"]), None),
     ) if value)
     identity_inputs = {"manifest_fingerprint": manifest["manifest_fingerprint"],
-                       "feature": feature["feature"], "payload_schema": 1}
+                       "feature": feature["feature"], "payload_schema": 2}
     saved = AnalysisArtifactRepository().save(
         payload, artifact_type=ARTIFACT_TYPE,
         asset_id=SnapshotLoader().reference(manifest["item_id"]).asset_id,
@@ -182,7 +196,9 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
                 thresholds=config, feature_special_values=feature.get("special_values") or [],
                 reference_special_values=manifest["reference"].get("special_values") or [])
             segment_evidence = []
-            for segment, subset in _segments(frame, manifest.get("segment_column"), config.min_sample):
+            for segment, subset in _segments(
+                frame, manifest.get("segment_definition"), config.min_sample,
+            ):
                 item = analyze_directionality(
                     subset[name], subset[manifest["reference"]["column"]],
                     target_type=target_type, positive_class=positive_class,
@@ -190,10 +206,28 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
                     reference_special_values=manifest["reference"].get("special_values") or [])
                 segment_evidence.append({"segment": segment, "comparison": _comparison(feature, manifest, item),
                                          "evidence": item})
-            payload = {"artifact_kind": ARTIFACT_TYPE, "schema_version": 1,
+            segmented = bool(manifest.get("segment_definition"))
+            segment_label = (_segment_name(manifest["segment_definition"])
+                             if segmented else None)
+            analysis_view = {
+                "mode": "segmented_rerun" if segmented else "overall_only",
+                "overall_label": "Entire sample",
+                "overall_always_calculated": True,
+                "segmentation": ({
+                    "analysed_label": segment_label,
+                    "not_analysed_label": "Not analysed",
+                    "choice": manifest.get("segment_definition"),
+                    "population_counts": manifest.get("segment_preview"),
+                    "complement_tested": False,
+                } if segmented else None),
+            }
+            payload = {"artifact_kind": ARTIFACT_TYPE, "schema_version": 2,
                        "run_id": run_id, "feature": name,
                        "reference": manifest["reference"],
+                       "analysis_view": analysis_view,
                        "segment_column": manifest.get("segment_column"),
+                       "segment_definition": manifest.get("segment_definition"),
+                       "segment_preview": manifest.get("segment_preview"),
                        "expected": {key: feature.get(key) for key in (
                            "canonical_feature", "expected_direction", "representation_orientation",
                            "knowledge_strength", "classification_source", "rationale")},
@@ -268,6 +302,12 @@ def hydrate_result(result: dict[str, Any]) -> dict[str, Any]:
         "knowledge_strength": expected.get("knowledge_strength"),
         "expected_rationale": expected.get("rationale"),
         "reference": payload["reference"],
+        "analysis_view": payload.get("analysis_view") or {
+            "mode": "segmented_rerun" if payload.get("segment_definition") else "overall_only",
+            "overall_label": "Entire sample", "overall_always_calculated": True,
+        },
+        "segment_definition": payload.get("segment_definition"),
+        "segment_preview": payload.get("segment_preview"),
         "comparison": payload["comparison"],
         "evidence": payload["overall"],
         "segments": payload.get("segments") or [],
@@ -326,6 +366,16 @@ def report_payload(run_id: str) -> tuple[dict[str, Any], Any, bool]:
             "paired_observations": evidence.get("n_paired"),
             "bin_count": len((evidence.get("binned") or {}).get("bins") or []),
             "segment_count": len(metrics.get("segments") or []),
+            "analysis_view": metrics.get("analysis_view") or {},
+            "segment_results": [{
+                "label": item.get("segment"),
+                "expected_reference_direction": (item.get("comparison") or {}).get(
+                    "expected_reference_direction"),
+                "observed_direction": (item.get("comparison") or {}).get("observed_direction"),
+                "evidence_strength": (item.get("evidence") or {}).get("evidence_strength"),
+                "conclusion": (item.get("comparison") or {}).get("conclusion"),
+                "paired_observations": (item.get("evidence") or {}).get("n_paired"),
+            } for item in metrics.get("segments") or []],
             "artifact_id": metrics["artifact_id"],
         })
         for finding in row.get("findings") or []:
@@ -386,7 +436,9 @@ def report_payload(run_id: str) -> tuple[dict[str, Any], Any, bool]:
         "scope": {"item_id": run_row["item_id"], "table": manifest.get("table"),
                   "reference_column": (manifest.get("reference") or {}).get("column"),
                   "reference_orientation": (manifest.get("reference") or {}).get("orientation"),
-                  "segment_column": manifest.get("segment_column")},
+                  "segment_column": manifest.get("segment_column"),
+                  "segment_definition": manifest.get("segment_definition"),
+                  "segment_preview": manifest.get("segment_preview")},
         "summary": {"features_selected": rollup.get("features_selected", len(features)),
                     "features_completed": rollup.get("features_completed", len(features)),
                     "features_failed": rollup.get("features_failed", 0),
@@ -459,6 +511,9 @@ def _report_text(payload: dict[str, Any]) -> str:
              f"- Target or substitute: {scope['reference_column']}",
              f"- Target risk direction: {orientation}",
              f"- Segment analysis: {scope.get('segment_column') or 'Overall portfolio only'}",
+             *( [f"- Analysed segment rows: {scope['segment_preview']['baseline_count']}",
+                  f"- Complement not analysed: {scope['segment_preview']['current_count']} rows"]
+                if scope.get("segment_preview") else [] ),
              f"- Selected variables: {summary['features_selected']}",
              f"- Broad bins requested: {payload.get('requested_bins')}",
              f"- Knowledge Base version: {payload['knowledge'].get('version')}",
@@ -484,6 +539,15 @@ def _report_text(payload: dict[str, Any]) -> str:
                       f"regression coefficient={feature['regression_coefficient']}; "
                       f"Pearson (display only)={feature['pearson_display_only']}; "
                       f"paired observations={feature['paired_observations']}; bins={feature['bin_count']}"])
+        for segment_result in feature.get("segment_results") or []:
+            lines.append(
+                f"  Segmented result ({segment_result['label']}): expected="
+                f"{segment_result['expected_reference_direction']}; observed="
+                f"{segment_result['observed_direction']}; strength="
+                f"{segment_result['evidence_strength']}; outcome="
+                f"{segment_result['conclusion']}; paired observations="
+                f"{segment_result['paired_observations']}"
+            )
     lines.extend(["", "4. AI ASSISTANCE AND HUMAN REVIEW",
                   "AI is optional and is used only when a variable needs semantic assistance to "
                   "identify a suitable Knowledge Base concept. It does not calculate metrics or "
@@ -612,6 +676,9 @@ def _render_pdf(payload: dict[str, Any]) -> bytes:
         ["Target or substitute", scope["reference_column"]],
         ["Target risk direction", orientation],
         ["Segment analysis", scope.get("segment_column") or "Overall portfolio only"],
+        *([["Analysed segment", f"{scope['segment_preview']['baseline_count']} rows"],
+           ["Complement", f"{scope['segment_preview']['current_count']} rows - not analysed"]]
+          if scope.get("segment_preview") else []),
         ["Selected variables", summary["features_selected"]],
         ["Broad bins requested", payload.get("requested_bins")],
         ["Knowledge Base version", payload["knowledge"].get("version")],
@@ -629,13 +696,19 @@ def _render_pdf(payload: dict[str, Any]) -> bytes:
     ] for row in payload["features"]], [30, 40, 27, 27, 25, 37])
     paragraph("Direction rationale and supporting evidence", bold=True)
     for row in payload["features"]:
-        table([row["feature"], "Governed result"], [
+        detail_rows = [
             ["Direction rationale", row.get("expected_rationale") or "Not recorded"],
             ["Metrics", f"Spearman {row['spearman']}; regression {row['regression_coefficient']}; "
              f"Pearson (display only) {row['pearson_display_only']}"],
             ["Population", f"{row['paired_observations']} paired observations; "
              f"{row['bin_count']} bins; {row['segment_count']} segment results"],
-        ], [42, 144])
+        ]
+        detail_rows.extend(["Segmented result", (
+            f"{segment['label']}: expected {segment['expected_reference_direction']}; "
+            f"observed {segment['observed_direction']}; {segment['evidence_strength']}; "
+            f"{segment['conclusion']}; {segment['paired_observations']} paired observations"
+        )] for segment in row.get("segment_results") or [])
+        table([row["feature"], "Governed result"], detail_rows, [42, 144])
     section("4. AI assistance and human review")
     paragraph("AI is optional and is used only when a variable needs semantic assistance to "
               "identify a suitable Knowledge Base concept. It does not calculate metrics or "

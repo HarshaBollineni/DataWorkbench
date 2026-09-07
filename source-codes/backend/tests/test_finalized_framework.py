@@ -34,12 +34,12 @@ class FinalizedFrameworkTests(unittest.TestCase):
     def test_accepted_backends_are_the_only_executable_diagnostics(self):
         executable = [r for r in self.data["register"]
                       if r["workflow_status"] == "executable"]
-        self.assertEqual([r["diagnostic_id"] for r in executable], [2, 6, 11, 14])
+        self.assertEqual([r["diagnostic_id"] for r in executable], [2, 6, 8, 11, 14])
         self.assertTrue(all(row.get("enabled_by") for row in executable),
                         "FWK-18: every executable flip must carry its decision")
         pending = [r for r in self.data["register"]
                    if r["workflow_status"] == "workflow_pending"]
-        self.assertEqual(len(pending), 5)
+        self.assertEqual(len(pending), 4)
 
     def test_no_defer_row_is_registered(self):
         ids = {r["diagnostic_id"] for r in self.data["register"]}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Database, FileSpreadsheet, Search } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -55,13 +55,20 @@ function moduleTag(status) {
 }
 
 export default function Inventory() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [rows, setRows] = useState([]);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(() => searchParams.get("q") || "");
   const [error, setError] = useState("");
 
   useEffect(() => {
     getItemsV2().then(setRows).catch((e) => setError(e.message));
   }, []);
+
+  useEffect(() => {
+    const next = new URLSearchParams();
+    if (query) next.set("q", query);
+    if (next.toString() !== searchParams.toString()) setSearchParams(next, { replace: true });
+  }, [query, searchParams, setSearchParams]);
 
   // Feedback 1.2: one search over BOTH sections (name, kind, status, use case,
   // target variable and its description).
@@ -165,7 +172,7 @@ function ItemSection({ title, rows, showUseCase }) {
                       {row.target_description || row.target_variable || "-"}
                     </td>
                   )}
-                  <td className="px-4 py-3 text-right"><Button asChild variant="outline" size="sm"><Link to="/test-lab">Open</Link></Button></td>
+                  <td className="px-4 py-3 text-right"><Button asChild variant="outline" size="sm"><Link to={`/test-lab?item=${encodeURIComponent(row.item_id)}`}>Open</Link></Button></td>
                 </tr>
               );
             })}

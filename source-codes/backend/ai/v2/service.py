@@ -10,6 +10,7 @@ import shutil
 import tempfile
 import uuid
 import zipfile
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
@@ -183,7 +184,7 @@ def _read_table(item_id: str, table: str) -> pd.DataFrame:
     item_db = _item_db(item_id)
     if not item_db.exists():
         _rebuild_item_db(item_id)
-    with sqlite3.connect(item_db) as conn:
+    with closing(sqlite3.connect(item_db)) as conn:
         return pd.read_sql_query(f'SELECT * FROM "{table}"', conn)
 
 
@@ -229,8 +230,9 @@ def _write_table(item_id: str, table: str, df: pd.DataFrame) -> None:
             "content is immutable (AST-08) — add a new snapshot instead of overwriting one."
         )
     clean = re.sub(r"[^A-Za-z0-9_]+", "_", table).strip("_") or "dataset"
-    with sqlite3.connect(_item_db(item_id)) as conn:
+    with closing(sqlite3.connect(_item_db(item_id))) as conn:
         df.to_sql(clean, conn, if_exists="replace", index=False)
+        conn.commit()
     db.upsert("dq_item_tables", {
         "item_id": item_id, "table_name": clean, "row_count": int(len(df)),
         "col_count": int(len(df.columns)), "columns": list(map(str, df.columns)),
@@ -1230,6 +1232,80 @@ def abandon_upload(item_id: str, step: int, actor: str = "system") -> dict:
     _usage_event("upload_abandoned", item_id, actor=actor,
                  detail={"step": int(step), "staged": True})
     return {"item_id": item_id, "abandoned": True, "staged": True}
+
+
+def discard_staged_upload(item_id: str, actor: str = "system") -> dict:
+    """Permanently remove one explicitly staged, uncommitted sourcing draft.
+
+    Completed snapshots are never eligible. If the draft is the asset's only
+    snapshot, its empty asset/version shell is removed as well; otherwise the
+    existing asset and all completed snapshots remain untouched.
+    """
+    item = require_item(item_id)
+    draft_owner = item.get("sourcing_owner")
+    draft_tenant_id = item.get("sourcing_tenant_id")
+    processed = db.query_one("dq_asset_events", snapshot_id=item_id,
+                             event_type="snapshot_processed")
+    if processed or not str(item.get("snapshot_label") or "").startswith("__staged_"):
+        raise ValueError("Only an uncommitted staged sourcing draft can be discarded.")
+
+    asset_id = item.get("dataset_family_id")
+    _usage_event("upload_abandoned", item_id, actor=actor,
+                 detail={"step": "start_fresh", "staged": True, "discarded": True})
+
+    dictionary_version_id = item.get("dictionary_version_id")
+    if dictionary_version_id:
+        db.delete("dq_asset_dictionaries", dictionary_version_id=dictionary_version_id)
+    for table, key in (
+        ("dq_snapshot_fingerprints", "snapshot_id"),
+        ("dq_item_warnings", "item_id"),
+        ("dq_item_mappings", "item_id"),
+        ("variable_inventory", "item_id"),
+        ("dq_item_tables", "item_id"),
+        ("dq_item_files", "item_id"),
+    ):
+        db.delete(table, **{key: item_id})
+    db.delete("dq_asset_events", snapshot_id=item_id)
+    db.delete("dq_items", item_id=item_id)
+
+    if draft_owner and draft_tenant_id:
+        recovery = db.execute(
+            "SELECT item_id FROM dq_items WHERE sourcing_tenant_id=? "
+            "AND sourcing_owner=? AND sourcing_draft_state='recovery' "
+            "ORDER BY updated_at DESC, created_at DESC LIMIT 1",
+            (draft_tenant_id, draft_owner),
+        )
+        if recovery:
+            db.update("dq_items", {"item_id": recovery[0]["item_id"]}, {
+                "sourcing_draft_state": "active", "updated_at": db.now_ist(),
+            })
+
+    removed_asset = False
+    remaining_snapshot = db.query_one("dq_items", dataset_family_id=asset_id) if asset_id else None
+    if asset_id and not remaining_snapshot:
+        db.delete("dq_asset_dictionaries", asset_id=asset_id)
+        db.delete("dq_asset_events", asset_id=asset_id)
+        db.delete("dq_asset_versions", asset_id=asset_id)
+        db.delete("dq_assets", asset_id=asset_id)
+        removed_asset = True
+    elif asset_id and dictionary_version_id:
+        remaining_dictionaries = db.query(
+            "dq_asset_dictionaries", asset_id=asset_id, order_by="created_at DESC"
+        )
+        db.update("dq_assets", {"asset_id": asset_id}, {
+            "current_dictionary_version_id": (
+                remaining_dictionaries[0]["dictionary_version_id"]
+                if remaining_dictionaries else None
+            ),
+            "updated_at": db.now_ist(),
+        })
+
+    for root in (UPLOAD_ROOT, ITEM_DB_ROOT):
+        candidate = (root / item_id).resolve()
+        if candidate.parent == root.resolve() and candidate.exists():
+            shutil.rmtree(candidate)
+    return {"item_id": item_id, "discarded": True,
+            "asset_id": asset_id, "asset_removed": removed_asset}
 
 
 def list_items(kind: str | None = None) -> list[dict]:

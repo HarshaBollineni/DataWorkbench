@@ -173,6 +173,10 @@ def _directionality_validator(payload: Any) -> None:
         raise ValueError(f"directionality evidence is missing fields: {missing}")
     if payload.get("artifact_kind") != "directionality_evidence":
         raise ValueError("invalid directionality artifact kind")
+    if int(payload.get("schema_version") or 1) >= 2 and not isinstance(
+        payload.get("analysis_view"), dict
+    ):
+        raise ValueError("directionality evidence must identify its analysis view")
 
 
 def _directionality_summary(payload: Any) -> dict[str, Any]:
@@ -193,6 +197,9 @@ def _directionality_summary(payload: Any) -> dict[str, Any]:
                     "reference_column": (payload.get("reference") or {}).get("column"),
                     "bin_count": len((evidence.get("binned") or {}).get("bins") or []),
                     "segment_count": len(payload.get("segments") or []),
+                    "analysis_view": (payload.get("analysis_view") or {}).get("mode", "overall_only"),
+                    "segment_complement_tested": ((payload.get("analysis_view") or {}).get(
+                        "segmentation") or {}).get("complement_tested"),
                     "methodology": payload.get("methodology")}}
 
 
@@ -253,6 +260,41 @@ def _feature_target_report_summary(payload: Any) -> dict[str, Any]:
         "target": (payload.get("scope") or {}).get("target"),
         "target_type": (payload.get("scope") or {}).get("target_type"),
         "methodology": payload.get("methodology"),
+    }}
+
+
+def _value_semantics_payload_validator(payload: Any) -> None:
+    _mapping(payload)
+    required = {"artifact_kind", "manifest_fingerprint"}
+    missing = sorted(required - set(payload))
+    if missing:
+        raise ValueError(f"value-semantics payload is missing fields: {missing}")
+    if payload["artifact_kind"] not in {
+        "value_semantics_bindings", "value_semantics_tags",
+        "value_semantics_assessment_ledger", "value_semantics_report",
+    }:
+        raise ValueError("invalid value-semantics artifact kind")
+    if payload["artifact_kind"] == "value_semantics_report" and not payload.get("run_id"):
+        raise ValueError("value-semantics report requires run_id")
+
+
+def _value_semantics_summary(payload: Any) -> dict[str, Any]:
+    _value_semantics_payload_validator(payload)
+    counts = payload.get("tag_counts") or payload.get("summary") or {}
+    metrics = []
+    for key in (
+        "row_count", "record_count", "CENSORED", "STALE_FROZEN",
+        "NOT_APPLICABLE", "unscoped_routes", "unclassified_assessments",
+    ):
+        value = payload.get(key) if key in payload else counts.get(key)
+        if value is not None:
+            metrics.append(_metric(key, value))
+    return {"metrics": metrics, "fields": {
+        "run_id": payload.get("run_id") or payload.get("producer_run_id"),
+        "table": payload.get("table"),
+        "format": payload.get("format", "json"),
+        "overall_action": payload.get("overall_action"),
+        "manifest_fingerprint": payload["manifest_fingerprint"],
     }}
 
 
@@ -519,6 +561,58 @@ def _register_defaults() -> None:
             {"metric_key": "awaiting_review", "label": "Awaiting review", "direction": "lower_is_better"},
             {"metric_key": "issues_promoted", "label": "Issues promoted", "direction": "neutral"},
             {"metric_key": "llm_calls", "label": "Advisory LLM calls", "direction": "neutral"},
+        ),
+    ))
+    register_artifact_type(ArtifactTypeDescriptor(
+        artifact_type="value_semantics_bindings",
+        display_name="Value Semantics confirmed bindings",
+        description="Frozen field scope, confirmed semantic roles, context, declarations, and coverage contract.",
+        owner="Value Semantics", supported_scopes=("diagnostic_local",),
+        granularity="run", target_applicability="not_applicable",
+        comparison_snapshot_applicability="not_applicable",
+        payload_validator=_value_semantics_payload_validator,
+        summary_adapter=_value_semantics_summary,
+        allowed_source_types=("column_profile",), sensitivity="confidential",
+    ))
+    register_artifact_type(ArtifactTypeDescriptor(
+        artifact_type="value_semantics_tags",
+        display_name="Value Semantics cell tags",
+        description="Sparse Parquet of governed CENSORED, STALE_FROZEN, and NOT_APPLICABLE cell tags.",
+        owner="Value Semantics", supported_scopes=("diagnostic_local",),
+        granularity="cell", target_applicability="not_applicable",
+        comparison_snapshot_applicability="not_applicable",
+        payload_validator=_value_semantics_payload_validator,
+        summary_adapter=_value_semantics_summary,
+        allowed_source_types=("value_semantics_bindings",), sensitivity="confidential",
+    ))
+    register_artifact_type(ArtifactTypeDescriptor(
+        artifact_type="value_semantics_assessment_ledger",
+        display_name="Value Semantics assessment ledger",
+        description="Parquet record of every evaluated, unclassified, and unscoped rule route without source values.",
+        owner="Value Semantics", supported_scopes=("diagnostic_local",),
+        granularity="cell_rule", target_applicability="not_applicable",
+        comparison_snapshot_applicability="not_applicable",
+        payload_validator=_value_semantics_payload_validator,
+        summary_adapter=_value_semantics_summary,
+        allowed_source_types=("value_semantics_bindings",), sensitivity="confidential",
+    ))
+    register_artifact_type(ArtifactTypeDescriptor(
+        artifact_type="value_semantics_report",
+        display_name="Value Semantics analysis report",
+        description="Run-level structured report linking bindings, classifications, coverage, actions, and lineage.",
+        owner="Value Semantics", supported_scopes=("diagnostic_local",),
+        granularity="run", target_applicability="not_applicable",
+        comparison_snapshot_applicability="not_applicable",
+        payload_validator=_value_semantics_payload_validator,
+        summary_adapter=_value_semantics_summary,
+        allowed_source_types=("value_semantics_bindings", "value_semantics_tags",
+                              "value_semantics_assessment_ledger"),
+        sensitivity="confidential",
+        metric_definitions=(
+            {"metric_key": "CENSORED", "label": "Censored cells", "direction": "contextual"},
+            {"metric_key": "STALE_FROZEN", "label": "Stale/frozen cells", "direction": "higher_is_more_review"},
+            {"metric_key": "NOT_APPLICABLE", "label": "Not-applicable cells", "direction": "contextual"},
+            {"metric_key": "unscoped_routes", "label": "Unscoped routes", "direction": "lower_is_better"},
         ),
     ))
 

@@ -1,0 +1,84 @@
+schema_version: 1
+diagnostic:
+  key: "{{DIAGNOSTIC_KEY}}"
+  frontend_key: "{{FRONTEND_KEY}}"
+  framework_test_id: "{{TEST_ID}}"
+  framework_diagnostic_id: "{{DIAGNOSTIC_ID}}"
+  slug: "{{SLUG}}"
+  title: "{{TITLE}}"
+  owner: "{{OWNER}}"
+  intake_status: "draft"
+
+user_decision:
+  primary_question: "{{ONE_PLAIN_LANGUAGE_QUESTION}}"
+  decision_type: "{{verdict|classification|comparison|recommendation|evidence_only}}"
+  intended_users: []
+  decisions_enabled: []
+  non_goals: []
+
+scope:
+  snapshot_cardinality: "{{one|two|many}}"
+  table_cardinality: "{{one|many}}"
+  field_selection: "{{all|user_selected|role_selected}}"
+  population_boundary: "{{DESCRIPTION}}"
+  general_context_supported: false
+  optional_context_labels: []
+  context_effect_on_rules: "{{none|explanation_only|explicit_routing}}"
+  partial_coverage_outcome: "{{UNSCOPED_OR_EQUIVALENT}}"
+
+inputs:
+  required_semantic_roles: []
+  optional_semantic_roles: []
+  required_declarations: []
+  optional_declarations: []
+  upstream_artifact_types: []
+  knowledge_packages: []
+
+outputs:
+  result_kind: "{{RESULT_KIND}}"
+  metrics: []
+  tags_or_classifications: []
+  candidate_findings: []
+  downloadable_reports: []
+  aar_artifacts: []
+  downstream_consumers: []
+
+method:
+  deterministic_boundary: "{{WHAT_IS_DETERMINISTIC}}"
+  rule_identity_strategy: "{{HOW_RULE_IDS_REMAIN_STABLE}}"
+  missing_prerequisite_behavior: "{{FAIL_CLOSED_BEHAVIOR}}"
+  precedence_or_tie_behavior: "{{BEHAVIOR_OR_NOT_APPLICABLE}}"
+  scale_envelope: "{{EXPECTED_ROWS_COLUMNS_GROUPS}}"
+
+ai:
+  used: false
+  optional: true
+  purpose: ""
+  input_projection: []
+  row_values_allowed: false
+  structured_schema: ""
+  human_confirmation_required: true
+  deterministic_fallback: "{{FALLBACK_OR_NOT_APPLICABLE}}"
+  rerun_reuse_identity: []
+  reuse_source_lineage: ["source_run_id", "source_inference_event_id"]
+  reuse_invalidators: ["tenant_change", "snapshot_change", "feature_metadata_change", "kb_change", "prompt_change", "schema_change", "failed_or_invalid_response"]
+  new_provider_call_trigger: "explicit_request_for_feature_without_reusable_inference"
+  separate_new_call_and_reuse_counts: true
+
+governance:
+  tenant_boundary: "{{REQUIRED_BOUNDARY}}"
+  authentication_boundary: "{{REQUIRED_BOUNDARY}}"
+  sensitive_data_policy: "{{POLICY}}"
+  artifact_retention: "{{POLICY}}"
+  issue_creation_policy: "human_confirmation_required"
+  rca_handoff_policy: "{{POLICY}}"
+
+acceptance:
+  golden_fixture_classes:
+    - positive
+    - negative
+    - boundary
+    - ambiguous
+  invariants: []
+  regression_dependencies: []
+  production_readiness_owner: "{{OWNER}}"

@@ -1,0 +1,388 @@
+metadata:
+  name: Credit Risk Abbreviation and Terminology Dictionary
+  version: '0.3'
+  purpose: Expand common abbreviations and naming conventions in credit-risk dataset feature names before deterministic
+    or NLP feature matching.
+  scope: Generic banking and credit risk, consumer, mortgage, small business, commercial, CRE, financial statements,
+    macroeconomic variables, time windows, transformations, and aggregations.
+  usage_note: Apply known multi-token/domain acronyms first, then token-level abbreviations. Use token boundaries and
+    do not perform unsafe substring replacement. Ambiguous abbreviations require contextual resolution.
+  change_note: Adds current-exposure compound handling and explicitly preserves EXP, REV, SCORE, and CLTV ambiguity.
+domain_acronyms:
+  ltv: loan to value
+  oltv: original loan to value
+  dti: debt to income
+  pti: payment to income
+  dsr: debt service ratio
+  dscr: debt service coverage ratio
+  icr: interest coverage ratio
+  fccr: fixed charge coverage ratio
+  dpd: days past due
+  dbt: days beyond terms
+  noi: net operating income
+  ltc: loan to cost
+  ead: exposure at default
+  lgd: loss given default
+  eadcf: exposure at default conversion factor
+  ccf: credit conversion factor
+  fico: fico credit score
+  ffo: funds from operations
+  cfo: cash flow from operations
+  ocf: operating cash flow
+  fcf: free cash flow
+  ebit: earnings before interest and taxes
+  ebitda: earnings before interest taxes depreciation and amortization
+  roa: return on assets
+  roe: return on equity
+  roic: return on invested capital
+  hpi: house price index
+  crepi: commercial real estate price index
+  gdp: gross domestic product
+  dpi: disposable personal income
+  rdi: real disposable income
+  brr: borrower risk rating
+  orr: obligor risk rating
+standard_abbreviations:
+  curr: current
+  cur: current
+  orig: original
+  org: original
+  prev: previous
+  prior: prior
+  hist: historical
+  last: last
+  lst: last
+  recent: recent
+  rcnt: recent
+  rev: revolving
+  util: utilization
+  pct: percentage
+  perc: percentage
+  amt: amount
+  bal: balance
+  lim: limit
+  lmt: limit
+  avail: available
+  avl: available
+  undr: undrawn
+  drawn: drawn
+  debt: debt
+  dbtamt: debt amount
+  inc: income
+  pmt: payment
+  pay: payment
+  int: interest
+  prin: principal
+  princ: principal
+  dlq: delinquency
+  delinq: delinquency
+  arr: arrears
+  inq: inquiry
+  inqs: inquiries
+  coll: collateral
+  prop: property
+  val: value
+  mkt: market
+  mktval: market value
+  app: appraisal
+  appr: appraisal
+  occ: occupancy
+  vac: vacancy
+  rent: rent
+  tnnt: tenant
+  ten: tenant
+  lease: lease
+  exp: expiry
+  expr: expiry
+  conc: concentration
+  liq: liquidity
+  lev: leverage
+  eq: equity
+  cap: capital
+  asset: asset
+  assets: assets
+  revn: revenue
+  sales: sales
+  prof: profit
+  marg: margin
+  cf: cash flow
+  cust: customer
+  bor: borrower
+  borr: borrower
+  oblg: obligor
+  acct: account
+  acc: account
+  loan: loan
+  fac: facility
+  comm: commitment
+  commit: commitment
+  score: score
+  rtg: rating
+  rate: rate
+  sprd: spread
+  unemp: unemployment
+  empl: employment
+  chg: change
+  grw: growth
+  grow: growth
+  idx: index
+  ind: indicator
+  flag: flag
+  flg: flag
+  cnt: count
+  num: number
+  nbr: number
+  tot: total
+  ttl: total
+  avg: average
+  ave: average
+  max: maximum
+  min: minimum
+  med: median
+  std: standard deviation
+time_abbreviations:
+  mth: month
+  mths: months
+  mo: month
+  mos: months
+  mon: month
+  qtr: quarter
+  qtrs: quarters
+  yr: year
+  yrs: years
+  wk: week
+  wks: weeks
+  day: day
+  days: days
+  mtd: month to date
+  qtd: quarter to date
+  ytd: year to date
+  mom: month over month
+  qoq: quarter over quarter
+  yoy: year over year
+  ttm: trailing twelve months
+  ltm: last twelve months
+  lag: lag
+  lead: lead
+aggregation_abbreviations:
+  avg: average
+  mean: mean
+  max: maximum
+  min: minimum
+  med: median
+  cnt: count
+  num: number
+  nbr: number
+  tot: total
+  ttl: total
+  sum: total
+  std: standard deviation
+  sd: standard deviation
+  var: variance
+  pctl: percentile
+  pctile: percentile
+transformation_abbreviations:
+  chg: change
+  diff: difference
+  delta: change
+  grw: growth
+  grow: growth
+  growth: growth
+  pctchg: percentage change
+  roc: rate of change
+  log: logarithm
+  ln: natural logarithm
+  lag: lag
+  lead: lead
+  idx: index
+consumer_credit_terms:
+  revol: revolving
+  revolv: revolving
+  trad: trade
+  trade: trade
+  tradeline: trade line
+  tl: trade line
+  inq: inquiry
+  hardinq: hard inquiry
+  colln: collection
+  co: charge off
+  chgof: charge off
+  bk: bankruptcy
+  bkrpt: bankruptcy
+  util: utilization
+  crhist: credit history
+  credhist: credit history
+  score: credit score
+mortgage_terms:
+  mtg: mortgage
+  mort: mortgage
+  ltv: loan to value
+  oltv: original loan to value
+  ilTV: indexed loan to value
+  prop: property
+  coll: collateral
+  appval: appraised value
+  propval: property value
+  occ: occupancy
+  oo: owner occupied
+  io: interest only
+  amort: amortization
+  mat: maturity
+  term: term
+commercial_credit_terms:
+  dscr: debt service coverage ratio
+  icr: interest coverage ratio
+  fccr: fixed charge coverage ratio
+  ebit: earnings before interest and taxes
+  ebitda: earnings before interest taxes depreciation and amortization
+  ffo: funds from operations
+  cfo: cash flow from operations
+  fcf: free cash flow
+  lev: leverage
+  liq: liquidity
+  nw: net worth
+  tangible_nw: tangible net worth
+  tnw: tangible net worth
+  rev: revenue
+  sales: sales
+  margin: margin
+  cap: capital
+  eq: equity
+cre_terms:
+  cre: commercial real estate
+  noi: net operating income
+  ltc: loan to cost
+  ltv: loan to value
+  occ: occupancy
+  vac: vacancy
+  rent: rent
+  tnnt: tenant
+  leaseexp: lease expiry
+  roll: rollover
+  caprate: capitalization rate
+  cap_rate: capitalization rate
+  debt_yld: debt yield
+  dy: debt yield
+  propval: property value
+  sqft: square feet
+macroeconomic_terms:
+  gdp: gross domestic product
+  rgdp: real gross domestic product
+  hpi: house price index
+  crepi: commercial real estate price index
+  cpi: consumer price index
+  ppi: producer price index
+  unemp: unemployment
+  unemprt: unemployment rate
+  mort_rate: mortgage rate
+  mtgrt: mortgage rate
+  tsy: treasury
+  ust: united states treasury
+  bbb: bbb corporate
+  sprd: spread
+  dpi: disposable personal income
+  rdpi: real disposable personal income
+  ffr: federal funds rate
+common_compound_terms:
+  curr_ltv: current loan to value
+  orig_ltv: original loan to value
+  idx_ltv: indexed loan to value
+  rev_util: revolving utilization
+  cred_util: credit utilization
+  debt_inc: debt to income
+  pmt_inc: payment to income
+  mth_since_dlq: months since delinquency
+  mths_since_dlq: months since delinquency
+  days_past_due: days past due
+  cash_flow_debt: cash flow to debt
+  debt_ebitda: debt to ebitda
+  debt_equity: debt to equity
+  debt_assets: debt to assets
+  noi_debt: net operating income to debt
+  noi_debt_service: net operating income to debt service
+  rent_coll: rent collection
+  lease_exp: lease expiry
+  curr_exp: current exposure
+  prop_val_grw: property value growth
+  unemp_chg: unemployment rate change
+  gdp_grw: gross domestic product growth
+  hpi_grw: house price index growth
+  crepi_grw: commercial real estate price index growth
+  bbb_sprd_chg: bbb credit spread change
+ambiguous_abbreviations:
+  exp:
+    candidates: [exposure, expiry, expense]
+    note: Resolve from the compound name and dictionary description.
+  rev:
+    candidates: [revolving, revenue]
+    note: Credit-facility context may imply revolving; financial-statement context may imply revenue.
+  score:
+    candidates: [score, credit score]
+    note: Preserve the distinction when the score type matters.
+  cr:
+    candidates:
+    - credit
+    - current ratio
+    note: Do not automatically expand without supporting feature description or surrounding tokens.
+  rr:
+    candidates:
+    - risk rating
+    - recovery rate
+    note: Meaning depends strongly on PD versus LGD context and institutional naming.
+  pd:
+    candidates:
+    - probability of default
+    - past due
+    note: Use model context and surrounding tokens.
+  ir:
+    candidates:
+    - interest rate
+    - internal rating
+    note: Use feature description and surrounding tokens.
+  cf:
+    candidates:
+    - cash flow
+    - conversion factor
+    note: Cash flow is common in financial statement variables; conversion factor is common in EAD contexts.
+  ca:
+    candidates:
+    - current assets
+    - capital adequacy
+    note: Requires context.
+  fi:
+    candidates:
+    - financial institution
+    - fixed income
+    note: Requires context.
+  cap:
+    candidates:
+    - capital
+    - capitalization
+    note: Do not infer capitalization rate from 'cap' alone.
+  co:
+    candidates:
+    - charge off
+    - company
+    note: Consumer credit context may imply charge-off; otherwise requires context.
+  rtg:
+    candidates:
+    - rating
+    - rate
+    note: Prefer feature description or adjacent tokens.
+  cltv:
+    candidates:
+    - current loan to value
+    - combined loan to value
+    note: CLTV is institution- and dataset-dependent. It may mean current loan-to-value or combined loan-to-value (including
+      multiple liens). Do not automatically expand CLTV without using the feature description, data dictionary, surrounding
+      tokens, or institution-specific terminology.
+parsing_guidance:
+- Normalize case and separators before expansion.
+- Attempt common compound-term and domain-acronym expansion before token-level abbreviation expansion.
+- Apply replacements only on complete normalized tokens or recognized compound terms; never use unrestricted substring
+  replacement.
+- Preserve numeric tokens because they often represent observation windows, for example 12M or 24M.
+- Interpret compact time-window tokens such as 12M, 24M, 3Q, or 5Y as durations when pattern recognition is unambiguous.
+- Do not automatically resolve entries listed under ambiguous_abbreviations.
+- Use the feature description and surrounding tokens to resolve ambiguous abbreviations.
+- The terminology dictionary improves candidate generation; it does not determine semantic-role acceptance.

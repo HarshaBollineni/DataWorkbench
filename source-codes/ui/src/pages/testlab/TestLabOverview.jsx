@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
-import { AlertCircle, ChevronDown, Database, Table2 } from "lucide-react";
+import { AlertCircle, Database } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { getAnalysisArtifactOverviewV2, getItemIssuesV2 } from "@/api/client";
 import { Button } from "@/components/ui/button";
-import VariableInventory from "./VariableInventory";
 
 function Stat({ label, value }) {
-  return <div className="rounded-md bg-white px-3 py-2"><div className="text-lg font-semibold text-slate-900">{value ?? 0}</div><div className="text-xs text-slate-500">{label}</div></div>;
+  return <div className="flex shrink-0 items-baseline gap-1.5 whitespace-nowrap rounded-md border border-slate-200/70 bg-white/80 px-2 py-1">
+    <dt className="text-[11px] text-slate-500">{label}</dt>
+    <dd className="text-sm font-semibold tabular-nums text-slate-900">{value ?? 0}</dd>
+  </div>;
 }
 
 export function ArtifactRepositoryCard({ item }) {
@@ -40,28 +42,28 @@ export function ArtifactRepositoryCard({ item }) {
 
   const href = `/test-lab/artifacts?item=${encodeURIComponent(item.item_id)}&asset=${encodeURIComponent(item.asset_id || item.dataset_family_id || "")}`;
   return (
-    <section className="rounded-lg border border-violet-200 bg-violet-50 p-5" aria-labelledby="artifact-repository-title">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h2 id="artifact-repository-title" className="flex items-center gap-2 text-base font-semibold text-slate-900"><Database className="h-4 w-4 text-dq-purple" /> Analytics Artifact Repository</h2>
-          <p className="mt-1 text-sm text-slate-600">Immutable reusable evidence for snapshot {item.snapshot_label || item.name}. Exact matches are reused; near matches are not.</p>
+    <section className="rounded-lg border border-violet-200 bg-violet-50/70 px-3 py-2.5" aria-labelledby="artifact-repository-title">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+        <div className="min-w-[14rem] flex-1">
+          <h2 id="artifact-repository-title" className="flex items-center gap-2 text-sm font-semibold leading-5 text-slate-900"><Database className="h-4 w-4 text-dq-purple" /> Analytics Artifact Repository</h2>
+          <p className="mt-0.5 text-xs leading-4 text-slate-600">Immutable reusable evidence for snapshot {item.snapshot_label || item.name}. Exact matches are reused; near matches are not.</p>
         </div>
-        <Button asChild><Link to={href}>Open repository</Link></Button>
+        <Button asChild size="sm"><Link to={href}>Open repository</Link></Button>
       </div>
-      {!summary && !error && <p className="mt-3 text-sm text-slate-500">Loading repository summary…</p>}
-      {error && <p className="mt-3 text-sm text-red-700">Repository summary is unavailable: {error}</p>}
-      {summary && <div className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-3 xl:grid-cols-5">
+      {!summary && !error && <p className="mt-2 text-xs text-slate-500">Loading repository summary…</p>}
+      {error && <p className="mt-2 text-xs text-red-700">Repository summary is unavailable: {error}</p>}
+      {summary && <dl className="mt-2 flex flex-wrap gap-1.5">
         <Stat label="Active" value={summary.active_artifacts} /><Stat label="Universal" value={summary.universal_artifacts} />
         <Stat label="Diagnostic local" value={summary.diagnostic_local_artifacts} />
         <Stat label="Features" value={summary.represented_features} />
         <Stat label="Integrity warnings" value={summary.integrity_warnings} />
-      </div>}
-      {summary?.backfill_status === "pending" && <p className="mt-3 text-xs text-slate-500">Preparing retained Data Sourcing evidence…</p>}
+      </dl>}
+      {summary?.backfill_status === "pending" && <p className="mt-1.5 text-[11px] text-slate-500">Preparing retained Data Sourcing evidence…</p>}
     </section>
   );
 }
 
-export function IssueReviewCard({ item, board }) {
+export function IssueReviewCard({ item }) {
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState("");
 
@@ -81,66 +83,28 @@ export function IssueReviewCard({ item, board }) {
         }
       });
     return () => { alive = false; };
-  }, [item.item_id, board]);
+  }, [item.item_id]);
 
   const href = `/issues?item=${encodeURIComponent(item.item_id)}`;
   return (
-    <section className="rounded-lg border border-amber-200 bg-amber-50/60 p-5" aria-labelledby="review-issues-title">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 id="review-issues-title" className="flex items-center gap-2 text-base font-semibold text-slate-900">
+    <section className="rounded-lg border border-amber-200 bg-amber-50/60 px-3 py-2.5" aria-labelledby="review-issues-title">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+        <div className="min-w-[12rem] flex-1">
+          <h2 id="review-issues-title" className="flex items-center gap-2 text-sm font-semibold leading-5 text-slate-900">
             <AlertCircle className="h-4 w-4 text-amber-600" /> Review &amp; issues
           </h2>
-          <p className="mt-1 text-sm text-slate-600">Current status for {item.name}.</p>
+          <p className="mt-0.5 text-xs leading-4 text-slate-600">Current status for {item.name}.</p>
         </div>
-        <Button asChild variant="outline"><Link to={href}>View issues</Link></Button>
+        <Button asChild size="sm" variant="outline"><Link to={href}>View issues</Link></Button>
       </div>
-      {!summary && !error && <p className="mt-3 text-sm text-slate-500">Loading issue summary&hellip;</p>}
-      {error && <p className="mt-3 text-sm text-red-700">Issue summary is unavailable: {error}</p>}
-      {summary && <div className="mt-3 grid grid-cols-2 gap-2 text-sm">
+      {!summary && !error && <p className="mt-2 text-xs text-slate-500">Loading issue summary&hellip;</p>}
+      {error && <p className="mt-2 text-xs text-red-700">Issue summary is unavailable: {error}</p>}
+      {summary && <dl className="mt-2 flex flex-wrap gap-1.5">
         <Stat label="Review needed" value={summary.review_needed} />
         <Stat label="Open" value={summary.open} />
         <Stat label="In review" value={summary.in_review} />
         <Stat label="Closed" value={summary.closed} />
-      </div>}
-    </section>
-  );
-}
-
-export function SavedInventoryViewer({ items, currentItemId }) {
-  const [open, setOpen] = useState(false);
-  const [viewId, setViewId] = useState("");
-  const chosenId = viewId || currentItemId;
-  const chosen = items.find((row) => row.item_id === chosenId);
-
-  return (
-    <section className="mb-5 rounded-lg border border-slate-200 bg-white">
-      <button type="button" onClick={() => setOpen((value) => !value)}
-        className="flex w-full items-center justify-between px-5 py-3 text-left">
-        <span className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-          <Table2 className="h-4 w-4 text-dq-purple" /> Variable inventory of saved data
-        </span>
-        <span className="flex items-center gap-2 text-xs text-slate-500">
-          {open ? "Hide" : "Show"}
-          <ChevronDown className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`} />
-        </span>
-      </button>
-      {open && (
-        <div className="border-t border-slate-100 p-5">
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <span className="text-sm text-slate-600">Saved dataset / database:</span>
-            <select className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm"
-              value={chosenId} onChange={(event) => setViewId(event.target.value)}>
-              {items.map((row) => (
-                <option key={row.item_id} value={row.item_id}>
-                  {row.name} ({row.kind})
-                </option>
-              ))}
-            </select>
-          </div>
-          {chosen && <VariableInventory item={chosen} readOnly />}
-        </div>
-      )}
+      </dl>}
     </section>
   );
 }

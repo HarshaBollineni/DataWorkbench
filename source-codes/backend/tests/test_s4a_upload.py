@@ -21,11 +21,13 @@ os.environ["UPLOAD_DIR"] = str(ROOT / "uploads")
 os.environ.pop("SYSTEM_DB_BACKUP_PATH", None)
 
 import system_db as s  # noqa: E402
+from fastapi import HTTPException  # noqa: E402
 from ai.v2 import service  # noqa: E402
 from domains.aar.repository import AnalysisArtifactRepository  # noqa: E402
-from assets import identity  # noqa: E402
+from assets import identity, service as asset_service  # noqa: E402
 from ingest.errors import IngestCorruptionError  # noqa: E402
 from ingest.headers import read_raw_headers  # noqa: E402
+from routers import auth, sourcing  # noqa: E402
 
 
 class S4aUploadTests(unittest.TestCase):
@@ -35,6 +37,98 @@ class S4aUploadTests(unittest.TestCase):
 
     def _item(self, kind="dataset"):
         return service.create_item(kind, f"s4a-{self._testMethodName[:35]}")
+
+    def _principal_token(self, username: str, tenant_id: str = "bootstrap") -> str:
+        s.upsert("users", {
+            "username": username, "password": "pw", "name": username,
+            "email": f"{username}@example.com", "function": None, "role": None,
+            "salutation": None, "call_name": username, "ai_personality": None,
+            "theme": None, "authz_roles": [], "tenant_id": tenant_id,
+        })
+        return auth.login(auth.LoginRequest(username=username, password="pw"))["token"]
+
+    def test_one_unresolved_draft_per_principal_is_enforced_by_backend(self):
+        owner = f"owner_{self._testMethodName}"
+        other = f"other_{self._testMethodName}"
+        owner_token = self._principal_token(owner)
+        other_token = self._principal_token(other)
+        first = sourcing.create_upload_target(
+            sourcing.UploadTargetIn(kind="dataset", alias="one", time_basis="none"),
+            f"Bearer {owner_token}",
+        )
+        with self.assertRaises(HTTPException) as conflict:
+            sourcing.create_upload_target(
+                sourcing.UploadTargetIn(kind="dataset", alias="two", time_basis="none"),
+                f"Bearer {owner_token}",
+            )
+        self.assertEqual(conflict.exception.status_code, 409)
+        self.assertEqual(conflict.exception.detail["code"], "active_sourcing_draft")
+        self.assertEqual(
+            conflict.exception.detail["drafts"][0]["resume_snapshot_id"], first["item_id"]
+        )
+
+        second_user = sourcing.create_upload_target(
+            sourcing.UploadTargetIn(kind="dataset", alias="other", time_basis="none"),
+            f"Bearer {other_token}",
+        )
+        self.assertNotEqual(first["item_id"], second_user["item_id"])
+        sourcing.discard_staged_upload(first["item_id"], f"Bearer {owner_token}")
+        sourcing.discard_staged_upload(second_user["item_id"], f"Bearer {other_token}")
+
+    def test_completed_staged_snapshot_releases_the_creation_guard(self):
+        owner = f"complete_{self._testMethodName}"
+        token = self._principal_token(owner)
+        first = sourcing.create_upload_target(
+            sourcing.UploadTargetIn(kind="dataset", alias="complete-one", time_basis="none"),
+            f"Bearer {token}",
+        )
+        asset_service.finalize_staged_snapshot(
+            first["asset_id"], first["item_id"], "fresh", actor=owner,
+            snapshot_label="ready snapshot", column_type_map_json={},
+        )
+        self.assertIsNone(s.query_one("dq_items", item_id=first["item_id"])["sourcing_draft_state"])
+        second = sourcing.create_upload_target(
+            sourcing.UploadTargetIn(kind="dataset", alias="complete-two", time_basis="none"),
+            f"Bearer {token}",
+        )
+        sourcing.discard_staged_upload(second["item_id"], f"Bearer {token}")
+
+    def test_legacy_multiple_drafts_are_preserved_for_explicit_recovery(self):
+        owner = f"legacy_{self._testMethodName}"
+        self._principal_token(owner)
+        drafts = []
+        for alias in ("legacy-one", "legacy-two"):
+            asset = asset_service.create_asset("dataset", alias, "none", actor=owner)
+            drafts.append(asset_service.add_snapshot(asset["asset_id"], "fresh", _staged=True))
+
+        with s.get_conn() as conn:
+            s._backfill_sourcing_drafts(conn)
+            conn.commit()
+
+        states = {
+            s.query_one("dq_items", item_id=draft["item_id"])["sourcing_draft_state"]
+            for draft in drafts
+        }
+        self.assertEqual(states, {"active", "recovery"})
+        for draft in drafts:
+            service.discard_staged_upload(draft["item_id"], actor=owner)
+
+    def test_discard_staged_upload_removes_orphan_asset_and_files(self):
+        asset = asset_service.create_asset("dataset", f"discard-{self._testMethodName[:20]}", "none")
+        draft = asset_service.add_snapshot(asset["asset_id"], "fresh", _staged=True)
+        service.save_file(draft["item_id"], "data", "draft.csv", b"id,value\n1,10\n")
+
+        result = service.discard_staged_upload(draft["item_id"])
+
+        self.assertTrue(result["asset_removed"])
+        self.assertIsNone(s.query_one("dq_items", item_id=draft["item_id"]))
+        self.assertIsNone(s.query_one("dq_assets", asset_id=asset["asset_id"]))
+        self.assertFalse((service.UPLOAD_ROOT / draft["item_id"]).exists())
+
+    def test_discard_staged_upload_refuses_non_staged_snapshot(self):
+        item = self._item()
+        with self.assertRaisesRegex(ValueError, "Only an uncommitted staged"):
+            service.discard_staged_upload(item["item_id"])
 
     def test_next_id_preview_does_not_allocate(self):
         scope = "asset_dataset"

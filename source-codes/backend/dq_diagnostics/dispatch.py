@@ -17,6 +17,11 @@ def adapter(diagnostic_id: int) -> dict[str, Any]:
         from domains.test_lab.diagnostics.t2_d06_row_completeness import manifest, runner
         return {"manifest": manifest, "runner": runner, "agent": "row_completeness_engine",
                 "work_count": lambda value: len(value["rule_ids"])}
+    if diagnostic_id == 8:
+        from domains.test_lab.diagnostics.t2_d08_value_semantics import manifest, runner
+        return {"manifest": manifest, "runner": runner,
+                "agent": "value_semantics_engine",
+                "work_count": lambda value: len(value["coverage"]["ready_routes"])}
     if diagnostic_id == 11:
         from domains.test_lab.diagnostics.t2_d11_directional_monotonic_consistency import manifest, runner
         return {"manifest": manifest, "runner": runner,

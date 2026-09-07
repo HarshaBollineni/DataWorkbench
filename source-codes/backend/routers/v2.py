@@ -19,6 +19,8 @@ from routers.diagnostics import (
     diagnostic_run_history,
     diagnostic_run_report,
     diagnostics_board,
+    diagnostics_board_card,
+    diagnostics_board_summary,
     diagnostics_coverage_summary,
     disposition_finding,
     get_diagnostic_manifest,

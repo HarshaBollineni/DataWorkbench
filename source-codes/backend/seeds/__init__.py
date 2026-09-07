@@ -172,6 +172,12 @@ def seed_directionality_knowledge() -> int:
     return int(bool(seed_document().get("inserted")))
 
 
+def seed_value_semantics_knowledge() -> int:
+    """Expose D08 value-semantics and shared terminology version history."""
+    from domains.test_lab.diagnostics.t2_d08_value_semantics.knowledge import seed_documents
+    return int(bool(seed_documents().get("inserted")))
+
+
 def _optional(modname: str, fn: str) -> int:
     """Call an optional seed (tickets/monitoring) if its phase module exists."""
     try:
@@ -191,6 +197,7 @@ def seed_all() -> dict:
         "platform_and_taxonomy": seed_platform_and_taxonomy(),
         "row_completeness_knowledge": seed_row_completeness_knowledge(),
         "directionality_knowledge": seed_directionality_knowledge(),
+        "value_semantics_knowledge": seed_value_semantics_knowledge(),
         "monitoring": _optional("monitoring_seed", "load"),
         "context_memory": _optional("context_memory_seed", "load"),
     }

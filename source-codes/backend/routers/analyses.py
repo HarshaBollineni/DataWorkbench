@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 import system_db as db
@@ -191,7 +193,28 @@ def get_analysis_artifact_payload(artifact_id: str) -> dict:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ArtifactIntegrityError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if metadata.payload_media_type != "application/json":
+        raise HTTPException(
+            status_code=415,
+            detail={"message": "Binary artifact payloads use the download endpoint",
+                    "download_url": f"/api/v2/analysis-artifacts/{artifact_id}/download"},
+        )
     return {"artifact_id": metadata.artifact_id, "payload": payload}
+
+
+@router.get("/analysis-artifacts/{artifact_id}/download")
+def download_analysis_artifact(artifact_id: str) -> Response:
+    try:
+        metadata, payload = AnalysisArtifactRepository().read_bytes(artifact_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ArtifactIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    filename = metadata.payload_filename or Path(metadata.payload_path).name
+    return Response(
+        content=payload, media_type=metadata.payload_media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/analysis-artifacts/{artifact_id}/impact")

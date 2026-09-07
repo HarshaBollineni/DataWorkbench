@@ -3,7 +3,7 @@ import { AlertTriangle, ArrowLeft, Database } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import {
-  getAnalysisArtifactLineageV2, getAnalysisArtifactOverviewV2, getAnalysisArtifactPayloadV2,
+  downloadAnalysisArtifactV2, getAnalysisArtifactLineageV2, getAnalysisArtifactOverviewV2, getAnalysisArtifactPayloadV2,
   getAnalysisArtifactRunsV2, getAnalysisArtifactsV2,
 } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -101,9 +101,26 @@ export default function AnalyticsArtifactRepository() {
   const showDetails = (artifact) => {
     setDetail(artifact);
     setDetailPayload(null);
+    if (artifact.payload_media_type !== "application/json") {
+      setDetailPayload({
+        format: "Parquet", media_type: artifact.payload_media_type,
+        filename: artifact.payload_filename, payload_hash: artifact.payload_hash,
+        record_summary: artifact.summary,
+      });
+      return;
+    }
     getAnalysisArtifactPayloadV2(artifact.artifact_id)
       .then((value) => setDetailPayload(value.payload))
       .catch((reason) => setError(reason.message));
+  };
+
+  const downloadArtifact = async (artifact) => {
+    try {
+      const blob = await downloadAnalysisArtifactV2(artifact.artifact_id);
+      const url = URL.createObjectURL(blob); const link = document.createElement("a");
+      link.href = url; link.download = artifact.payload_filename || `${artifact.artifact_id}.parquet`;
+      link.click(); URL.revokeObjectURL(url); setError("");
+    } catch (reason) { setError(reason.message); }
   };
 
   const hideDetails = () => {
@@ -127,7 +144,7 @@ export default function AnalyticsArtifactRepository() {
     <div className="mb-5 flex flex-wrap gap-2">{ARTIFACT_REPOSITORY_TABS.map((name) => <button key={name} type="button" onClick={() => selectTab(name)} className={`rounded-full border px-3 py-1.5 text-sm font-medium ${tab === name ? "border-dq-purple bg-dq-purple text-dq-dark" : "border-slate-200 bg-white text-slate-600"}`}>{name}</button>)}</div>
     {tab === "Overview" && <RepositoryOverview overview={overview} />}
     {tab === "Saved Schema" && <SavedSchema rows={schemaRows} loading={schemaLoading} page={{ ...schemaPage, offset: schemaOffset }} onPageChange={(offset) => { setSchemaLoading(true); setSchemaPage((current) => ({ ...current, offset, snapshotId })); }} />}
-    {tab === "Artifacts" && <ArtifactList rows={rows} loading={artifactsLoading} featureQuery={featureQuery} onFeatureQueryChange={(value) => { setArtifactsLoading(true); setFeatureQuery(value); }} onOpen={openLineage} onDetails={showDetails} detail={detail} detailPayload={detailPayload} onCloseDetails={hideDetails} page={{ ...artifactPage, offset: artifactOffset }} onPageChange={(offset) => { setArtifactsLoading(true); setArtifactPage((current) => ({ ...current, offset, snapshotId, query: deferredFeatureQuery })); }} />}
+    {tab === "Artifacts" && <ArtifactList rows={rows} loading={artifactsLoading} featureQuery={featureQuery} onFeatureQueryChange={(value) => { setArtifactsLoading(true); setFeatureQuery(value); }} onOpen={openLineage} onDetails={showDetails} onDownload={downloadArtifact} detail={detail} detailPayload={detailPayload} onCloseDetails={hideDetails} page={{ ...artifactPage, offset: artifactOffset }} onPageChange={(offset) => { setArtifactsLoading(true); setArtifactPage((current) => ({ ...current, offset, snapshotId, query: deferredFeatureQuery })); }} />}
     {tab === "Analytical Runs" && <RetainedRuns rows={runs} />}
     {tab === "Lineage & Impact" && <ArtifactLineage selected={selected} lineage={lineage} onOpen={openLineage} />}
   </main>;

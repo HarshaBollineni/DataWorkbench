@@ -7,8 +7,9 @@ from typing import Any
 
 import system_db as db
 from analysis_runtime.contracts import stable_fingerprint
+from analysis_runtime.population_guidance import exact_population_options, guidance_from_profile
 from analysis_runtime.snapshots import SnapshotLoader
-from domains.test_lab.shared.run_state import DRAFT, RUNNING, ManifestError, list_decisions, record_decision
+from domains.test_lab.shared.run_state import DONE, DRAFT, RUNNING, ManifestError, list_decisions, record_decision
 from dq_diagnostics.readiness import readiness
 from dq_diagnostics.register import get_diagnostic, require_executable
 from dq_diagnostics.thresholds import effective_threshold
@@ -22,7 +23,7 @@ from .matching import match_feature_to_kb
 
 DIAGNOSTIC_ID = 11
 MANIFEST_KIND = "directional_monotonic_consistency"
-MANIFEST_VERSION = 3
+MANIFEST_VERSION = 5
 ENGINE_VERSION = "0.1.0"
 THRESHOLD_KEYS = ("corr_floor", "regression_floor", "bin_range_floor_sd", "min_sample",
                   "min_binary_class", "significance_level")
@@ -59,6 +60,114 @@ def _cardinality(row: dict[str, Any]) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _completed_run_count(item_id: str, tenant_id: str, *,
+                         exclude_run_id: str | None = None) -> int:
+    """Count prior completed D11 runs in the same governed tenant scope."""
+    return sum(
+        row.get("status") == DONE
+        and row.get("run_id") != exclude_run_id
+        and str((row.get("manifest_json") or {}).get("tenant_id") or "bootstrap") == tenant_id
+        for row in db.query("diag_runs", item_id=item_id, diagnostic_id=DIAGNOSTIC_ID)
+    )
+
+
+def _latest_reusable_run(item_id: str, tenant_id: str, table: str,
+                         reference_column: str) -> dict[str, Any] | None:
+    """Return the latest compatible completed run whose decisions can be reused.
+
+    A direction is reusable only within the same tenant, item, table, and
+    reference column.  This makes a segmented view a new empirical analysis,
+    while preserving the already reviewed semantic scope that led to it.
+    """
+    runs = db.query(
+        "diag_runs", item_id=item_id, diagnostic_id=DIAGNOSTIC_ID,
+        status=DONE, order_by="finished_at DESC, created_at DESC, run_id DESC",
+    )
+    for run in runs:
+        prior = run.get("manifest_json") or {}
+        if str(prior.get("tenant_id") or "bootstrap") != tenant_id:
+            continue
+        if prior.get("table") != table:
+            continue
+        if (prior.get("reference") or {}).get("column") != reference_column:
+            continue
+        return run
+    return None
+
+
+def _reuse_prior_scope(features: list[dict[str, Any]], prior_run: dict[str, Any] | None,
+                       *, source_reference: str) -> dict[str, Any] | None:
+    """Apply completed, selected feature decisions to a new compatible draft."""
+    if not prior_run:
+        return None
+    prior = prior_run.get("manifest_json") or {}
+    prior_features = {row.get("feature"): row for row in prior.get("features") or []}
+    reused = []
+    for row in features:
+        previous = prior_features.get(row["feature"])
+        if not previous or not previous.get("selected"):
+            continue
+        direction = previous.get("expected_direction")
+        if (not row.get("numeric") or direction in {None, "NOT_APPLICABLE", "EXCLUDED"}
+                or row["feature"] == source_reference):
+            continue
+        # These fields are the reviewed semantic decision. Keep the original
+        # source (including any prior AI audit) rather than treating it as a
+        # fresh adjudication in this run.
+        carried = {key: previous.get(key) for key in (
+            "canonical_feature", "representation_orientation", "expected_direction",
+            "knowledge_strength", "classification_source", "rationale", "confirmed_by",
+            "adjudication",
+        )}
+        row.update(carried)
+        row.update({"scope_selected": True, "selected": True, "review_required": False,
+                    "reused_decision": {"source_run_id": prior_run["run_id"],
+                                        "source_reference_column": source_reference,
+                                        "reused_from_completed_run": True}})
+        reused.append(row["feature"])
+    if not reused:
+        return None
+    return {"source_run_id": prior_run["run_id"], "source_reference_column": source_reference,
+            "reused_features": sorted(reused), "reused_feature_count": len(reused)}
+
+
+def _feature_kind(row: dict[str, Any]) -> str:
+    text = f"{row.get('classification') or ''} {row.get('data_type') or ''}".lower()
+    if "date" in text or "time" in text:
+        return "date"
+    if any(token in text for token in ("int", "float", "numeric", "number", "decimal")):
+        return "numeric"
+    if "bool" in text or _cardinality(row) == 2:
+        return "boolean"
+    return "categorical"
+
+
+def _segment_candidates(rows: list[dict[str, Any]], reference: str) -> list[dict[str, Any]]:
+    """Build the same governed split-variable metadata used by one-snapshot PSI."""
+    candidates = []
+    for row in rows:
+        name = row.get("column_name")
+        role = str(row.get("role") or "").strip()
+        cardinality = _cardinality(row)
+        if name == reference or role.lower() in {"identifier", "target"} or cardinality in {None, 0, 1}:
+            continue
+        kind = _feature_kind(row)
+        profile = {**(row.get("profile_json") or {}), **(row.get("profile_evidence") or {})}
+        guidance = guidance_from_profile(
+            feature=name, feature_kind=kind, distinct_count=cardinality,
+            profile=profile, artifact_id=row.get("profile_artifact_id"),
+        )
+        candidates.append({
+            "column": name, "description": row.get("description") or "",
+            "data_type": row.get("data_type"), "role": role or None,
+            "cardinality": cardinality, "distinct_count": cardinality,
+            "feature_kind": kind, "split_guidance": guidance,
+            "special_values": (row.get("special_values")
+                               if row.get("special_values_confirmed") else []),
+        })
+    return sorted(candidates, key=lambda value: str(value["column"]).lower())
 
 
 def _profile_artifacts(item_id: str, table: str) -> dict[str, dict[str, Any]]:
@@ -118,7 +227,8 @@ def _scope(item_id: str) -> tuple[dict[str, Any], str, str, list[dict[str, Any]]
             "description": profile.get("description") or row.get("description") or "",
             "special_values": profile.get("special_values") or [],
             "special_values_confirmed": bool(profile.get("special_values_confirmed")),
-            "profile_artifact_id": profile.get("artifact_id")})
+            "profile_artifact_id": profile.get("artifact_id"),
+            "profile_evidence": profile})
     return item, table, target, enriched
 
 
@@ -265,10 +375,15 @@ def build_manifest(item_id: str, actor: str = "system", *,
         if state.status != "ready":
             raise ManifestError(f"{state.status}: {state.reason}")
     item, table, target, rows = _scope(item_id)
+    active_kb, active_terminology, _matcher = knowledge.resources()
+    prior_completed_runs = _completed_run_count(item_id, tenant_id)
     target_row = next(row for row in rows if row["column_name"] == target)
     features = [_feature_card(row) for row in rows if row["column_name"] != target]
     if not features:
         raise ManifestError("no independent variables are available")
+    reusable_run = _latest_reusable_run(item_id, tenant_id, table, target)
+    prior_run_reuse = _reuse_prior_scope(features, reusable_run, source_reference=target)
+    prior_reference = ((reusable_run or {}).get("manifest_json") or {}).get("reference") or {}
     source_artifact_references = [
         {"artifact_id": row["profile_artifact_id"], "artifact_type": "column_profile"}
         for row in rows if row.get("profile_artifact_id")
@@ -283,8 +398,13 @@ def build_manifest(item_id: str, actor: str = "system", *,
         "engine_version": ENGINE_VERSION, "status": DRAFT, "created_at": now,
         "created_by": actor, "table": table,
         "source_artifact_references": source_artifact_references,
-        "reference": {"column": target, "type": "auto", "positive_class": None,
-                      "orientation": None, "source": "confirmed Data Sourcing target",
+        "reference": {"column": target,
+                      "type": (prior_reference.get("type") if prior_run_reuse else "auto"),
+                      "positive_class": (prior_reference.get("positive_class")
+                                         if prior_run_reuse else None),
+                      "orientation": (prior_reference.get("orientation")
+                                      if prior_run_reuse else None),
+                      "source": "confirmed Data Sourcing target",
                       "special_values": target_row.get("special_values") if target_row.get("special_values_confirmed") else []},
         "reference_candidates": [{"column": row["column_name"],
             "description": row.get("description") or "", "data_type": row.get("data_type"),
@@ -296,16 +416,16 @@ def build_manifest(item_id: str, actor: str = "system", *,
                 and (any(token in str(row.get("data_type") or "").lower() for token in (
                     "int", "float", "double", "decimal", "numeric", "number"))
                     or (_cardinality(row) is not None and _cardinality(row) <= 20)))],
-        "segment_column": None, "segment_preview": None,
-        "segment_candidates": [{"column": row["column_name"],
-            "description": row.get("description") or "", "data_type": row.get("data_type"),
-            "cardinality": _cardinality(row)}
-            for row in rows if row["column_name"] != target and str(row.get("role") or "").lower() in {
-                "segment", "category", "group"}],
+        "analysis_sequence": {"prior_completed_runs": prior_completed_runs,
+                              "segment_analysis_available": prior_completed_runs > 0},
+        "prior_run_reuse": prior_run_reuse,
+        "segment_column": None, "segment_definition": None, "segment_preview": None,
+        "segment_candidates": _segment_candidates(rows, target),
         "features": features, "thresholds": thresholds,
         "parameters": {"requested_bins": 5, "chart_sample_limit": 400,
                        "bin_method": "equal_frequency_broad_shape"},
-        "knowledge": {"version": "0.3", "terminology_version": "0.2",
+        "knowledge": {"version": str(active_kb["metadata"]["version"]),
+                      "terminology_version": str(active_terminology["metadata"]["version"]),
                       "prompt_version": "v0_2"}}
     _refresh(manifest)
     db.insert("diag_runs", {"run_id": run_id, "item_id": item_id,
@@ -319,8 +439,12 @@ def build_manifest(item_id: str, actor: str = "system", *,
     manifest["inference_disclosure"] = inference_disclosure(run_id)
     db.update("diag_runs", {"run_id": run_id}, {"manifest_json": manifest})
     record_decision(run_id, "default_applied", {
-        "kb_version": "0.3", "requested_bins": 5,
+        "kb_version": str(active_kb["metadata"]["version"]), "requested_bins": 5,
         "exact_matches_available": sum(row["classification_source"] == "KB_V0_3_EXACT" for row in features)}, actor)
+    if prior_run_reuse:
+        record_decision(run_id, "scope_exclusion", {
+            "event": "prior_run_details_reused", **prior_run_reuse,
+        }, actor)
     return manifest
 
 
@@ -430,6 +554,29 @@ def refresh_draft_scope(run_id: str, actor: str = "system", *,
     if "segment_preview" not in payload:
         payload["segment_preview"] = None
         changed = True
+    if "segment_definition" not in payload:
+        payload["segment_definition"] = None
+        changed = True
+    _item, _table, _saved_target, scope_rows = _scope(payload["item_id"])
+    prior_completed_runs = _completed_run_count(
+        payload["item_id"], stored_tenant, exclude_run_id=run_id,
+    )
+    sequence = {"prior_completed_runs": prior_completed_runs,
+                "segment_analysis_available": prior_completed_runs > 0}
+    candidates = _segment_candidates(
+        scope_rows, (payload.get("reference") or {}).get("column") or _saved_target,
+    )
+    if payload.get("analysis_sequence") != sequence:
+        payload["analysis_sequence"] = sequence
+        changed = True
+    if payload.get("segment_candidates") != candidates:
+        payload["segment_candidates"] = candidates
+        changed = True
+    if not sequence["segment_analysis_available"] and payload.get("segment_column") is not None:
+        payload["segment_column"] = None
+        payload["segment_definition"] = None
+        payload["segment_preview"] = None
+        changed = True
     if "source_artifact_references" not in payload:
         payload["source_artifact_references"] = [
             {"artifact_id": row["profile_artifact_id"], "artifact_type": "column_profile"}
@@ -480,6 +627,29 @@ def _segment_preview(manifest: dict[str, Any], column: str) -> dict[str, Any]:
     }
 
 
+def split_feature_options(run_id: str, feature: str, limit: int = 200) -> dict[str, Any]:
+    """Return PSI-compatible, exact split controls for a D11 rerun."""
+    run = _run(run_id)
+    manifest = run["manifest_json"]
+    if run["status"] != DRAFT:
+        raise ManifestError("split options are available only while configuring a rerun")
+    if not (manifest.get("analysis_sequence") or {}).get("segment_analysis_available"):
+        raise ManifestError("segment analysis becomes available after the first overall D11 run")
+    candidate = next((row for row in manifest.get("segment_candidates") or []
+                      if row["column"] == feature), None)
+    if candidate is None:
+        raise ManifestError("select an eligible governed split feature")
+    if limit < 1 or limit > 500:
+        raise ManifestError("split option limit must be between 1 and 500")
+    frame = SnapshotLoader().load_table(
+        manifest["item_id"], manifest["table"], columns=[feature],
+    )
+    return exact_population_options(
+        frame[feature], candidate["split_guidance"],
+        special_values=candidate.get("special_values") or [], limit=limit,
+    )
+
+
 def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") -> dict[str, Any]:
     run = _run(run_id)
     if run["status"] != DRAFT:
@@ -505,6 +675,8 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
                 row["selected"] = False
         if manifest.get("segment_column") == value:
             manifest["segment_column"] = None
+            manifest["segment_definition"] = None
+            manifest["segment_preview"] = None
         record_decision(run_id, "scope_exclusion", {"event": "reference_selection",
                         "before": before, "after": value,
                         "source": manifest["reference"]["source"]}, actor)
@@ -527,23 +699,87 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
                         "positive_class": patch.get("positive_class")}, actor)
     elif kind == "segment_selection":
         value = patch.get("segment_column") or None
-        available = {row["column"] if isinstance(row, dict) else row
-                     for row in manifest.get("segment_candidates", [])}
-        if value is not None and value not in available:
-            raise ManifestError("segment column is not an available segmentation candidate")
-        manifest["segment_column"] = value
-        manifest["segment_preview"] = _segment_preview(manifest, value) if value else None
+        if value is not None:
+            raise ManifestError("define the analysed segment with a split expression")
+        manifest["segment_column"] = None
+        manifest["segment_definition"] = None
+        manifest["segment_preview"] = None
+        record_decision(run_id, "scope_exclusion", {"event": "segment_split_cleared"}, actor)
+    elif kind == "segment_split":
+        if not (manifest.get("analysis_sequence") or {}).get("segment_analysis_available"):
+            raise ManifestError(
+                "segment analysis becomes available after the first overall D11 run is complete"
+            )
+        feature, expression = patch.get("feature"), patch.get("value")
+        candidate = next((row for row in manifest.get("segment_candidates") or []
+                          if row["column"] == feature), None)
+        if candidate is None or not isinstance(expression, dict):
+            raise ManifestError("select a governed split feature and predicate")
+        from domains.test_lab.diagnostics.t4_d14_population_stability.population import split_population
+        frame = SnapshotLoader().load_table(
+            manifest["item_id"], manifest["table"], columns=[feature],
+        )
+        raw = expression.get("value")
+        if raw is not None and expression.get("operator") != "in":
+            try:
+                expression = {**expression, "value": (
+                    int(raw) if frame[feature].dtype.kind in "iu" else
+                    float(raw) if frame[feature].dtype.kind == "f" else str(raw)
+                )}
+            except Exception:
+                pass
+        null_policy = "baseline"
+        special_policy = patch.get("special_policy") or "exclude"
+        specials = candidate.get("special_values") or []
+        preview = split_population(
+            frame, feature, expression, null_policy=null_policy,
+            special_values=specials, special_policy=special_policy,
+        )
+        total = max(int(len(frame)), 1)
+        analysed_share = preview["baseline_count"] / total
+        rejected_share = preview["current_count"] / total
+        warnings = []
+        if preview["baseline_count"] < 30:
+            warnings.append("The analysed segment has fewer than 30 rows; directionality may be unstable.")
+        if analysed_share < .10:
+            warnings.append("The analysed segment contains less than 10% of rows.")
+        manifest["segment_column"] = feature
+        manifest["segment_definition"] = {
+            "split_feature": feature, "expression": expression,
+            "null_policy": null_policy, "special_values": specials,
+            "special_policy": special_policy,
+            "analysis_population": "baseline", "complement_disposition": "not_analysed",
+        }
+        manifest["segment_preview"] = {
+            "baseline_count": preview["baseline_count"],
+            "current_count": preview["current_count"],
+            "excluded_count": preview["excluded_count"],
+            "null_count": preview["null_count"],
+            "special_count": preview["special_count"],
+            "population_fingerprint": preview["population_fingerprint"],
+            "total_count": int(len(frame)), "baseline_share": round(analysed_share, 6),
+            "current_share": round(rejected_share, 6), "warnings": warnings,
+        }
         for row in manifest["features"]:
-            if row["feature"] == value:
+            if row["feature"] == feature:
                 row["scope_selected"] = False
                 row["selected"] = False
-        record_decision(run_id, "scope_exclusion", {"event": "segment_column", "value": value}, actor)
+        record_decision(run_id, "scope_exclusion", {
+            "event": "segment_split", "feature": feature, "expression": expression,
+            "analysed_rows": preview["baseline_count"],
+            "not_analysed_rows": preview["current_count"],
+        }, actor)
     elif kind == "candidate_display":
         row = _feature(manifest, patch.get("feature"))
         row["candidate_display_limit"] = min(len(row["candidates"]),
                                                max(3, int(patch.get("limit") or 3)))
     elif kind == "semantic_adjudication":
         row = _feature(manifest, patch.get("feature"))
+        if row.get("reused_decision"):
+            raise ManifestError(
+                "semantic adjudication is not available for a column whose confirmed "
+                "direction was carried forward from a completed run"
+            )
         attempt = {"at": db.now_ist(), "actor": actor, "status": "failed"}
         deterministic_mapping = _direction_mapping(row)
         metadata = {"model": "unavailable", "provider": "configured_ai",

@@ -1,5 +1,5 @@
-import { useState } from "react"
-import { NavLink } from "react-router-dom"
+import { useEffect, useState } from "react"
+import { NavLink, useLocation } from "react-router-dom"
 import {
   Beaker, BookOpen, ChevronLeft, ChevronRight, Database, Layers,
   LogOut, Shield, ShieldCheck, Ticket, UploadCloud, User,
@@ -9,6 +9,7 @@ import { BrandLogo } from "@/components/BrandLogo"
 import { APP_VERSION } from "@/lib/appVersion"
 import { cn } from "@/lib/utils"
 import { useAuth } from "@/context/AuthContext"
+import { clearNavigationMemory, navigationSection, rememberSectionLocation, rememberedSectionLocation } from "@/lib/navigationMemory"
 
 const navItems = [
   { to: "/", label: "Data Inventory", icon: Database, end: true, cls: "tour-sidebar" },
@@ -27,12 +28,24 @@ function initials(name) {
 
 function Sidebar() {
   const { user, logout } = useAuth()
+  const location = useLocation()
   const isAdmin = (user?.authz_roles || []).includes("admin")
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("sidebarCollapsed") === "true"
   )
   const [hoverExpanded, setHoverExpanded] = useState(false)
   const compact = collapsed && !hoverExpanded
+  const currentSection = navigationSection(location.pathname)
+  const currentDestination = `${location.pathname}${location.search}${location.hash}`
+
+  useEffect(() => {
+    rememberSectionLocation(user, location);
+  }, [location, user]);
+
+  const signOut = async () => {
+    clearNavigationMemory(user);
+    await logout();
+  };
 
   const toggleCollapsed = () => {
     const next = !collapsed
@@ -82,7 +95,7 @@ function Sidebar() {
           {navItems.filter((item) => item.to !== "/admin" || isAdmin).map(({ to, label, icon: Icon, end, cls }) => (
             <NavLink
               key={to}
-              to={to}
+              to={currentSection === to ? currentDestination : rememberedSectionLocation(user, to)}
               end={end}
               title={compact ? label : undefined}
               aria-label={compact ? label : undefined}
@@ -126,7 +139,7 @@ function Sidebar() {
         </NavLink>
         <button
           type="button"
-          onClick={logout}
+          onClick={signOut}
           title={compact ? "Sign out" : undefined}
           aria-label={compact ? "Sign out" : undefined}
           className={cn(

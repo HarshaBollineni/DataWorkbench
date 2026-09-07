@@ -235,9 +235,18 @@ export function hasUsableAiSuggestion(feature) {
 }
 
 export function needsAiSuggestion(feature) {
-  return expectedBucket(feature) === "NEEDS_REVIEW"
+  return !feature?.reused_decision?.reused_from_completed_run
+    && expectedBucket(feature) === "NEEDS_REVIEW"
     && (feature?.candidates?.length || 0) > 0
     && !hasUsableAiSuggestion(feature);
+}
+
+export function initialRelationshipReviewOpen(manifest = {}) {
+  if (manifest?.prior_run_reuse?.source_run_id) return false;
+  const scoped = manifest.scope_features || (manifest.features || [])
+    .filter((feature) => feature.scope_selected)
+    .map((feature) => feature.feature);
+  return scoped.length > 0;
 }
 
 export async function requestAiSuggestionsSequentially(

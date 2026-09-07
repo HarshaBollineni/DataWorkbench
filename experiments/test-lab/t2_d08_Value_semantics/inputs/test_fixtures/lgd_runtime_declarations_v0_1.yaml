@@ -1,0 +1,15 @@
+as_of_date: '2024-12-31'
+finished_outcome_states:
+- FINISHED
+outcome_state_domain:
+- OPEN
+- FINISHED
+interim_outcome_value_policy: none
+return_to_performing_domain:
+  '1': cured
+non_arrears_trigger_domain:
+  JUDGEMENT: non_arrears
+field_specific_sentinel_definitions: {}
+variance_window: 4
+minimum_row_count: 10
+not_applicable_share_threshold: 0.8

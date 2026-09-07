@@ -4,6 +4,7 @@
 export const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8001/api";
 
 const TOKEN_KEY = "dq_token";
+export const SESSION_EXPIRED_EVENT = "dq:session-expired";
 
 export const getToken = () => localStorage.getItem(TOKEN_KEY);
 
@@ -36,7 +37,18 @@ export async function request(path, options = {}) {
   });
   if (!response.ok) {
     const detail = await readErrorDetail(response);
-    throw new Error(`${response.status}: ${detail}`);
+    // A session may expire while the SPA is open. Remove the stale credential
+    // and notify AuthProvider so protected pages return to sign-in instead of
+    // rendering a raw 401 inside one section of the page.
+    if (response.status === 401 && getToken()) {
+      setToken(null);
+      window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
+    }
+    const message = typeof detail === "string" ? detail : detail?.message || response.statusText;
+    const error = new Error(`${response.status}: ${message}`);
+    error.status = response.status;
+    error.detail = detail;
+    throw error;
   }
   return response.json();
 }

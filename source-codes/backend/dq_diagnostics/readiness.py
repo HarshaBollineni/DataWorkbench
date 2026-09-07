@@ -206,6 +206,25 @@ def readiness(item_id: str, diagnostic_id: int, tenant_id: str = "bootstrap") ->
                          "segment_optional": True,
                          "summary": "Configure a facility identifier, reporting period, grain, and one continuity floor."})
 
+    if diagnostic_id == 8:
+        inventory = s.query("variable_inventory", item_id=item_id)
+        by_table: dict[str, list[str]] = {}
+        for row in inventory:
+            if row.get("table_name") and row.get("column_name"):
+                by_table.setdefault(row["table_name"], []).append(row["column_name"])
+        if not by_table:
+            return Readiness(
+                "not_applicable", "no profiled fields are available for semantic classification",
+                {"eligible_tables": 0, "eligible_fields": 0},
+            )
+        return Readiness(
+            "ready", None,
+            {"eligible_tables": sorted(by_table),
+             "eligible_fields": sum(len(values) for values in by_table.values()),
+             "context_default": "GENERAL", "context_confirmation_required": False,
+             "summary": "Review semantic roles and rule coverage; PD, LGD, and EAD context is optional."},
+        )
+
     if diagnostic_id == 11:
         target = item.get("target_variable")
         inventory = s.query("variable_inventory", item_id=item_id)

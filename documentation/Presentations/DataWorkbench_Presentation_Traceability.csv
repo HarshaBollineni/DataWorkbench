@@ -1,0 +1,497 @@
+﻿Slide,Section,Title,Source references,Notes / qualifications
+1,01 / Product,Data Workbench,"[S05] source-codes/README.md — Current release 0.5.2
+[S06] source-codes/USER_GUIDE.md — Source, diagnose, manage findings and RCA
+[S04] documentation/Presentations/AI and Accelerators_Risk.pptx — Slide 4: visual structure only","Requested product name is Data Workbench. The repository also uses Archimedes, DQ Studio and Aegis Labs. This deck uses the requested name consistently. Current-state claims reflect the working tree on 07 September 2026, including uncommitted diagnostic changes. All visible elements are native editable PowerPoint text/shapes; no slide screenshots."
+2,01 / Product,Turn data-quality signals into reviewable decisions,"[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — Framework_Overview rows 2–8
+[S06] source-codes/USER_GUIDE.md — Run a diagnostic; Manage findings and RCA
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — register","Five enabled IDs are 2, 6, 8, 11 and 14. ID 4 has code, UI and tests but workflow_pending blocks launch. IDs 12, 17 and 20 are registered workflow_pending. Counts are configuration/code findings, not deployment performance measures. Target outcomes are qualitative; no measured ROI is claimed."
+3,01 / Product,Expose analytical risks before they become modeling problems,"[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — Framework_Overview; Detailed_DQ_Framework risks
+[S03] documentation/Presentations/DataQuality_Framework.pptx — Slides 2–3
+[S06] source-codes/USER_GUIDE.md — Frozen manifest and issue workflow",Fragmented evidence is a problem inferred from the product architecture and traceability design. The source material explicitly describes analytical defects that generic DQ misses. No claim is made that every enterprise challenge is already solved by this release.
+4,01 / Product,Build confidence through repeatable assessment and clear ownership,"[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — Framework_Overview rows 2–7
+[S21] source-codes/backend/domains/aar/README.md — Exact reuse and lineage
+[S15] source-codes/backend/domains/rca/service.py — approve_conclusion
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx — RemediationHandoff","No quantified efficiency, accuracy, compliance or production-readiness claim is made. Target use cases in the framework include risk/modeling and broader analytics; implemented D08/D11 knowledge is credit-risk-oriented."
+5,01 / Framework,Use a governed framework across the assessment journey,"[S04] documentation/Presentations/AI and Accelerators_Risk.pptx — Slide 4: five numbered cards; service bands; semantic and deterministic foundations
+[S06] source-codes/USER_GUIDE.md — Current workflow
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Framework register
+[S15] source-codes/backend/domains/rca/service.py — approve_conclusion","This is the design-reference adaptation: five cream cards, coral ordinal markers, dark service headers, compact shared foundations and a dark conclusion band. The original agent counts, health-score claims and continuous monitoring language are not carried over. Stage 5 means manual reassessment on a new upload, not scheduled autonomous monitoring."
+6,01 / Framework,Keep framework coverage distinct from executable coverage,"[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — Detailed_DQ_Framework rows 2–12
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — dimensions, coverage, register
+[S23] source-codes/docs/architecture/phase1b-missingness.md — Supporting-investigation boundary","Current configuration retains thin/gap coverage semantics from the MVP framework. Multi-snapshot PSI and supporting missingness now exist even though older area-gap explanations remain. This slide presents the framework structure, not a completeness certificate. Third-party controls is the sixth theme, correcting the five-theme language in the older overview."
+7,01 / People,Give each participant a clear purpose and handoff,"[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — Framework_Overview row 6
+[S27] documentation/product/aegis-labs-product-spec.md — A2 Target Users & Personas
+[S06] source-codes/USER_GUIDE.md — User workflow and administration
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx — ConclusionForm and RemediationHandoff","Personas are synthesized from the named teams and implemented interactions. Executive sponsor and diagnostic owner are proposed operating responsibilities, not distinct application roles. IT/platform administrator, knowledge editor/reviewer and remediation owner have concrete product interactions. No persona-specific executive dashboard is asserted."
+8,01 / Access,Apply the roles that the product actually enforces,"[S17] source-codes/backend/routers/admin.py — _require_admin; create_user recognized authz_roles
+[S18] source-codes/backend/routers/auth.py — current_user and is_admin
+[S19] source-codes/backend/kb.py — _require_role; publish and archive
+[S20] source-codes/docs/rca/00-contracts.md — §13 deployment and authentication boundaries","Only user, admin, kb_editor and kb_reviewer are recognized authorization roles. Admin does not automatically inherit knowledge publication rights. Session-authenticated routes, D08 tenant controls and D11 setup controls must not be generalized into a fully verified per-asset authorization model. Core schema remains documented as single-tenant-per-deployment; end-to-end security hardening requires validation."
+9,02 / Journey,Follow the evidence from source data to an approved conclusion,"[S06] source-codes/USER_GUIDE.md — Source and version data; Run a diagnostic; Manage findings and RCA
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx — stageFor, ConclusionForm, RemediationHandoff
+[S15] source-codes/backend/domains/rca/service.py — approve_conclusion","Top row is a verified logical grouping of current capabilities, not literal database statuses. The manual extension uses available sourcing and launch features, but automatic post-remediation retest and closure enforcement are not evidenced. Cards below separate tracked remediation from RCA completion."
+10,02 / Journey • 1–4,Prepare an active snapshot and make the run scope explicit,"[S06] source-codes/USER_GUIDE.md — Seven-step sourcing flow and diagnostic launch
+[S22] source-codes/docs/architecture/data-sourcing-profiling-aar.md — Confirmation and publication sequence
+[S11] source-codes/backend/dq_diagnostics/readiness.py — readiness
+[S13] source-codes/backend/domains/test_lab/shared/run_state.py — draft and freeze lifecycle","This table groups the seven UI sourcing steps into stages 1 and 2 of the requested eleven-stage enterprise journey. Stage 3 is diagnostic configuration and stage 4 execution. Next transitions follow top to bottom. Owners are operating personas, not additional authz roles."
+11,02 / Journey • 5–8,Turn calculation outputs into owned investigations,"[D02X] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/runner.py — Candidate persistence
+[D06X] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/runner.py — Human review; no automatic issue creation
+[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md — Disposition
+[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md — Contextual findings
+[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md — Contextual outcomes
+[S14] source-codes/backend/ai/v2/issues.py — sync_diagnostic_issues, raise_issue
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx — RCA workflow","Enabled diagnostics 2, 6, 8, 11 and 14 require user confirmation of findings before issue creation. D04’s paused implementation auto-opens deterministic violations. Ownership/priority/date belong to optional tracked follow-up. They should not be presented as a mandatory approval queue for every analytical run."
+12,02 / Journey • 9–11,Track remediation without overstating the closure control,"[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx — ConclusionForm, RemediationHandoff
+[S15] source-codes/backend/domains/rca/service.py — approve_conclusion and _rerun_original_test
+[S06] source-codes/USER_GUIDE.md — Tracking/closing does not rerun or modify data",Required enterprise journey stages 9–11 are shown with their implementation limits. Current RCA conclusion approval can precede an optional remediation handoff. A forced fix→retest→close workflow is not the product-facing MVP. Legacy fix services rerun a stored snapshot and are not evidence of validation against corrected production data.
+13,02 / Lifecycle,"Keep run state, finding review and issue state separate","[S13] source-codes/backend/domains/test_lab/shared/run_state.py — DRAFT, RUNNING, DONE, FAILED, DISCARDED
+[D06X] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/runner.py — review_state and finding workflow
+[S14] source-codes/backend/ai/v2/issues.py — OPEN_STATUSES, close_issue, rca
+[S15] source-codes/backend/domains/rca/service.py — approve_conclusion","Literal stored run states: draft, running, done, failed, discarded. Finding open→confirmed or dismissed requires rationale for enabled workflows. Issues use Open, In RCA, Escalated and Closed; historical Superseded entries are excluded from the normal register. These rows summarize supported paths, not one combined state machine."
+14,02 / Review,"Distinguish evidence, findings and issues in every handoff","[D02R] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/README.md — Category versus issue rationale
+[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md — Expected-versus-observed comparison
+[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md — PSI calculation
+[S14] source-codes/backend/ai/v2/issues.py — Diagnostic issue materialization",
+15,02 / Root-cause analysis,Approve a conclusion with its supporting and limiting evidence,"[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx — stageFor; ConclusionForm; KnowledgeProposal
+[S15] source-codes/backend/domains/rca/service.py — approve_conclusion; return_to_investigation; propose_reusable_knowledge","approve_conclusion requires type, rationale, supporting evidence, alternatives, limiting evidence and reconciliation of related failures; identified conclusions also require a root cause. It closes the RCA case and managed issue. Current closure outcomes are root_cause_identified and unresolved. Historical confirmed/genuine_change/test_design_flaw paths remain internal and are not shown as current UI outcomes."
+16,02 / Knowledge,Govern knowledge before it becomes reusable authority,"[S06] source-codes/USER_GUIDE.md — Govern knowledge
+[S19] source-codes/backend/kb.py — publish_rule and archive role checks
+[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md — Packaged YAML and governed document versions
+[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md — Saving a KB proposal
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx — KnowledgeProposal","Lifecycle shown is the common document/rule path; actual data also includes expired, superseded and under_suspicion states. Packaged D08/D11 YAML remains the runtime source for those methodologies. Publishing a D11 proposal does not automatically modify the source-controlled knowledge release or change the current run."
+17,02 / Traceability,Retain the chain from snapshot to decision,"[S21] source-codes/backend/domains/aar/README.md — AAR domain responsibilities
+[S22] source-codes/docs/architecture/data-sourcing-profiling-aar.md — AAR storage architecture
+[S30] source-codes/backend/domains/aar/repository.py — Save, exact reuse and integrity checks
+[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md — Four artifacts
+[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md — Results and persistence
+[S15] source-codes/backend/domains/rca/service.py — Audit and conclusion","The UI uses Analytics Artifact Repository while backend documentation uses Analysis Artifact Repository; both refer to AAR. Exact reuse depends on compatible governed identity and payload, not approximate similarity. D04 stores structured diagnostic evidence; it should not be represented as having the same full AAR chain as later diagnostics."
+18,02 / Platform,Separate the user workflow from the execution and evidence services,"[S05] source-codes/README.md — Code organization
+[S07] source-codes/TSD.md — Architecture, persistence, configuration
+[S21] source-codes/backend/domains/aar/README.md — AAR
+[S22] source-codes/docs/architecture/data-sourcing-profiling-aar.md — Data Sourcing flow
+[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md — Execution ownership and workload governor","Current stack is React/Vite UI, FastAPI/Python services, SQLite metadata/working state, file-backed uploads and immutable artifacts. Azure OpenAI supports optional/advisory and RCA features where configured. One tenant per deployment is the documented core boundary. No Kubernetes, distributed cluster, enterprise SSO, or automatic source remediation is claimed."
+19,03 / Diagnostic catalog,See which diagnostic implementations can be launched,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — register
+[S10] source-codes/backend/dq_diagnostics/dispatch.py — adapter dispatch
+[D02R] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/README.md
+[D04R] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/README.md
+[D06R] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/README.md
+[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md
+[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md
+[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md","Implemented means a current production package with runner, manifest, UI and test evidence. It does not mean all acceptance or deployment checks were rerun for this presentation. Five enabled, one paused. Source keys map to repository paths in the appendix and notes."
+20,03 / Diagnostic catalog,Keep planned workflows and supporting analytics visible,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — register rows 12,17,20
+[S23] source-codes/docs/architecture/phase1b-missingness.md — Product boundary
+[S24] source-codes/backend/supporting_analyses/missingness.py — MissingnessCapability
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail","The three pending workflows have framework metadata but no current diagnostic adapter in dispatch.py. D20 has adjacent KB/AI building blocks, but the registered end-to-end proposal loop is not an executable diagnostic. Missingness is implemented independently and must not be counted as a tenth registered diagnostic."
+21,03 / Diagnostic catalog,Retain deferred diagnostics without implying availability,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail rows 2–20, MVP scope column
+[S09] source-codes/backend/dq_diagnostics/register.py — Unknown diagnostic refusal
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 Deferred rows","Deferred describes workbook planning, not a committed release date. Adjacent capabilities may overlap, but they do not activate a standalone registered diagnostic. Each entry receives a dedicated concise page later in the deck."
+22,03 / Diagnostic catalog,Retain deferred diagnostics without implying availability,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail rows 2–20, MVP scope column
+[S09] source-codes/backend/dq_diagnostics/register.py — Unknown diagnostic refusal
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 Deferred rows","Deferred describes workbook planning, not a committed release date. Adjacent capabilities may overlap, but they do not activate a standalone registered diagnostic. Each entry receives a dedicated concise page later in the deck."
+23,03 / Extended catalog,Make broader framework references explicit,"[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — Detailed_DQ_Framework Analytical Diagnostics column
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Plan B rows 5–6; Decisions & rationale rows 14–16
+[S22] source-codes/docs/architecture/data-sourcing-profiling-aar.md — Versioned profiling
+[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md — Two-snapshot PSI
+[S25] source-codes/backend/dq_tests/registry.py — Retired registry","Classification uses the requested four status types. R03/R04 are partially implemented only at the enabling-capability level; the fully managed monitoring diagnostics/workflows are not established. R01 combines formal MCAR/MNAR references but not the implemented descriptive Missingness Mechanism. Metric alternatives (JS/Wasserstein, mutual information, IQR/isolation forest) are alternatives within listed methods, not additional diagnostic rows. Primary user: analytics/model team with SME and data-team support."
+24,03 / Extended catalog,Make broader framework references explicit,"[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — Detailed_DQ_Framework Analytical Diagnostics column
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Plan B rows 5–6; Decisions & rationale rows 14–16
+[S22] source-codes/docs/architecture/data-sourcing-profiling-aar.md — Versioned profiling
+[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md — Two-snapshot PSI
+[S25] source-codes/backend/dq_tests/registry.py — Retired registry","Classification uses the requested four status types. R03/R04 are partially implemented only at the enabling-capability level; the fully managed monitoring diagnostics/workflows are not established. R01 combines formal MCAR/MNAR references but not the implemented descriptive Missingness Mechanism. Metric alternatives (JS/Wasserstein, mutual information, IQR/isolation forest) are alternatives within listed methods, not additional diagnostic rows. Primary user: analytics/model team with SME and data-team support."
+25,03 / Historical catalog,Account for the retired fourteen-test library,"[S34] source-codes/backend/dq_tests/README.md — Historical fourteen-test descriptions
+[S25] source-codes/backend/dq_tests/registry.py — Empty registry and unconditional unknown-test refusal
+[S26] source-codes/docs/0.4.0/01-disposition.md — Test disposition table","Every historical library entry is named here to prevent accidental omission or double-counting. Retired items are historical references, with current successor status stated separately. These are not fourteen additional executable diagnostics. The disposition document contains historical counts/labels; actual current code and register take priority. No dedicated current launch or RCA subsection is warranted for removed executors."
+26,03 / Historical catalog,Account for the retired fourteen-test library,"[S34] source-codes/backend/dq_tests/README.md — Historical fourteen-test descriptions
+[S25] source-codes/backend/dq_tests/registry.py — Empty registry and unconditional unknown-test refusal
+[S26] source-codes/docs/0.4.0/01-disposition.md — Test disposition table","Every historical library entry is named here to prevent accidental omission or double-counting. Retired items are historical references, with current successor status stated separately. These are not fourteen additional executable diagnostics. The disposition document contains historical counts/labels; actual current code and register take priority. No dedicated current launch or RCA subsection is warranted for removed executors."
+27,04 / T1-D02 • A / Purpose,Spot features whose target separation deserves review,"[D02R] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/README.md — Binning workflow; Progressive run review; Governed final report
+[D02E] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/adapter.py — assess_feature_target_separation, _candidate_findings
+[D02C] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/orchestration.py — classify_feature
+[D02M] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/manifest.py — Scope and freeze
+[D02X] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/runner.py — Persist findings and report
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Purpose and expected outcome derived from diagnostic sources. Implemented • enabled. Personas are operating responsibilities, not separate RBAC roles."
+28,04 / T1-D02 • B / Approach,Follow the governed processing path,"[D02R] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/README.md — Binning workflow; Progressive run review; Governed final report
+[D02E] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/adapter.py — assess_feature_target_separation, _candidate_findings
+[D02C] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/orchestration.py — classify_feature
+[D02M] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/manifest.py — Scope and freeze
+[D02X] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/runner.py — Persist findings and report
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","orchestration.classify_feature uses >= category boundaries: AUC 0.90/0.70/0.55 and IV 0.50/0.30/0.05 by default, tunable and ordered. Candidate flags use a separate threshold contract (leakage AUC/IV and poor-discrimination AUC/IV). AUC/IV support multiple target routes; availability and failures are explicit. A weak univariate result does not show that a feature has no joint value."
+29,04 / T1-D02 • C / Evidence,Read the metrics alongside scope and limitations,"[D02R] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/README.md — Binning workflow; Progressive run review; Governed final report
+[D02E] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/adapter.py — assess_feature_target_separation, _candidate_findings
+[D02C] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/orchestration.py — classify_feature
+[D02M] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/manifest.py — Scope and freeze
+[D02X] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/runner.py — Persist findings and report
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","orchestration.classify_feature uses >= category boundaries: AUC 0.90/0.70/0.55 and IV 0.50/0.30/0.05 by default, tunable and ordered. Candidate flags use a separate threshold contract (leakage AUC/IV and poor-discrimination AUC/IV). AUC/IV support multiple target routes; availability and failures are explicit. A weak univariate result does not show that a feature has no joint value."
+30,04 / T1-D02 • D / Launch,"Confirm the scope, launch once and review final evidence","[D02R] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/README.md — Binning workflow; Progressive run review; Governed final report
+[D02E] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/adapter.py — assess_feature_target_separation, _candidate_findings
+[D02C] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/orchestration.py — classify_feature
+[D02M] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/manifest.py — Scope and freeze
+[D02X] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/runner.py — Persist findings and report
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register",Supported launch sequence is summarized from manifest/runner and diagnostic documentation. Drafts are mutable before freeze; frozen scope and completed artifacts remain historical evidence. Launch availability always follows the register. Complete or partial feature evidence remains visible. Final findings become available after run finalization. Invalid/action-required inputs and per-feature ROC/binning errors are explicit; previews are not final results.
+31,04 / T1-D02 • E / Issue & RCA,Carry the finding into a controlled investigation,"[D02R] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/README.md — Binning workflow; Progressive run review; Governed final report
+[D02E] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/adapter.py — assess_feature_target_separation, _candidate_findings
+[D02C] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/orchestration.py — classify_feature
+[D02M] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/manifest.py — Scope and freeze
+[D02X] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/runner.py — Persist findings and report
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register",Finding condition and creation gate are implemented as described. RCA uses the existing shared service. Investigation suggestions are derived from diagnostic evidence and framework remediation guidance; they are not automated source fixes. Optional tracked remediation and manual fresh-data assessment are separate from current RCA conclusion approval. Suggested: correct construction or review feature use; manually upload corrected data and reassess.
+32,04 / T2-D04 • A / Purpose,Check whether rows satisfy governed business rules,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic 4 workflow_pending
+[D04R] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/README.md — Package ownership
+[D04E] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/engine.py — evaluate_rule and violation_pattern
+[D04M] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/manifest.py — Manifest and frozen rules
+[D04X] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/runner.py — persist, run and sync_diagnostic_issues
+[S14] source-codes/backend/ai/v2/issues.py — sync_diagnostic_issues
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Purpose and expected outcome derived from diagnostic sources. Implemented • paused. Personas are operating responsibilities, not separate RBAC roles."
+33,04 / T2-D04 • B / Approach,Follow the governed processing path,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic 4 workflow_pending
+[D04R] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/README.md — Package ownership
+[D04E] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/engine.py — evaluate_rule and violation_pattern
+[D04M] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/manifest.py — Manifest and frozen rules
+[D04X] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/runner.py — persist, run and sync_diagnostic_issues
+[S14] source-codes/backend/ai/v2/issues.py — sync_diagnostic_issues
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","engine.evaluate_rule returns NOT-APPLICABLE for unresolved roles, empty scope, unavailable related tables or entirely skipped values. runner.persist writes structured diagnostic results and one finding per rule. No published bound rules produces NOT-APPLICABLE, never silent PASS. This paused package uses the structured diagnostic store and should not be described as having every newer AAR report feature."
+34,04 / T2-D04 • C / Evidence,Read the metrics alongside scope and limitations,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic 4 workflow_pending
+[D04R] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/README.md — Package ownership
+[D04E] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/engine.py — evaluate_rule and violation_pattern
+[D04M] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/manifest.py — Manifest and frozen rules
+[D04X] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/runner.py — persist, run and sync_diagnostic_issues
+[S14] source-codes/backend/ai/v2/issues.py — sync_diagnostic_issues
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","engine.evaluate_rule returns NOT-APPLICABLE for unresolved roles, empty scope, unavailable related tables or entirely skipped values. runner.persist writes structured diagnostic results and one finding per rule. No published bound rules produces NOT-APPLICABLE, never silent PASS. This paused package uses the structured diagnostic store and should not be described as having every newer AAR report feature."
+35,04 / T2-D04 • D / Launch,"Confirm the scope, launch once and review final evidence","[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic 4 workflow_pending
+[D04R] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/README.md — Package ownership
+[D04E] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/engine.py — evaluate_rule and violation_pattern
+[D04M] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/manifest.py — Manifest and frozen rules
+[D04X] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/runner.py — persist, run and sync_diagnostic_issues
+[S14] source-codes/backend/ai/v2/issues.py — sync_diagnostic_issues
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Supported launch sequence is summarized from manifest/runner and diagnostic documentation. Drafts are mutable before freeze; frozen scope and completed artifacts remain historical evidence. Launch availability always follows the register. Implemented path produces complete rule accounting and hands VIOLATION findings to issue synchronization. Current launches are refused. In the code path, missing scope yields reasons; execution errors are sanitized."
+36,04 / T2-D04 • E / Issue & RCA,Carry the finding into a controlled investigation,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic 4 workflow_pending
+[D04R] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/README.md — Package ownership
+[D04E] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/engine.py — evaluate_rule and violation_pattern
+[D04M] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/manifest.py — Manifest and frozen rules
+[D04X] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/runner.py — persist, run and sync_diagnostic_issues
+[S14] source-codes/backend/ai/v2/issues.py — sync_diagnostic_issues
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register",Finding condition and creation gate are implemented as described. RCA uses the existing shared service. Investigation suggestions are derived from diagnostic evidence and framework remediation guidance; they are not automated source fixes. Optional tracked remediation and manual fresh-data assessment are separate from current RCA conclusion approval. Suggested: correct source logic or submit a governed rule change; retest manually after approval and re-enablement.
+37,04 / T2-D06 • A / Purpose,Find missing facility-period rows inside observed lifespans,"[D06R] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/README.md — Governed report
+[D06E] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/engine.py — _prepare, duplicate groups, observed-span evaluation
+[D06M] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/manifest.py — Role/grain/floor confirmation and freeze
+[D06X] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/runner.py — Persist, human review and report
+[D06T] source-codes/backend/tests/unit/test_lab/diagnostics/t2_d06_row_completeness/test_row_completeness_engine.py — Regression fixtures
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic 6 executable
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Purpose and expected outcome derived from diagnostic sources. Implemented • enabled. Personas are operating responsibilities, not separate RBAC roles."
+38,04 / T2-D06 • B / Approach,Follow the governed processing path,"[D06R] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/README.md — Governed report
+[D06E] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/engine.py — _prepare, duplicate groups, observed-span evaluation
+[D06M] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/manifest.py — Role/grain/floor confirmation and freeze
+[D06X] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/runner.py — Persist, human review and report
+[D06T] source-codes/backend/tests/unit/test_lab/diagnostics/t2_d06_row_completeness/test_row_completeness_engine.py — Regression fixtures
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic 6 executable
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Current engine methodology row-completeness-observed-span-v1 overrides the workbook expected-population/anti-join wording. The old contract header says workflow pending, but current register enables #6. Rule IDs are T2D6-01 through T2D6-06. Example from test_invalid_rows_full_calendar_gap_duplicates_and_observed_span_reconcile: 6 required pairs, 4 received, 1 surplus duplicate, 1 invalid row, and 4 primary issue instances (invalid + 2 missing + 1 surplus). This is a synthetic regression fixture, not client data or a new test run."
+39,04 / T2-D06 • C / Evidence,Read the metrics alongside scope and limitations,"[D06R] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/README.md — Governed report
+[D06E] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/engine.py — _prepare, duplicate groups, observed-span evaluation
+[D06M] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/manifest.py — Role/grain/floor confirmation and freeze
+[D06X] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/runner.py — Persist, human review and report
+[D06T] source-codes/backend/tests/unit/test_lab/diagnostics/t2_d06_row_completeness/test_row_completeness_engine.py — Regression fixtures
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic 6 executable
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Current engine methodology row-completeness-observed-span-v1 overrides the workbook expected-population/anti-join wording. The old contract header says workflow pending, but current register enables #6. Rule IDs are T2D6-01 through T2D6-06. Example from test_invalid_rows_full_calendar_gap_duplicates_and_observed_span_reconcile: 6 required pairs, 4 received, 1 surplus duplicate, 1 invalid row, and 4 primary issue instances (invalid + 2 missing + 1 surplus). This is a synthetic regression fixture, not client data or a new test run. Synthetic fixture example is documented in the appendix; visible metrics here describe the contract, not fabricated portfolio results."
+40,04 / T2-D06 • D / Launch,"Confirm the scope, launch once and review final evidence","[D06R] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/README.md — Governed report
+[D06E] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/engine.py — _prepare, duplicate groups, observed-span evaluation
+[D06M] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/manifest.py — Role/grain/floor confirmation and freeze
+[D06X] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/runner.py — Persist, human review and report
+[D06T] source-codes/backend/tests/unit/test_lab/diagnostics/t2_d06_row_completeness/test_row_completeness_engine.py — Regression fixtures
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic 6 executable
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Supported launch sequence is summarized from manifest/runner and diagnostic documentation. Drafts are mutable before freeze; frozen scope and completed artifacts remain historical evidence. Launch availability always follows the register. Six rule outcomes, masked evidence and continuity metrics are retained. Optional segment can be NOT-APPLICABLE. Input/period incompatibilities are reported; failed rules await human review and do not auto-create issues."
+41,04 / T2-D06 • E / Issue & RCA,Carry the finding into a controlled investigation,"[D06R] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/README.md — Governed report
+[D06E] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/engine.py — _prepare, duplicate groups, observed-span evaluation
+[D06M] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/manifest.py — Role/grain/floor confirmation and freeze
+[D06X] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/runner.py — Persist, human review and report
+[D06T] source-codes/backend/tests/unit/test_lab/diagnostics/t2_d06_row_completeness/test_row_completeness_engine.py — Regression fixtures
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic 6 executable
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register",Finding condition and creation gate are implemented as described. RCA uses the existing shared service. Investigation suggestions are derived from diagnostic evidence and framework remediation guidance; they are not automated source fixes. Optional tracked remediation and manual fresh-data assessment are separate from current RCA conclusion approval. Suggested: reconcile source deliveries or deduplicate; upload corrected panel and rerun for fresh evidence.
+42,04 / T2-D08 • A / Purpose,Explain exceptional values before treating them as defects,"[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md — User journey, semantic model, reporting, AAR and security
+[D08M] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/manifest.py — Acknowledgment, bindings, freeze blockers
+[D08E] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/engine.py — Deterministic primitives and precedence
+[D08X] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/runner.py — Execution and artifacts
+[D08K] source-codes/backend/knowledge_base/value_semantics_kb_v0_2.yaml — Versioned role and rule catalog
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Purpose and expected outcome derived from diagnostic sources. Implemented • enabled. Personas are operating responsibilities, not separate RBAC roles."
+43,04 / T2-D08 • B / Approach,Follow the governed processing path,"[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md — User journey, semantic model, reporting, AAR and security
+[D08M] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/manifest.py — Acknowledgment, bindings, freeze blockers
+[D08E] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/engine.py — Deterministic primitives and precedence
+[D08X] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/runner.py — Execution and artifacts
+[D08K] source-codes/backend/knowledge_base/value_semantics_kb_v0_2.yaml — Versioned role and rule catalog
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Active rules KB v0.2, terminology v0.3, engine v1.0.0. 36 canonical roles. CENSORED means the required future window/process is incomplete. STALE_FROZEN can be declared sentinel or governed non-variation; NOT_APPLICABLE requires confirmed business conditions. Missing prerequisites remain UNSCOPED. Unresolved competing tag precedence fails closed. Raw source values are excluded from persisted tag/ledger artifacts. Automated downstream consumption of all D08 tags by every diagnostic is not verified and is not claimed."
+44,04 / T2-D08 • C / Evidence,Read the metrics alongside scope and limitations,"[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md — User journey, semantic model, reporting, AAR and security
+[D08M] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/manifest.py — Acknowledgment, bindings, freeze blockers
+[D08E] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/engine.py — Deterministic primitives and precedence
+[D08X] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/runner.py — Execution and artifacts
+[D08K] source-codes/backend/knowledge_base/value_semantics_kb_v0_2.yaml — Versioned role and rule catalog
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Active rules KB v0.2, terminology v0.3, engine v1.0.0. 36 canonical roles. CENSORED means the required future window/process is incomplete. STALE_FROZEN can be declared sentinel or governed non-variation; NOT_APPLICABLE requires confirmed business conditions. Missing prerequisites remain UNSCOPED. Unresolved competing tag precedence fails closed. Raw source values are excluded from persisted tag/ledger artifacts. Automated downstream consumption of all D08 tags by every diagnostic is not verified and is not claimed."
+45,04 / T2-D08 • D / Launch,"Confirm the scope, launch once and review final evidence","[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md — User journey, semantic model, reporting, AAR and security
+[D08M] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/manifest.py — Acknowledgment, bindings, freeze blockers
+[D08E] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/engine.py — Deterministic primitives and precedence
+[D08X] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/runner.py — Execution and artifacts
+[D08K] source-codes/backend/knowledge_base/value_semantics_kb_v0_2.yaml — Versioned role and rule catalog
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Supported launch sequence is summarized from manifest/runner and diagnostic documentation. Drafts are mutable before freeze; frozen scope and completed artifacts remain historical evidence. Launch availability always follows the register. Deterministic tags and exhaustive routed coverage publish to AAR, with authenticated reports and inference disclosure. Unacknowledged intro or no usable confirmed role coverage blocks freeze. Missing optional inputs yield UNSCOPED."
+46,04 / T2-D08 • E / Issue & RCA,Carry the finding into a controlled investigation,"[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md — User journey, semantic model, reporting, AAR and security
+[D08M] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/manifest.py — Acknowledgment, bindings, freeze blockers
+[D08E] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/engine.py — Deterministic primitives and precedence
+[D08X] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/runner.py — Execution and artifacts
+[D08K] source-codes/backend/knowledge_base/value_semantics_kb_v0_2.yaml — Versioned role and rule catalog
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register",Finding condition and creation gate are implemented as described. RCA uses the existing shared service. Investigation suggestions are derived from diagnostic evidence and framework remediation guidance; they are not automated source fixes. Optional tracked remediation and manual fresh-data assessment are separate from current RCA conclusion approval. Suggested: correct declarations or source capture when justified; run a new assessment after change.
+47,04 / T2-D11 • A / Purpose,Compare observed relationships with governed expectations,"[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md — Core invariants; empirical methodology; findings; KB proposal lifecycle
+[D11M] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/manifest.py — Role decisions, orientation and atomic freeze
+[D11E] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/engine.py — Component classification and guards
+[D11X] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/runner.py — Artifacts, findings and report
+[D11K] source-codes/backend/knowledge_base/pd_directionality_kb_v0_3.yaml — Expected-risk knowledge v0.3
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Purpose and expected outcome derived from diagnostic sources. Implemented • enabled. Personas are operating responsibilities, not separate RBAC roles."
+48,04 / T2-D11 • B / Approach,Follow the governed processing path,"[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md — Core invariants; empirical methodology; findings; KB proposal lifecycle
+[D11M] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/manifest.py — Role decisions, orientation and atomic freeze
+[D11E] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/engine.py — Component classification and guards
+[D11X] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/runner.py — Artifacts, findings and report
+[D11K] source-codes/backend/knowledge_base/pd_directionality_kb_v0_3.yaml — Expected-risk knowledge v0.3
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Default requested quantile bins 5; minimum paired observations 30; minimum binary class 10; significance level .05; absolute Spearman floor .20; standardized regression floor .10; binned movement .10 reference standard deviations. These are tunable MVP defaults, not adequacy certification. Strong=3/3 directional corroboration; moderate=2/3. Shape and guards can instead yield non-monotonic, flat, conflicting, weak or insufficient-data classes. No formal adjacent-bin inversion count. Reviewed KB proposals require separate curation before a new packaged release consumes them."
+49,04 / T2-D11 • C / Evidence,Read the metrics alongside scope and limitations,"[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md — Core invariants; empirical methodology; findings; KB proposal lifecycle
+[D11M] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/manifest.py — Role decisions, orientation and atomic freeze
+[D11E] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/engine.py — Component classification and guards
+[D11X] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/runner.py — Artifacts, findings and report
+[D11K] source-codes/backend/knowledge_base/pd_directionality_kb_v0_3.yaml — Expected-risk knowledge v0.3
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Default requested quantile bins 5; minimum paired observations 30; minimum binary class 10; significance level .05; absolute Spearman floor .20; standardized regression floor .10; binned movement .10 reference standard deviations. These are tunable MVP defaults, not adequacy certification. Strong=3/3 directional corroboration; moderate=2/3. Shape and guards can instead yield non-monotonic, flat, conflicting, weak or insufficient-data classes. No formal adjacent-bin inversion count. Reviewed KB proposals require separate curation before a new packaged release consumes them."
+50,04 / T2-D11 • D / Launch,"Confirm the scope, launch once and review final evidence","[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md — Core invariants; empirical methodology; findings; KB proposal lifecycle
+[D11M] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/manifest.py — Role decisions, orientation and atomic freeze
+[D11E] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/engine.py — Component classification and guards
+[D11X] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/runner.py — Artifacts, findings and report
+[D11K] source-codes/backend/knowledge_base/pd_directionality_kb_v0_3.yaml — Expected-risk knowledge v0.3
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register",Supported launch sequence is summarized from manifest/runner and diagnostic documentation. Drafts are mutable before freeze; frozen scope and completed artifacts remain historical evidence. Launch availability always follows the register. Retained confirmations can be reused on compatible reruns; new overall/segment evidence is computed. Unresolved scope blocks freeze; atomic freeze failure leaves the draft. Feature failures remain explicit.
+51,04 / T2-D11 • E / Issue & RCA,Carry the finding into a controlled investigation,"[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md — Core invariants; empirical methodology; findings; KB proposal lifecycle
+[D11M] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/manifest.py — Role decisions, orientation and atomic freeze
+[D11E] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/engine.py — Component classification and guards
+[D11X] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/runner.py — Artifacts, findings and report
+[D11K] source-codes/backend/knowledge_base/pd_directionality_kb_v0_3.yaml — Expected-risk knowledge v0.3
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Finding condition and creation gate are implemented as described. RCA uses the existing shared service. Investigation suggestions are derived from diagnostic evidence and framework remediation guidance; they are not automated source fixes. Optional tracked remediation and manual fresh-data assessment are separate from current RCA conclusion approval. Suggested: investigate mapping, population or business change; propose reviewed KB updates where warranted."
+52,04 / T4-D14 • A / Purpose,Locate distribution changes between governed populations,"[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md — Route matrix, bin governance, execution and PSI calculation
+[D14E] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/engine.py — classify and calculate_feature_psi
+[D14M] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/manifest.py — Population and bin freeze
+[D14X] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/runner.py — Execution, persistence, findings and report
+[D14T] source-codes/backend/tests/integration/test_lab/diagnostics/t4_d14_population_stability/test_population_stability.py — Integration evidence
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Purpose and expected outcome derived from diagnostic sources. Implemented • enabled. Personas are operating responsibilities, not separate RBAC roles."
+53,04 / T4-D14 • B / Approach,Follow the governed processing path,"[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md — Route matrix, bin governance, execution and PSI calculation
+[D14E] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/engine.py — classify and calculate_feature_psi
+[D14M] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/manifest.py — Population and bin freeze
+[D14X] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/runner.py — Execution, persistence, findings and report
+[D14T] source-codes/backend/tests/integration/test_lab/diagnostics/t4_d14_population_stability/test_population_stability.py — Integration evidence
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","engine.classify uses >= thresholds, overriding workbook prose with >. Calculation sums (Current share − Baseline share) × ln(Current share / Baseline share), with governed epsilon for zero shares. Target-free numeric bins use Baseline deciles; categoricals top 49 plus OTHER_BASELINE; missing is separate. One-snapshot target-aware always runs D02 on split Baseline. Two-snapshot target-aware uses the exact explicitly promoted D02 fine/coarse/IV chain or regenerates. No approximate reuse; a PSI-specific override does not become a universal D02 definition."
+54,04 / T4-D14 • C / Evidence,Read the metrics alongside scope and limitations,"[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md — Route matrix, bin governance, execution and PSI calculation
+[D14E] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/engine.py — classify and calculate_feature_psi
+[D14M] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/manifest.py — Population and bin freeze
+[D14X] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/runner.py — Execution, persistence, findings and report
+[D14T] source-codes/backend/tests/integration/test_lab/diagnostics/t4_d14_population_stability/test_population_stability.py — Integration evidence
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","engine.classify uses >= thresholds, overriding workbook prose with >. Calculation sums (Current share − Baseline share) × ln(Current share / Baseline share), with governed epsilon for zero shares. Target-free numeric bins use Baseline deciles; categoricals top 49 plus OTHER_BASELINE; missing is separate. One-snapshot target-aware always runs D02 on split Baseline. Two-snapshot target-aware uses the exact explicitly promoted D02 fine/coarse/IV chain or regenerates. No approximate reuse; a PSI-specific override does not become a universal D02 definition."
+55,04 / T4-D14 • D / Launch,"Confirm the scope, launch once and review final evidence","[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md — Route matrix, bin governance, execution and PSI calculation
+[D14E] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/engine.py — classify and calculate_feature_psi
+[D14M] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/manifest.py — Population and bin freeze
+[D14X] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/runner.py — Execution, persistence, findings and report
+[D14T] source-codes/backend/tests/integration/test_lab/diagnostics/t4_d14_population_stability/test_population_stability.py — Integration evidence
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register","Supported launch sequence is summarized from manifest/runner and diagnostic documentation. Drafts are mutable before freeze; frozen scope and completed artifacts remain historical evidence. Launch availability always follows the register. Server-owned work continues across browser reconnects. Buffered previews remain preliminary until finalization. Incompatible scope, invalid cuts or non-reconciling bins are rejected; unavailable feature evidence is explicit."
+56,04 / T4-D14 • E / Issue & RCA,Carry the finding into a controlled investigation,"[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md — Route matrix, bin governance, execution and PSI calculation
+[D14E] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/engine.py — classify and calculate_feature_psi
+[D14M] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/manifest.py — Population and bin freeze
+[D14X] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/runner.py — Execution, persistence, findings and report
+[D14T] source-codes/backend/tests/integration/test_lab/diagnostics/t4_d14_population_stability/test_population_stability.py — Integration evidence
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current diagnostic register",Finding condition and creation gate are implemented as described. RCA uses the existing shared service. Investigation suggestions are derived from diagnostic evidence and framework remediation guidance; they are not automated source fixes. Optional tracked remediation and manual fresh-data assessment are separate from current RCA conclusion approval. Suggested: adjust a justified sample/baseline or correct data; approve fresh bins where required and rerun.
+57,05 / Supporting investigation • A,Explain missingness patterns without asserting causality,"[S23] source-codes/docs/architecture/phase1b-missingness.md — Product boundary, flow and preserved controls
+[S24] source-codes/backend/supporting_analyses/missingness.py — MissingnessCapability
+[S33] source-codes/backend/tests/test_missingness_capability.py — Integration checks","This is a supporting analysis, not registered D06 and not a proof of MCAR, MAR or MNAR. Production implementation is a port of the missingChecks deterministic engine. Findings require explicit user confirmation. No live run or client data is presented."
+58,05 / Supporting investigation • B,Freeze the missingness scope and retain descriptive evidence,"[S23] source-codes/docs/architecture/phase1b-missingness.md — Flow and controls
+[S24] source-codes/backend/supporting_analyses/missingness.py — build_manifest and execute
+[S33] source-codes/backend/tests/test_missingness_capability.py — test_missingness_capability","Parameters, seed, scope, inventory fingerprint, period column and missing-code policy freeze into analysis_manifests. Co-missing block members are excluded from one another’s predictor pools. Zero remains valid unless explicitly declared missing. The current documented vertical slice executes synchronously; no diagnostic-progress streaming is promised."
+59,05 / Supporting investigation • C,Review observations before starting an issue or RCA,"[S23] source-codes/docs/architecture/phase1b-missingness.md — APIs and human observation disposition
+[S24] source-codes/backend/supporting_analyses/missingness.py — Catalog and execute
+[S33] source-codes/backend/tests/test_missingness_capability.py — Observation confirmation tests
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx — Shared RCA and optional follow-up","Launch is through analyses/catalog, analyses/manifests, manifest/run and analysis-observations disposition, not diagnostic ID dispatch. Above-tolerance observations remain open until confirmed or dismissed with a reason. A confirmed issue enters the shared RCA journey. Source remediation and corrected-data retest are manual follow-up."
+60,06 / Planned • T3-D12,Check label consistency against the business process,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — register row 12; workflow_pending
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 13
+[S10] source-codes/backend/dq_diagnostics/dispatch.py — Adapter dispatch omits this ID","Classification: Planned. Register metadata exists, but no executable diagnostic adapter or accepted current launch workflow is present for T3-D12. Planned method: deterministic violation count after documented rule exceptions. Data and domain SMEs would review conflicts before accepting an issue. Any issue/RCA/remediation journey for this entry is proposed. D17 resolution floor metadata is 0.75 in the current threshold defaults but should be validated for use case before implementation. D20 adjacent governed KB proposals in D11 do not equal execution of this registered proposal loop."
+61,06 / Planned • T5-D17,Review how fully each vintage’s outcomes have resolved,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — register row 17; workflow_pending
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 18
+[S10] source-codes/backend/dq_diagnostics/dispatch.py — Adapter dispatch omits this ID","Classification: Planned. Register metadata exists, but no executable diagnostic adapter or accepted current launch workflow is present for T5-D17. Planned method: resolved count / total count by vintage against a tunable floor. Model and portfolio teams would distinguish incomplete observation from a defect. Any issue/RCA/remediation journey for this entry is proposed. D17 resolution floor metadata is 0.75 in the current threshold defaults but should be validated for use case before implementation. D20 adjacent governed KB proposals in D11 do not equal execution of this registered proposal loop."
+62,06 / Planned • T6-D20,Expand governed relationships through an SME-reviewed loop,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — register row 20; workflow_pending
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 21
+[S10] source-codes/backend/dq_diagnostics/dispatch.py — Adapter dispatch omits this ID","Classification: Planned. Register metadata exists, but no executable diagnostic adapter or accepted current launch workflow is present for T6-D20. Planned sequence: propose → validate → persist → route into a Test 2 engine. SMEs would review candidates; confidence ranks proposals and is not a data metric. Any issue/RCA/remediation journey for this entry is proposed. D17 resolution floor metadata is 0.75 in the current threshold defaults but should be validated for use case before implementation. D20 adjacent governed KB proposals in D11 do not equal execution of this registered proposal loop."
+63,06 / Deferred • T1-D01,Check whether feature information arrives after the outcome,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 2; Defer (phase-2)
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 deferred inventory
+[S09] source-codes/backend/dq_diagnostics/register.py — Current register excludes this diagnostic","Planned, deferred workbook diagnostic. Is a field known only after the outcome (or a look-ahead construction) in the feature set? Planned metric: field availability vs as-of date. Workbook default/decision rule: any post-outcome field in features -> flag. Input binding examples in the workbook are illustrative and are not used as real findings. No registered executor, report schema, current launch or diagnostic-specific automated RCA is claimed. Proposed user is analytics/model team with SME review. Remediation would follow evidence review and manual source or methodology correction."
+64,06 / Deferred • T1-D03,Review category-level target purity with a volume guard,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 4; Defer (phase-2)
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 deferred inventory
+[S09] source-codes/backend/dq_diagnostics/register.py — Current register excludes this diagnostic","Planned, deferred workbook diagnostic. Does a category value predict the outcome almost deterministically (a proxy for the target)? Planned metric: per-category outcome rate vs base rate; Cramer's V; Information Value (alt: mutual information). NOT a chi-square significance test - significance over-fires at large n; use effect size.. Workbook default/decision rule: conditional outcome rate near 0/1 (e.g. >~95% vs a far base rate) OR Cramer's V / IV > ~0.5; VOLUME-GATED (min category count) to exclude small-sample noise; tunable.. Input binding examples in the workbook are illustrative and are not used as real findings. No registered executor, report schema, current launch or diagnostic-specific automated RCA is claimed. Proposed user is analytics/model team with SME review. Remediation would follow evidence review and manual source or methodology correction."
+65,06 / Deferred • T2-D05,Reconcile recorded derived values with their formulas,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 6; Defer (phase-2)
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 deferred inventory
+[S09] source-codes/backend/dq_diagnostics/register.py — Current register excludes this diagnostic","Planned, deferred workbook diagnostic. Does a derived field equal its formula? Planned metric: abs(recorded - derived). Workbook default/decision rule: abs diff > small tolerance -> flag. Input binding examples in the workbook are illustrative and are not used as real findings. No registered executor, report schema, current launch or diagnostic-specific automated RCA is claimed. Proposed user is analytics/model team with SME review. Remediation would follow evidence review and manual source or methodology correction."
+66,06 / Deferred • T2-D07,Identify fields that appear frozen or disguised as missing,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 8; Defer (phase-2)
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 deferred inventory
+[S09] source-codes/backend/dq_diagnostics/register.py — Current register excludes this diagnostic","Planned, deferred workbook diagnostic. Is a normally-varying field frozen/sentinel over a segment-period? Planned metric: within-segment variance over time; sentinel share. Workbook default/decision rule: zero/near-zero variance where variance expected -> flag. Input binding examples in the workbook are illustrative and are not used as real findings. No registered executor, report schema, current launch or diagnostic-specific automated RCA is claimed. Proposed user is analytics/model team with SME review. Remediation would follow evidence review and manual source or methodology correction."
+67,06 / Deferred • T2-D09,Screen material numeric fields for robust outlier candidates,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 10; Defer (phase-2)
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 deferred inventory
+[S09] source-codes/backend/dq_diagnostics/register.py — Current register excludes this diagnostic","Planned, deferred workbook diagnostic. Improbable extreme values in a material field's tail. Planned metric: robust z = 0.6745*(x-median)/MAD (alt: IQR fence, isolation forest). Workbook default/decision rule: |robust z| > ~3.5 -> flag; material fields only; gated on value-semantics. Input binding examples in the workbook are illustrative and are not used as real findings. No registered executor, report schema, current launch or diagnostic-specific automated RCA is claimed. Proposed user is analytics/model team with SME review. Remediation would follow evidence review and manual source or methodology correction."
+68,06 / Deferred • T2-D10,Look for implausible concentration at declared boundaries,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 11; Defer (phase-2)
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 deferred inventory
+[S09] source-codes/backend/dq_diagnostics/register.py — Current register excludes this diagnostic","Planned, deferred workbook diagnostic. Implausible mass at a bounded field's min/max. Planned metric: share of mass at boundary. Workbook default/decision rule: boundary share > X% -> flag. Input binding examples in the workbook are illustrative and are not used as real findings. No registered executor, report schema, current launch or diagnostic-specific automated RCA is claimed. Proposed user is analytics/model team with SME review. Remediation would follow evidence review and manual source or methodology correction."
+69,06 / Deferred • T3-D13,Locate target-rate breaks around definition changes,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 14; Defer (phase-2)
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 deferred inventory
+[S09] source-codes/backend/dq_diagnostics/register.py — Current register excludes this diagnostic","Planned, deferred workbook diagnostic. Does the target rate shift over time for definitional reasons? Planned metric: change-point / structural-break statistic on target-rate series. Workbook default/decision rule: significant break vs significance level -> flag; align to definition dates. Input binding examples in the workbook are illustrative and are not used as real findings. No registered executor, report schema, current launch or diagnostic-specific automated RCA is claimed. Proposed user is analytics/model team with SME review. Remediation would follow evidence review and manual source or methodology correction."
+70,06 / Deferred • T4-D15,Compare sample and reference distributions using KS distance,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 16; Defer (phase-2)
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 deferred inventory
+[S09] source-codes/backend/dq_diagnostics/register.py — Current register excludes this diagnostic","Planned, deferred workbook diagnostic. Distributional difference vs reference (complements PSI). Planned metric: Kolmogorov-Smirnov statistic. Workbook default/decision rule: KS above threshold -> flag (over-flags at large n; read with PSI). Input binding examples in the workbook are illustrative and are not used as real findings. No registered executor, report schema, current launch or diagnostic-specific automated RCA is claimed. Proposed user is analytics/model team with SME review. Remediation would follow evidence review and manual source or methodology correction."
+71,06 / Deferred • T4-D16,Expose absent or thin population segments,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 17; Defer (phase-2)
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 deferred inventory
+[S09] source-codes/backend/dq_diagnostics/register.py — Current register excludes this diagnostic","Planned, deferred workbook diagnostic. Is any live-population segment absent/thin in the sample? Planned metric: presence & share by segment. Workbook default/decision rule: segment in reference but < min share in sample -> flag. Input binding examples in the workbook are illustrative and are not used as real findings. No registered executor, report schema, current launch or diagnostic-specific automated RCA is claimed. Proposed user is analytics/model team with SME review. Remediation would follow evidence review and manual source or methodology correction."
+72,06 / Deferred • T5-D18,Quantify the impact of resolved-only outcome selection,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 19; Defer (phase-2)
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 deferred inventory
+[S09] source-codes/backend/dq_diagnostics/register.py — Current register excludes this diagnostic","Planned, deferred workbook diagnostic. How much the estimate changes on resolved-only vs all. Planned metric: delta(estimate resolved-only vs all). Workbook default/decision rule: differential > Y -> flag downward bias. Input binding examples in the workbook are illustrative and are not used as real findings. No registered executor, report schema, current launch or diagnostic-specific automated RCA is claimed. Proposed user is analytics/model team with SME review. Remediation would follow evidence review and manual source or methodology correction."
+73,06 / Deferred • T5-D19,Assess whether vintages have had time to mature,"[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Diagnostics detail row 20; Defer (phase-2)
+[S28] source-codes/docs/0.4.0/00-framework.md — §5 deferred inventory
+[S09] source-codes/backend/dq_diagnostics/register.py — Current register excludes this diagnostic","Planned, deferred workbook diagnostic. Are recent vintages too immature for the outcome horizon? Planned metric: cumulative outcome by months-on-book (seasoning curve). Workbook default/decision rule: recent vintages below mature seasoning -> flag immaturity. Input binding examples in the workbook are illustrative and are not used as real findings. No registered executor, report schema, current launch or diagnostic-specific automated RCA is claimed. Proposed user is analytics/model team with SME review. Remediation would follow evidence review and manual source or methodology correction."
+74,07 / Appendix • Inventory,Reconcile the inventory without double-counting capabilities,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Nine-row register
+[S10] source-codes/backend/dq_diagnostics/dispatch.py — Six adapters
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Twenty primary diagnostic rows
+[S23] source-codes/docs/architecture/phase1b-missingness.md — Supporting analysis
+[S25] source-codes/backend/dq_tests/registry.py — Retired registry","Inventory arithmetic: 20 numbered workbook diagnostics = 9 registered + 11 deferred. The nine registered entries = 5 enabled implementations + 1 paused implementation + 3 planned workflows. One supporting Missingness Mechanism is additional. Nine broader framework reference groups and fourteen retired legacy names are retained as cross-references, not added to the executable count. All current six implementations have five-page sections. Each planned/deferred numbered entry has a dedicated concise page."
+75,07 / Appendix • Example,"Use repository fixtures as examples, with their provenance visible","[D06T] source-codes/backend/tests/unit/test_lab/diagnostics/t2_d06_row_completeness/test_row_completeness_engine.py — test_invalid_rows_full_calendar_gap_duplicates_and_observed_span_reconcile
+[D06E] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/engine.py — Observed-span grid and issue accounting","Example copied from repository test input and assertions. It was not generated from client data and the test was not executed for the presentation. Inputs: A Jan twice, A Mar, B Jan, B Mar, blank facility/bad period. Expected span Jan–Mar for A and B gives 6 required pairs, 4 received unique required pairs, 2 missing pairs, 1 surplus exact duplicate and 1 invalid row. Primary issue instances=4; the missing calendar period is not double-counted. This is evidence of the test contract, not product effectiveness at scale."
+76,07 / Appendix • Sources,Assess the supplied sources at their proper authority level,"[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — All five worksheets and metadata
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — All five worksheets and metadata
+[S03] documentation/Presentations/DataQuality_Framework.pptx — All five slides, shapes, themes and notes XML
+[S04] documentation/Presentations/AI and Accelerators_Risk.pptx — All four slides; detailed slide 4 XML","Workbook inspection used openpyxl: populated ranges, tables, charts, images, merged cells and properties. Presentations were inspected as OOXML packages, including slides, shape positions, fonts, fills, themes, layouts and available notes. Both supplied presentation packages could not be opened by the local headless PowerPoint API; their XML content and design were fully accessible. Their originals were not modified. The generated deck is validated separately in native PowerPoint."
+77,07 / Appendix • Capability boundary,Show implemented controls beside the remaining enterprise work,"[S06] source-codes/USER_GUIDE.md — Current journey
+[S07] source-codes/TSD.md — Configuration and security boundary
+[S15] source-codes/backend/domains/rca/service.py — approve_conclusion and legacy rerun
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx — Optional handoffs
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — register
+[S20] source-codes/docs/rca/00-contracts.md — §13 revised boundaries","This is an evidence-based readiness summary, not a generic compliance checklist. Known gaps originate in repository documentation/code. Current single-tenant deployment and bearer-session controls do not establish enterprise SSO, full per-resource RBAC, fresh-snapshot fix validation or continuous monitoring. No changes were made to address these product gaps during presentation creation."
+78,07 / Appendix • Assumptions,Resolve source conflicts in favor of the current implementation,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — register, threshold_defaults and stale scoring narrative
+[S28] source-codes/docs/0.4.0/00-framework.md — §3 stale executable invariants
+[D06E] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/engine.py — Observed-span methodology
+[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md — Production workflow
+[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md — Three-source empirical classification
+[D14E] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/engine.py — Inclusive threshold comparison
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx — Current RCA UI",Main discrepancies: current register five enabled vs stale two/four-executable narratives; D04 paused; D06 doc header pending vs code enabled and observed-span method; D08 v0.2 production vs older broad valid/missing tagging language; D11 expected-versus-observed three-input classifier vs median/inversion wording; PSI >= thresholds vs workbook > prose; current RCA conclusion closure vs historical mandatory fix/rerun sequence; six themes vs older five-theme description. Presented code state includes uncommitted changes and must be checked against the deployed release.
+79,07 / Appendix • Terms,"Use consistent language for data, analysis and workflow","[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — Framework terminology
+[S06] source-codes/USER_GUIDE.md — Workflow terms
+[D02R] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/README.md — Metrics
+[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md — Tags and artifacts
+[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md — Relationship evidence
+[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md — PSI
+[S20] source-codes/docs/rca/00-contracts.md — Roles and knowledge governance","Definitions are operational descriptions drawn from the cited sources. PD/LGD/EAD expand only the optional credit-risk context names used by D08/D11; this deck does not provide regulatory guidance. AAR naming variation is acknowledged: Analysis Artifact Repository in backend references, Analytics Artifact Repository in UI."
+80,07 / Appendix • Source matrix,Trace major claims to their source families (1/3),"[S05] source-codes/README.md
+[S06] source-codes/USER_GUIDE.md
+[S07] source-codes/TSD.md
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S10] source-codes/backend/dq_diagnostics/dispatch.py
+[S11] source-codes/backend/dq_diagnostics/readiness.py
+[S12] source-codes/backend/routers/diagnostics.py
+[S13] source-codes/backend/domains/test_lab/shared/run_state.py
+[S14] source-codes/backend/ai/v2/issues.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx
+[S17] source-codes/backend/routers/admin.py
+[S18] source-codes/backend/routers/auth.py
+[S19] source-codes/backend/kb.py
+[S20] source-codes/docs/rca/00-contracts.md
+[S21] source-codes/backend/domains/aar/README.md
+[S22] source-codes/docs/architecture/data-sourcing-profiling-aar.md
+[S23] source-codes/docs/architecture/phase1b-missingness.md
+[S24] source-codes/backend/supporting_analyses/missingness.py","Paths are repository-relative. Diagnostic key suffixes: R=README; M=manifest; X=runner; E=engine/adapter; C=classification; T=tests; K=knowledge. For concise navigation, visible paths are shortened; full exact locations are recorded below and in the adjacent validation report. Source matrix groups related claims, while per-slide notes supply the detailed mapping."
+81,07 / Appendix • Source matrix,Trace major claims to their source families (2/3),"[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S03] documentation/Presentations/DataQuality_Framework.pptx
+[S04] documentation/Presentations/AI and Accelerators_Risk.pptx
+[S05] source-codes/README.md
+[S06] source-codes/USER_GUIDE.md
+[S07] source-codes/TSD.md
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json
+[S09] source-codes/backend/dq_diagnostics/register.py
+[S10] source-codes/backend/dq_diagnostics/dispatch.py
+[S11] source-codes/backend/dq_diagnostics/readiness.py
+[S12] source-codes/backend/routers/diagnostics.py
+[S13] source-codes/backend/domains/test_lab/shared/run_state.py
+[S14] source-codes/backend/ai/v2/issues.py
+[S15] source-codes/backend/domains/rca/service.py
+[S16] source-codes/ui/src/features/rca/components/RcaCase.jsx
+[S17] source-codes/backend/routers/admin.py
+[S18] source-codes/backend/routers/auth.py
+[S19] source-codes/backend/kb.py
+[S20] source-codes/docs/rca/00-contracts.md
+[S21] source-codes/backend/domains/aar/README.md
+[S22] source-codes/docs/architecture/data-sourcing-profiling-aar.md
+[S23] source-codes/docs/architecture/phase1b-missingness.md
+[S24] source-codes/backend/supporting_analyses/missingness.py
+[S25] source-codes/backend/dq_tests/registry.py
+[S26] source-codes/docs/0.4.0/01-disposition.md
+[S27] documentation/product/aegis-labs-product-spec.md
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S29] source-codes/backend/domains/aar/types.py
+[S30] source-codes/backend/domains/aar/repository.py
+[S31] source-codes/backend/routers/sourcing.py
+[S32] source-codes/ui/src/pages/testlab/ScorePanel.jsx
+[S33] source-codes/backend/tests/test_missingness_capability.py
+[S34] source-codes/backend/dq_tests/README.md
+[D02R] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/README.md
+[D02M] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/manifest.py
+[D02X] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/runner.py
+[D04R] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/README.md
+[D04M] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/manifest.py
+[D04X] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/runner.py
+[D04E] source-codes/backend/domains/test_lab/diagnostics/t2_d04_cross_field_business_rule/engine.py
+[D06R] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/README.md
+[D06M] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/manifest.py
+[D06X] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/runner.py
+[D06E] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/engine.py
+[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md
+[D08M] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/manifest.py
+[D08X] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/runner.py
+[D08E] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/engine.py
+[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md
+[D11M] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/manifest.py
+[D11X] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/runner.py
+[D11E] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/engine.py
+[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md
+[D14M] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/manifest.py
+[D14X] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/runner.py
+[D14E] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/engine.py
+[D02E] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/adapter.py
+[D02C] source-codes/backend/domains/test_lab/diagnostics/t1_d02_feature_target_separation/orchestration.py
+[D06T] source-codes/backend/tests/unit/test_lab/diagnostics/t2_d06_row_completeness/test_row_completeness_engine.py
+[D08T] source-codes/backend/tests/unit/test_lab/diagnostics/t2_d08_value_semantics/test_value_semantics_engine.py
+[D08K] source-codes/backend/knowledge_base/value_semantics_kb_v0_2.yaml
+[D11K] source-codes/backend/knowledge_base/pd_directionality_kb_v0_3.yaml
+[D11T] source-codes/backend/tests/unit/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/test_directionality_engine.py
+[D14T] source-codes/backend/tests/integration/test_lab/diagnostics/t4_d14_population_stability/test_population_stability.py","Paths are repository-relative. Diagnostic key suffixes: R=README; M=manifest; X=runner; E=engine/adapter; C=classification; T=tests; K=knowledge. For concise navigation, visible paths are shortened; full exact locations are recorded below and in the adjacent validation report. Source matrix groups related claims, while per-slide notes supply the detailed mapping."
+82,07 / Appendix • Source matrix,Trace major claims to their source families (3/3),"[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx
+[S03] documentation/Presentations/DataQuality_Framework.pptx
+[S04] documentation/Presentations/AI and Accelerators_Risk.pptx
+[S25] source-codes/backend/dq_tests/registry.py
+[S26] source-codes/docs/0.4.0/01-disposition.md
+[S27] documentation/product/aegis-labs-product-spec.md
+[S28] source-codes/docs/0.4.0/00-framework.md
+[S29] source-codes/backend/domains/aar/types.py
+[S30] source-codes/backend/domains/aar/repository.py
+[S31] source-codes/backend/routers/sourcing.py
+[S32] source-codes/ui/src/pages/testlab/ScorePanel.jsx
+[S33] source-codes/backend/tests/test_missingness_capability.py
+[S34] source-codes/backend/dq_tests/README.md","Paths are repository-relative. Diagnostic key suffixes: R=README; M=manifest; X=runner; E=engine/adapter; C=classification; T=tests; K=knowledge. For concise navigation, visible paths are shortened; full exact locations are recorded below and in the adjacent validation report. Source matrix groups related claims, while per-slide notes supply the detailed mapping."
+83,07 / Appendix • Slide index,Navigate from a presentation section to its evidence,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic IDs
+[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — Framework source
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Deferred diagnostic inventory","Each slide in the indexed range contains its own source notes. This index is generated from the finished content structure, so the diagnostic sequence and source-family mapping remain aligned."
+84,07 / Appendix • Slide index,Navigate from a presentation section to its evidence,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic IDs
+[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — Framework source
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Deferred diagnostic inventory","Each slide in the indexed range contains its own source notes. This index is generated from the finished content structure, so the diagnostic sequence and source-family mapping remain aligned."
+85,07 / Appendix • Slide index,Navigate from a presentation section to its evidence,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic IDs
+[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — Framework source
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Deferred diagnostic inventory","Each slide in the indexed range contains its own source notes. This index is generated from the finished content structure, so the diagnostic sequence and source-family mapping remain aligned."
+86,07 / Appendix • Slide index,Navigate from a presentation section to its evidence,"[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Diagnostic IDs
+[S01] documentation/Presentations/DQ Framework_Analytics and Modeling.xlsx — Framework source
+[S02] documentation/Presentations/MVP_Test Plan_DA.xlsx — Deferred diagnostic inventory","Each slide in the indexed range contains its own source notes. This index is generated from the finished content structure, so the diagnostic sequence and source-family mapping remain aligned."
+87,07 / Appendix • Validation,Review the few decisions that affect enterprise adoption,"[S07] source-codes/TSD.md — Security boundary
+[S08] source-codes/backend/knowledge_base/dq_framework_data.json — Current availability
+[S15] source-codes/backend/domains/rca/service.py — Approved conclusion boundary
+[D06E] source-codes/backend/domains/test_lab/diagnostics/t2_d06_row_completeness/engine.py — Observed-span limitation
+[D08R] source-codes/backend/domains/test_lab/diagnostics/t2_d08_value_semantics/README.md — Known boundaries
+[D11R] source-codes/backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency/README.md — MVP defaults
+[D14R] source-codes/backend/domains/test_lab/diagnostics/t4_d14_population_stability/README.md — Manual population comparisons",Open owner-validation items: deployed register versus working tree; D04 re-enablement; D08 promotion acceptance; current RCA closure wording and fresh-data remediation acceptance policy; enterprise identity/route permissions; calibration of analytical floors and domain knowledge; full downstream D08 consumption; desired monitoring scope. Deck validation details and any render limitations are recorded in the adjacent markdown report.

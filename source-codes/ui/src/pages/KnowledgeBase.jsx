@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Archive, BookOpen, Check, FileText, Send, UploadCloud,
 } from "lucide-react";
@@ -28,7 +29,7 @@ function LifecycleBadge({ state }) {
   return <Badge variant={variant}>{state}</Badge>;
 }
 
-function DocumentsPanel() {
+function DocumentsPanel({ initialDocumentId, initialVersionId, onSelectionChange }) {
   const [documents, setDocuments] = useState([]);
   const [selected, setSelected] = useState(null); // full document + versions
   const [preview, setPreview] = useState(null);
@@ -37,26 +38,43 @@ function DocumentsPanel() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [uploading, setUploading] = useState(false);
+  const restoreAttempted = useRef(false);
 
   // Braced body: useEffect(reload, []) below requires the effect callback to
   // return undefined or a cleanup function, never a Promise.
   const reload = () => { getKbDocumentsV3().then(setDocuments).catch(() => setDocuments([])); };
   useEffect(reload, []);
 
-  const openDocument = async (documentId) => {
-    setError(""); setMessage(""); setPlayback(null);
-    const doc = await getKbDocumentV3(documentId);
-    setSelected(doc);
-    const latest = doc.versions[0];
-    if (!latest) { setPreview(null); return; }
-    const p = await getKbVersionPreviewV3(latest.version_id);
+  const openVersion = async (versionId) => {
+    const p = await getKbVersionPreviewV3(versionId);
     setPreview(p);
+    setPlayback(null);
+    onSelectionChange?.({ versionId });
     // Already submitted in an earlier session — the playback summary is
     // still meaningful to show (KB-03 is a record, not a one-time toast).
     if (p.review_state !== "draft") {
-      getKbPlaybackV3(latest.version_id).then(setPlayback).catch(() => setPlayback(null));
+      getKbPlaybackV3(versionId).then(setPlayback).catch(() => setPlayback(null));
     }
   };
+
+  const openDocument = async (documentId, preferredVersionId = null) => {
+    setError(""); setMessage(""); setPlayback(null);
+    const doc = await getKbDocumentV3(documentId);
+    setSelected(doc);
+    onSelectionChange?.({ documentId });
+    const latest = doc.versions.find((version) => version.version_id === preferredVersionId) || doc.versions[0];
+    if (!latest) { setPreview(null); return; }
+    await openVersion(latest.version_id);
+  };
+
+  useEffect(() => {
+    if (!initialDocumentId || restoreAttempted.current) return;
+    restoreAttempted.current = true;
+    openDocument(initialDocumentId, initialVersionId).catch((reason) => {
+      setError(`The previously viewed document is unavailable: ${reason.message}`);
+      onSelectionChange?.({ documentId: null, versionId: null });
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const upload = async (file) => {
     if (!file) return;
@@ -73,9 +91,9 @@ function DocumentsPanel() {
   };
 
   const submitForReview = async () => {
-    if (!selected?.versions?.length) return;
+    if (!selected?.versions?.length || !preview?.version_id) return;
     try {
-      const versionId = selected.versions[0].version_id;
+      const versionId = preview.version_id;
       const p = await submitKbVersionV3(versionId, category);
       setPreview(p);
       setMessage("Submitted for review — draft rules extracted below.");
@@ -119,6 +137,29 @@ function DocumentsPanel() {
         {selected && preview && (
           <div className="space-y-4">
             <KbDocumentTagPicker documentId={selected.document_id} />
+
+            <div className="flex flex-wrap items-end justify-between gap-3 rounded-md border border-slate-200 bg-white p-4">
+              <label className="min-w-64 text-xs font-medium text-slate-600">
+                Document version
+                <select
+                  value={preview.version_id}
+                  onChange={(event) => openVersion(event.target.value).catch((e) => setError(e.message))}
+                  className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-800"
+                >
+                  {selected.versions.map((version) => {
+                    const report = version.conversion_report_json || {};
+                    const label = report.kb_version || report.terminology_version || version.version_seq;
+                    return <option key={version.version_id} value={version.version_id}>
+                      v{label} — {version.original_filename}
+                    </option>;
+                  })}
+                </select>
+              </label>
+              <div className="flex items-center gap-2 text-xs text-slate-500">
+                {preview.conversion_report_json?.lifecycle && <Badge variant="outline">{preview.conversion_report_json.lifecycle}</Badge>}
+                <LifecycleBadge state={preview.review_state} />
+              </div>
+            </div>
 
             <div className="rounded-md border border-slate-200 bg-white p-4">
               <div className="mb-2 flex items-center justify-between">
@@ -276,7 +317,22 @@ function RulesPanel() {
 }
 
 export default function KnowledgeBase() {
-  const [tab, setTab] = useState("documents");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const validTabs = new Set(["documents", "rules", "diagnostic-packages", "learning-candidates"]);
+  const requestedTab = searchParams.get("tab");
+  const [tab, setTab] = useState(() => validTabs.has(requestedTab) ? requestedTab : "documents");
+
+  const updateLocation = (updates) => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      Object.entries(updates).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key));
+      return next;
+    }, { replace: true });
+  };
+  const selectTab = (nextTab) => {
+    setTab(nextTab);
+    updateLocation({ tab: nextTab });
+  };
 
   return (
     <main className="min-h-screen bg-slate-50 p-8">
@@ -288,20 +344,25 @@ export default function KnowledgeBase() {
         </p>
       </div>
       <div className="mb-4 flex gap-2">
-        <Button variant={tab === "documents" ? "default" : "outline"} size="sm" onClick={() => setTab("documents")}>
+        <Button variant={tab === "documents" ? "default" : "outline"} size="sm" onClick={() => selectTab("documents")}>
           <UploadCloud className="h-4 w-4" /> Documents
         </Button>
-        <Button variant={tab === "rules" ? "default" : "outline"} size="sm" onClick={() => setTab("rules")}>
+        <Button variant={tab === "rules" ? "default" : "outline"} size="sm" onClick={() => selectTab("rules")}>
           <FileText className="h-4 w-4" /> Rules
         </Button>
-        <Button variant={tab === "diagnostic-packages" ? "default" : "outline"} size="sm" onClick={() => setTab("diagnostic-packages")}>
+        <Button variant={tab === "diagnostic-packages" ? "default" : "outline"} size="sm" onClick={() => selectTab("diagnostic-packages")}>
           <BookOpen className="h-4 w-4" /> Diagnostic packages
         </Button>
-        <Button variant={tab === "learning-candidates" ? "default" : "outline"} size="sm" onClick={() => setTab("learning-candidates")}>
+        <Button variant={tab === "learning-candidates" ? "default" : "outline"} size="sm" onClick={() => selectTab("learning-candidates")}>
           <BookOpen className="h-4 w-4" /> Learning candidates
         </Button>
       </div>
-      {tab === "documents" ? <DocumentsPanel />
+      {tab === "documents" ? <DocumentsPanel initialDocumentId={searchParams.get("document")}
+        initialVersionId={searchParams.get("version")}
+        onSelectionChange={({ documentId, versionId }) => updateLocation({
+          ...(documentId !== undefined ? { document: documentId } : {}),
+          ...(versionId !== undefined ? { version: versionId } : {}),
+        })} />
         : tab === "rules" ? <RulesPanel />
           : tab === "diagnostic-packages" ? <DiagnosticPackagesPanel /> : <LearningCandidatesPanel />}
     </main>

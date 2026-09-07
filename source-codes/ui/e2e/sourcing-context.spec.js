@@ -52,20 +52,43 @@ test("View Existing is a URL-stable searchable picker and context survives refre
   await expect(page.getByTestId("workflow-context-bar")).toHaveCount(0);
 });
 
-test("handover selects the asset while left-nav entry selects nothing with exactly one ready asset", async ({ page }) => {
+test("sidebar navigation returns to the last Test Lab workspace", async ({ page }) => {
   await signIn(page);
   await mockAssetData(page);
   await page.getByRole("link", { name: "Data Sourcing" }).click();
   await page.getByRole("button", { name: "View Existing" }).last().click();
   await page.getByRole("button", { name: ready.display_name }).click();
-  await page.getByRole("link", { name: "Go to Test Lab" }).click();
-  await expect(page).toHaveURL(/\/test-lab\?asset=asset_ready$/);
+  await expect(page).toHaveURL(/\/test-lab\?item=snapshot_ready$/);
   await expect(page.locator("select").first()).toHaveValue("snapshot_ready");
   await page.getByRole("link", { name: "Data Sourcing" }).click();
   await page.getByRole("link", { name: "Test Lab", exact: true }).click();
-  await expect(page).toHaveURL(/\/test-lab$/);
-  await expect(page.locator("select").first()).toHaveValue("");
-  await expect(page.getByText(/does not auto-select/)).toBeVisible();
+  await expect(page).toHaveURL(/\/test-lab\?item=snapshot_ready$/);
+  await expect(page.locator("select").first()).toHaveValue("snapshot_ready");
+});
+
+test("sidebar navigation remembers a Knowledge Base tab", async ({ page }) => {
+  await signIn(page);
+  await mockAssetData(page);
+  await page.getByRole("link", { name: "Knowledge Base" }).click();
+  await page.getByRole("button", { name: "Rules" }).click();
+  await expect(page).toHaveURL(/\/knowledge-base\?tab=rules$/);
+  await page.getByRole("link", { name: "Data Sourcing" }).click();
+  await page.getByRole("link", { name: "Knowledge Base" }).click();
+  await expect(page).toHaveURL(/\/knowledge-base\?tab=rules$/);
+  await expect(page.getByRole("button", { name: "Rules" })).toHaveClass(/bg-dq-purple/);
+});
+
+test("sidebar navigation remembers the active Data Sourcing screen", async ({ page }) => {
+  await signIn(page);
+  await mockAssetData(page);
+  await page.getByRole("link", { name: "Data Sourcing" }).click();
+  await page.getByRole("button", { name: "Create New Dataset" }).click();
+  await expect(page).toHaveURL(/\/data-sourcing\?new=dataset$/);
+  await expect(page.getByText("STEP 1 — Sourcing data")).toBeVisible();
+  await page.getByRole("link", { name: "Knowledge Base" }).click();
+  await page.getByRole("link", { name: "Data Sourcing" }).click();
+  await expect(page).toHaveURL(/\/data-sourcing\?new=dataset$/);
+  await expect(page.getByText("STEP 1 — Sourcing data")).toBeVisible();
 });
 
 test("the same picker includes requires-reupload only in upload STEP 1(b)", async ({ page }) => {

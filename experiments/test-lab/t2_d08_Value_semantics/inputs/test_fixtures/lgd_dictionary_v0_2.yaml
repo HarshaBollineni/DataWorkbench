@@ -1,0 +1,151 @@
+columns:
+- column_name: ROW_ID
+  business_name: Row identifier
+  description: Synthetic technical row reference; not a business entity key
+  data_type: string
+  role: ignore
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: CASE_ID
+  business_name: Case identifier
+  description: Unique recovery case identifier
+  data_type: string
+  role: identifier
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: AS_OF_DT
+  business_name: As-of date
+  description: Reporting date for the workout observation
+  data_type: date
+  role: period
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: REC_SEG
+  business_name: Recovery segment
+  description: Recovery portfolio segment
+  data_type: string
+  role: group
+  allowed_values: CRE|SME|MORTGAGE
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: WO_STATUS
+  business_name: Workout status
+  description: Whether workout is open or finished
+  data_type: string
+  role: target
+  allowed_values: OPEN|FINISHED
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: LGD_REAL
+  business_name: Realised LGD
+  description: Final realised loss given default
+  data_type: float
+  role: target
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: NET_REC_AMT
+  business_name: Net recovery
+  description: Final net recovery amount
+  data_type: float
+  role: target
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: TTR_MTH
+  business_name: Time to resolution
+  description: Months from default to resolution
+  data_type: integer
+  role: target
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: CURE_IND
+  business_name: Cure indicator
+  description: Return to performing without realisation
+  data_type: integer
+  role: target
+  allowed_values: 0|1
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: DISP_PROCEEDS
+  business_name: Disposal proceeds
+  description: Proceeds from collateral sale
+  data_type: float
+  role: target
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: SALE_DT
+  business_name: Sale date
+  description: Date collateral was realised
+  data_type: date
+  role: date
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: DPD_AT_DFLT
+  business_name: DPD at default
+  description: Days past due at default
+  data_type: integer
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: DOD_BASIS
+  business_name: Default basis
+  description: Arrears or judgement definition-of-default basis
+  data_type: string
+  role: feature
+  allowed_values: ARREARS|JUDGEMENT
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: DOD_REG_VER
+  business_name: Default regime
+  description: Policy version for judgement-based default
+  data_type: string
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''
+- column_name: ORIG_BAL
+  business_name: Original balance
+  description: Balance fixed at origination
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_LGD
+  notes: ''

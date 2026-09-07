@@ -603,6 +603,18 @@ def latest_draft(item_id: str) -> dict[str, Any] | None:
                     status=DRAFT, order_by="created_at DESC, run_id DESC")
     if not rows:
         return None
+    if len(rows) > 1:
+        now = db.now_ist()
+        for duplicate in rows[1:]:
+            payload = dict(duplicate.get("manifest_json") or {})
+            payload.update({
+                "status": "discarded", "discarded_at": now,
+                "discarded_by": "system", "discard_reason": "superseded_duplicate_draft",
+                "updated_at": now,
+            })
+            db.update("diag_runs", {"run_id": duplicate["run_id"]}, {
+                "manifest_json": payload, "status": "discarded", "finished_at": now,
+            })
     run = rows[0]
     manifest = run.get("manifest_json") or {}
     return {

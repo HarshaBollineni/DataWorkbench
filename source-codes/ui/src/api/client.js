@@ -63,6 +63,7 @@ export const getNextAssetIdV2 = (kind) =>
   req(`/v2/assets/next-id?kind=${encodeURIComponent(kind)}`);
 export const getAssetsV2 = (kind) =>
   req(`/v2/assets${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`);
+export const getSourcingDraftsV2 = () => req("/v2/assets/sourcing-drafts");
 export const createUploadTargetV2 = (body) =>
   req("/v2/assets/upload-target", { method: "POST", body: JSON.stringify(body) });
 export const getSupersedePreviewV2 = (assetId) =>
@@ -73,6 +74,8 @@ export const processSnapshotV2 = (snapshotId, body) =>
   req(`/v2/items/${encodeURIComponent(snapshotId)}/process`, {
     method: "POST", body: JSON.stringify(body),
   });
+export const discardSourcingDraftV2 = (snapshotId) =>
+  req(`/v2/items/${encodeURIComponent(snapshotId)}/draft`, { method: "DELETE" });
 export const restoreAssetVersionV2 = (assetId, versionNo) =>
   req(`/v2/assets/${encodeURIComponent(assetId)}/versions/${encodeURIComponent(versionNo)}/restore`, { method: "POST" });
 export const selectAssetV2 = (assetId) =>
@@ -219,6 +222,10 @@ export const getFrameworkMatrixV2 = () => req("/v2/framework/matrix");
 // Coverage board: 9 register cards + readiness chips + the area-level GAP strip.
 export const getDiagnosticsBoardV2 = (itemId) =>
   req(`/v2/items/${encodeURIComponent(itemId)}/diagnostics/board`);
+export const getDiagnosticsBoardSummaryV2 = (itemId) =>
+  req(`/v2/items/${encodeURIComponent(itemId)}/diagnostics/board/summary`);
+export const getDiagnosticsBoardCardV2 = (itemId, diagnosticId) =>
+  req(`/v2/items/${encodeURIComponent(itemId)}/diagnostics/board/cards/${encodeURIComponent(diagnosticId)}`);
 // Build the scope-gate manifest for one diagnostic (draft; not yet frozen).
 export const buildDiagnosticManifestV2 = (itemId, body) =>
   req(`/v2/items/${encodeURIComponent(itemId)}/diagnostics/manifest`, {
@@ -283,6 +290,10 @@ export const promoteDiagnosticResultV2 = (resultId, reason, overwriteExisting = 
   });
 export const getResumableDiagnosticDraftV2 = (itemId, diagnosticId) =>
   req(`/v2/items/${encodeURIComponent(itemId)}/diagnostics/${encodeURIComponent(diagnosticId)}/draft`);
+export const discardDiagnosticDraftV2 = (runId) =>
+  req(`/v2/diagnostics/manifests/${encodeURIComponent(runId)}/draft`, {
+    method: "DELETE",
+  });
 export const createPsiBinDraftV2 = (runId, feature, generateNew = false) =>
   req(`/v2/diagnostics/manifests/${encodeURIComponent(runId)}/psi-bins/${encodeURIComponent(feature)}/draft${generateNew ? "?generate_new=true" : ""}`, { method: "POST" });
 export const psiBinDraftStreamUrlV2 = (runId) =>
@@ -302,6 +313,8 @@ export const previewPsiBinsV2 = (runId, feature, body) =>
   });
 export const getPsiSplitOptionsV2 = (runId, feature, limit = 200) =>
   req(`/v2/diagnostics/manifests/${encodeURIComponent(runId)}/psi-split-options/${encodeURIComponent(feature)}?limit=${encodeURIComponent(limit)}`);
+export const getDirectionalitySplitOptionsV2 = (runId, feature, limit = 200) =>
+  req(`/v2/diagnostics/manifests/${encodeURIComponent(runId)}/directionality-split-options/${encodeURIComponent(feature)}?limit=${encodeURIComponent(limit)}`);
 export const freezePsiBinDraftV2 = (runId, feature, draftArtifactId) =>
   req(`/v2/diagnostics/manifests/${encodeURIComponent(runId)}/psi-bins/${encodeURIComponent(feature)}/freeze`, {
     method: "POST", body: JSON.stringify({ draft_artifact_id: draftArtifactId }),
@@ -358,6 +371,16 @@ export const getAnalysisArtifactsV2 = (filters = {}) => {
 };
 export const getAnalysisArtifactV2 = (artifactId) => req(`/v2/analysis-artifacts/${encodeURIComponent(artifactId)}`);
 export const getAnalysisArtifactPayloadV2 = (artifactId) => req(`/v2/analysis-artifacts/${encodeURIComponent(artifactId)}/payload`);
+export async function downloadAnalysisArtifactV2(artifactId) {
+  const res = await fetch(`${API_BASE}/v2/analysis-artifacts/${encodeURIComponent(artifactId)}/download`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) {
+    const detail = await readErrorDetail(res);
+    throw new Error(`${res.status}: ${detail}`);
+  }
+  return res.blob();
+}
 export const getAnalysisArtifactLineageV2 = (artifactId) => req(`/v2/analysis-artifacts/${encodeURIComponent(artifactId)}/lineage`);
 export const getAnalysisArtifactTypesV2 = () => req("/v2/analysis-artifacts/types");
 export const getAnalysisArtifactRunsV2 = (snapshotId, capabilityId) =>
@@ -366,8 +389,8 @@ export const diagnosticReportUrlV2 = (runId, fmt = "pdf") =>
   `${API_BASE}/v2/diagnostics/runs/${encodeURIComponent(runId)}/report?fmt=${fmt}`;
 // PDF report as a downloadable Blob (fetched, not navigated, so a 4xx surfaces
 // a message instead of a browser error page).
-export async function downloadDiagnosticReportV2(runId) {
-  const res = await fetch(diagnosticReportUrlV2(runId, "pdf"), {
+export async function downloadDiagnosticReportV2(runId, fmt = "pdf") {
+  const res = await fetch(diagnosticReportUrlV2(runId, fmt), {
     headers: authHeaders(),
   });
   if (!res.ok) {

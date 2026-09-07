@@ -187,6 +187,8 @@ class AnalysisArtifactMetadata:
     source_artifacts: tuple[dict[str, Any], ...] = ()
     integrity_status: str = "unknown"
     integrity_checked_at: str | None = None
+    payload_media_type: str = "application/json"
+    payload_filename: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)

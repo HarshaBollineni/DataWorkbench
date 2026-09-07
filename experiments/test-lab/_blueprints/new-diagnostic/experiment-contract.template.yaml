@@ -1,0 +1,61 @@
+schema_version: 1
+contract_version: "{{VERSION}}"
+diagnostic_key: "{{DIAGNOSTIC_KEY}}"
+status: "experimental"
+
+methodology:
+  question: "{{ONE_PLAIN_LANGUAGE_QUESTION}}"
+  hypothesis: "{{TESTABLE_HYPOTHESIS}}"
+  unit_of_assessment: "{{cell|row|field|group|table|snapshot_pair}}"
+  deterministic_engine_version: "{{ENGINE_VERSION}}"
+  rule_package_version: "{{RULE_OR_KB_VERSION}}"
+  terminology_version: "{{VERSION_OR_NOT_APPLICABLE}}"
+
+execution_contract:
+  required_inputs: []
+  optional_inputs: []
+  rules:
+    - rule_id: "{{STABLE_RULE_ID}}"
+      target_role: "{{ROLE}}"
+      prerequisites: []
+      grain: "{{GRAIN}}"
+      outcome: "{{OUTCOME}}"
+      reason_code: "{{REASON_CODE}}"
+  missing_prerequisite_outcome: "{{UNSCOPED_OR_EQUIVALENT}}"
+  precedence: []
+  retry_semantics: "{{SAFE_RETRY_BEHAVIOR}}"
+
+result_contract:
+  result_kind: "{{RESULT_KIND}}"
+  executive_outcome: "{{FIELD_AND_MEANING}}"
+  coverage_denominators: []
+  metric_fields: []
+  artifact_references: []
+  limitation_fields: []
+
+report_contract:
+  formats: []
+  required_sections: []
+  reproducible_from_frozen_inputs: true
+  partial_coverage_disclosure_required: true
+
+finding_contract:
+  candidate_outcomes: []
+  configuration_review_outcomes: []
+  auto_create_issue: false
+  human_disposition_required: true
+  rca_trace_fields: []
+
+ai_contract:
+  enabled: false
+  proposal_only: true
+  input_projection: []
+  output_schema_version: ""
+  prompt_version: ""
+  human_application_required: true
+  may_execute_rules_or_assign_results: false
+
+compatibility:
+  upstream_artifact_schema_versions: {}
+  output_schema_version: 1
+  breaking_change_policy: "bump contract and affected resource versions"

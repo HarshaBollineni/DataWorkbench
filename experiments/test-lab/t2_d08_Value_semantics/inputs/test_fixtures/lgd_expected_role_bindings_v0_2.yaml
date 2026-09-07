@@ -1,0 +1,31 @@
+bindings:
+  CASE_ID:
+  - entity_id
+  AS_OF_DT:
+  - period
+  REC_SEG:
+  - segment
+  WO_STATUS:
+  - outcome_state
+  LGD_REAL:
+  - outcome_values
+  NET_REC_AMT:
+  - outcome_values
+  TTR_MTH:
+  - outcome_values
+  CURE_IND:
+  - return_to_performing
+  DISP_PROCEEDS:
+  - realisation_fields
+  - outcome_values
+  SALE_DT:
+  - realisation_fields
+  - outcome_values
+  DPD_AT_DFLT:
+  - arrears_measure
+  DOD_BASIS:
+  - non_arrears_trigger
+  DOD_REG_VER:
+  - regime_stamp
+  ORIG_BAL:
+  - static_attributes

@@ -1,0 +1,191 @@
+columns:
+- column_name: ROW_ID
+  business_name: Row identifier
+  description: Synthetic technical row reference; not a business entity key
+  data_type: string
+  role: ignore
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: FACILITY_ID
+  business_name: Facility identifier
+  description: Unique facility identifier
+  data_type: string
+  role: identifier
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: RPT_QTR
+  business_name: Reporting quarter
+  description: Ordered quarterly reporting period
+  data_type: string
+  role: period
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: PORTF_SEG
+  business_name: Portfolio segment
+  description: Portfolio monitoring segment
+  data_type: string
+  role: group
+  allowed_values: NORTH|SOUTH|EAST|WEST
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: CURR_DPD
+  business_name: Current DPD
+  description: Current contractual days past due
+  data_type: integer
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: INT_RT
+  business_name: Interest rate
+  description: Current contractual interest rate
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: RATE_TYPE
+  business_name: Rate type
+  description: Fixed or floating benchmark-linked pricing basis
+  data_type: string
+  role: feature
+  allowed_values: FIXED|FLOATING
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: BRR
+  business_name: Borrower risk rating
+  description: Internal borrower risk rating currently in force
+  data_type: string
+  role: score
+  allowed_values: G1-G8
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: NOI
+  business_name: Net operating income
+  description: Periodic net operating income
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: '-999'
+  sentinel_meaning: source unavailable
+  source_system: TEST_PD
+  notes: ''
+- column_name: OCC_PCT
+  business_name: Occupancy percentage
+  description: Current property occupancy percentage
+  data_type: float
+  role: feature
+  allowed_values: 0-1
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: DFLT_12M
+  business_name: 12 month default
+  description: Forward default outcome over the next twelve months
+  data_type: integer
+  role: target
+  allowed_values: 0|1
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: DEFAULT_FLAG
+  business_name: Current default flag
+  description: Contemporaneous default flag fixed by performing-only panel scope
+  data_type: integer
+  role: target
+  allowed_values: '0'
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: SPREAD_BPS
+  business_name: Benchmark spread
+  description: Contractual margin over reference benchmark
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: MAT_DT
+  business_name: Maturity date
+  description: Contractual facility maturity date
+  data_type: date
+  role: date
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: MAT_BALLOON_IND
+  business_name: Maturity balloon flag
+  description: Balloon outcome flag applicable at maturity
+  data_type: integer
+  role: target
+  allowed_values: 0|1
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: PMT_TYPE
+  business_name: Payment type
+  description: Amortising or interest-only repayment basis
+  data_type: string
+  role: feature
+  allowed_values: AMORTISING|INTEREST_ONLY
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: PRIN_PAYDOWN_AMT
+  business_name: Principal paydown
+  description: Principal amount repaid during the period
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: ORIG_LTV
+  business_name: Original LTV
+  description: Loan-to-value fixed at origination
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''
+- column_name: BAL_AMT
+  business_name: Balance amount
+  description: Current outstanding principal drawn against the facility
+  data_type: float
+  role: feature
+  allowed_values: ''
+  sentinel_value: ''
+  sentinel_meaning: ''
+  source_system: TEST_PD
+  notes: ''

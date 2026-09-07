@@ -89,24 +89,10 @@ export function OverrideIssueAction({ resultId, onPromote }) {
   return <div className="flex flex-wrap items-center gap-2"><input autoFocus value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Override rationale (required)" className="h-8 min-w-64 flex-1 rounded-md border border-slate-200 bg-white px-2 text-xs" /><Button size="sm" variant="success" disabled={busy || !reason.trim()} onClick={promote}>{busy ? "Raising issue..." : "Confirm issue"}</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => { setEditing(false); setReason(""); }}>Cancel</Button>{error && <p className="w-full text-xs text-red-600">{error}</p>}</div>;
 }
 
-export function IssueLifecycleActions({ finding, onCloseIssue }) {
+export function IssueLifecycleActions({ finding }) {
   const issue = finding?.existing_issue;
-  const [closing, setClosing] = useState(false);
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
   if (!issue) return null;
-  const close = async () => {
-    setBusy(true); setError("");
-    try { await onCloseIssue(issue.issue_row_id, reason.trim()); }
-    catch (requestError) { setError(requestError.message); }
-    finally { setBusy(false); }
-  };
   return <div className="mt-3 flex flex-wrap items-center gap-2">
     <Button asChild size="sm" variant="outline"><Link to={`/issues/${encodeURIComponent(issue.issue_row_id)}`}><ExternalLink /> View issue</Link></Button>
-    {issue.status !== "Closed" && onCloseIssue && (!closing
-      ? <Button size="sm" variant="outline" onClick={() => setClosing(true)}>Close issue…</Button>
-      : <><input autoFocus value={reason} placeholder="Closure rationale (required)" onChange={(event) => setReason(event.target.value)} className="h-8 min-w-64 rounded-md border border-slate-200 bg-white px-2 text-xs" /><Button size="sm" variant="success" disabled={busy || !reason.trim()} onClick={close}>{busy ? "Closing…" : "Confirm close"}</Button><Button size="sm" variant="ghost" disabled={busy} onClick={() => setClosing(false)}>Cancel</Button></>)}
-    {error && <p className="w-full text-xs text-red-600">{error}</p>}
   </div>;
 }

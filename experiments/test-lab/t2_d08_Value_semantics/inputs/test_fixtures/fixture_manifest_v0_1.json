@@ -1,0 +1,7 @@
+{
+  "benchmark_cases": 75,
+  "pd_rows": 1200,
+  "lgd_rows": 400,
+  "ead_rows": 1200,
+  "seed_policy": "deterministic formulas; no random state"
+}

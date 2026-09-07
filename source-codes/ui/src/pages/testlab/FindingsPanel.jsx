@@ -6,6 +6,7 @@ import CrossFieldResults from "@/features/test-lab/diagnostics/t2-d04-cross-fiel
 import RowCompletenessResults from "@/features/test-lab/diagnostics/t2-d06-row-completeness/RowCompletenessResults";
 import PopulationStabilityResults from "@/features/test-lab/diagnostics/t4-d14-population-stability/PopulationStabilityResults";
 import DirectionalityResults from "@/features/test-lab/diagnostics/t2-d11-directional-monotonic-consistency/DirectionalityResults";
+import ValueSemanticsResults from "@/features/test-lab/diagnostics/t2-d08-value-semantics/ValueSemanticsResults";
 import { FindingStatusCards } from "./FindingWorkflow";
 
 export default function FindingsPanel({
@@ -37,7 +38,12 @@ export default function FindingsPanel({
   if (results.some((result) => result.metrics_json?.result_kind === "directionality_run_summary")) {
     return <DirectionalityResults results={results} onDisposition={onDisposition} onPromote={onPromote}
       onCloseIssue={onCloseIssue} workflowFilter={workflowFilter}
-      onWorkflowFilter={selectWorkflowFilter} runId={runId}
+      diagnosticFilter={diagnosticFilter} onDiagnosticFilter={selectDiagnosticFilter} runId={runId}
+      workflowSummary={<FindingStatusCards results={results} filter={workflowFilter} onFilter={selectWorkflowFilter} compact />} />;
+  }
+  if (results.some((result) => result.metrics_json?.result_kind === "value_semantics_run_summary")) {
+    return <ValueSemanticsResults results={results} onDisposition={onDisposition}
+      onCloseIssue={onCloseIssue} workflowFilter={workflowFilter} runId={runId}
       workflowSummary={<FindingStatusCards results={results} filter={workflowFilter} onFilter={selectWorkflowFilter} compact />} />;
   }
   if (results.some((result) => result.metrics_json?.structured_result?.diagnostic_id === 6)) {

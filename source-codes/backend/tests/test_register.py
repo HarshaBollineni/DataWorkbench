@@ -41,12 +41,12 @@ class RegisterSeedTests(unittest.TestCase):
         self.assertEqual(len(rows), 9)
         self.assertEqual({r["diagnostic_id"] for r in rows}, EXPECTED_IDS)
 
-    def test_exactly_four_executable_rows(self):
+    def test_exactly_five_executable_rows(self):
         rows = register.list_register()
         executable = [r for r in rows if r["workflow_status"] == "executable"]
-        self.assertEqual([r["diagnostic_id"] for r in executable], [2, 6, 11, 14])
+        self.assertEqual([r["diagnostic_id"] for r in executable], [2, 6, 8, 11, 14])
         pending = [r for r in rows if r["workflow_status"] != "executable"]
-        self.assertEqual(len(pending), 5)
+        self.assertEqual(len(pending), 4)
         self.assertTrue(all(r["workflow_status"] == "workflow_pending" for r in pending))
 
     def test_taxonomy_counts_six_themes_eleven_areas_six_test_areas(self):
@@ -79,10 +79,10 @@ class RegisterSeedTests(unittest.TestCase):
 
     def test_fwk18_enabled_by_only_set_for_executable_rows(self):
         rows = {r["diagnostic_id"]: r for r in register.list_register()}
-        for diag_id in (2, 6, 11, 14):
+        for diag_id in (2, 6, 8, 11, 14):
             self.assertIsNotNone(rows[diag_id]["enabled_by"])
             self.assertNotEqual(rows[diag_id]["enabled_by"], "")
-        for diag_id in EXPECTED_IDS - {2, 6, 11, 14}:
+        for diag_id in EXPECTED_IDS - {2, 6, 8, 11, 14}:
             self.assertIsNone(rows[diag_id]["enabled_by"], f"diagnostic {diag_id} must have enabled_by = null")
 
     def test_fwk07_every_register_row_has_a_valid_decision_type(self):
@@ -101,7 +101,7 @@ class RequireExecutableTests(unittest.TestCase):
         register.seed_register()
 
     def test_require_executable_on_pending_diagnostic_raises_workflow_pending(self):
-        for diagnostic_id in (4, 8):
+        for diagnostic_id in (4, 12):
             with self.subTest(diagnostic_id=diagnostic_id):
                 with self.assertRaises(register.WorkflowPendingError) as ctx:
                     register.require_executable(diagnostic_id)
@@ -111,6 +111,7 @@ class RequireExecutableTests(unittest.TestCase):
     def test_require_executable_on_the_executable_diagnostic_succeeds(self):
         self.assertEqual(register.require_executable(2)["diagnostic_id"], 2)
         self.assertEqual(register.require_executable(6)["diagnostic_id"], 6)
+        self.assertEqual(register.require_executable(8)["diagnostic_id"], 8)
         self.assertEqual(register.require_executable(14)["diagnostic_id"], 14)
         self.assertEqual(register.require_executable(11)["diagnostic_id"], 11)
 
@@ -172,8 +173,8 @@ class CoverageMapTests(unittest.TestCase):
 
     def test_coverage_map_splits_register_executable_vs_pending(self):
         cov = register.coverage_map()
-        self.assertEqual(cov["executable"], [2, 6, 11, 14])
-        self.assertEqual(set(cov["workflow_pending"]), EXPECTED_IDS - {2, 6, 11, 14})
+        self.assertEqual(cov["executable"], [2, 6, 8, 11, 14])
+        self.assertEqual(set(cov["workflow_pending"]), EXPECTED_IDS - {2, 6, 8, 11, 14})
 
     def test_fwk16_scoring_weights_re_derived_with_coverage_honesty(self):
         """3-T10 / FWK-16: weights are re-derived for the 9-row register
@@ -204,14 +205,14 @@ class CoverageMapTests(unittest.TestCase):
              "test_name": "MCAR", "status": "pass"},
         ])
         before_fraction = sum(u["passed_fraction"] for u in before_units) / len(before_units)
-        # The new scheme covering the same slice-1 reality: 1 of 9 register
-        # rows executable after D-22, none yet run — the honest statement is "no score
+        # The new scheme covering the same slice-1 reality: 5 of 9 register
+        # rows executable after the D08 gate, none yet run — the honest statement is "no score
         # displayed", not a number derived from an incomplete run.
         cov = register.coverage_map()
         after_covered_count = len(cov["executable"])
         after_total = len(cov["executable"]) + len(cov["workflow_pending"])
         self.assertAlmostEqual(before_fraction, 0.75, places=2)
-        self.assertEqual((after_covered_count, after_total), (4, 9))
+        self.assertEqual((after_covered_count, after_total), (5, 9))
         self.assertNotEqual(
             before_fraction, after_covered_count / after_total,
             "the delta must be explained, not coincidentally identical",

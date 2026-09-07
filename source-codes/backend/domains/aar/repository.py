@@ -69,6 +69,8 @@ class AnalysisArtifactRepository:
             summary_adapter_version=row.get("summary_adapter_version"), owner_id=row.get("owner_id"),
             source_artifacts=tuple(refs), integrity_status=row.get("integrity_status") or "unknown",
             integrity_checked_at=row.get("integrity_checked_at"),
+            payload_media_type=row.get("payload_media_type") or "application/json",
+            payload_filename=row.get("payload_filename"),
         )
 
     @staticmethod
@@ -205,7 +207,9 @@ class AnalysisArtifactRepository:
             "comparison_snapshot_id": comparison_snapshot_id, "population_fingerprint": population_fingerprint,
             "target_fingerprint": target_fingerprint, "feature": feature, "methodology_fingerprint": methodology_fingerprint,
             "scope": scope, "workflow_id": workflow_id, "owner_id": owner_id, "payload_path": relative_path,
-            "payload_hash": payload_hash, "status": "active", "source_artifact_ids_json": [ref["artifact_id"] for ref in refs],
+            "payload_hash": payload_hash, "payload_media_type": "application/json",
+            "payload_filename": relative_path, "status": "active",
+            "source_artifact_ids_json": [ref["artifact_id"] for ref in refs],
             "source_artifacts_json": list(refs), "identity_fingerprint": None if version else fingerprint,
             "identity_json": identity, "schema_version": artifact_schema_version, "summary_json": summary,
             "summary_adapter_version": adapter_version, "integrity_status": "verified", "integrity_checked_at": db.now_ist(),
@@ -224,6 +228,116 @@ class AnalysisArtifactRepository:
         except Exception:
             final_path.unlink(missing_ok=True); raise
         return ArtifactSaveOutcome(self._metadata(row), "versioned" if version else "created")
+
+    @serialized_artifact_write
+    def save_blob(self, payload_bytes: bytes, summary_payload: Any, *,
+                  payload_media_type: str, payload_extension: str,
+                  payload_filename: str | None = None, version: bool = False,
+                  artifact_schema_version: int = 1, artifact_type: str,
+                  asset_id: str, snapshot_id: str, population_fingerprint: str,
+                  methodology_fingerprint: str, scope: str,
+                  comparison_snapshot_id: str | None = None,
+                  target_fingerprint: str | None = None, feature: str | None = None,
+                  workflow_id: str | None = None, owner_id: str | None = None,
+                  table: str | None = None, features: tuple[str, ...] = (),
+                  source_artifact_ids: tuple[str, ...] = (),
+                  source_artifacts: tuple[dict[str, Any], ...] | None = None,
+                  identity_inputs: dict[str, Any] | None = None,
+                  run_id: str | None = None,
+                  created_by: str | None = None) -> ArtifactSaveOutcome:
+        """Persist an immutable non-JSON payload with a governed JSON summary.
+
+        Binary evidence uses the same identity, collision, lineage, and hash
+        contract as JSON evidence.  Only a conservative extension token is
+        accepted; callers never control a storage path.
+        """
+        if not isinstance(payload_bytes, bytes) or not payload_bytes:
+            raise ValueError("binary artifact payload must be non-empty bytes")
+        extension = str(payload_extension or "").lower().lstrip(".")
+        if extension not in {"parquet"}:
+            raise ValueError("unsupported binary artifact extension")
+        if payload_media_type != "application/vnd.apache.parquet":
+            raise ValueError("unsupported binary artifact media type")
+        refs = self._source_refs(source_artifact_ids, source_artifacts)
+        identity = self._identity(
+            artifact_type=artifact_type, asset_id=asset_id, snapshot_id=snapshot_id,
+            comparison_snapshot_id=comparison_snapshot_id,
+            population_fingerprint=population_fingerprint,
+            target_fingerprint=target_fingerprint, feature=feature,
+            methodology_fingerprint=methodology_fingerprint, scope=scope,
+            workflow_id=workflow_id, owner_id=owner_id, table=table,
+            features=features, refs=refs, identity_inputs=identity_inputs,
+        )
+        self._validate_identity(identity)
+        source_types = self._validate_sources(refs)
+        validate_identity_contract(
+            artifact_type, scope=scope, target_fingerprint=target_fingerprint,
+            comparison_snapshot_id=comparison_snapshot_id, source_types=source_types,
+        )
+        validate_payload(artifact_type, summary_payload, artifact_schema_version)
+        payload_hash = hashlib.sha256(payload_bytes).hexdigest()
+        fingerprint = stable_fingerprint(identity)
+        if not version:
+            existing = db.query_one(
+                "analysis_artifacts", identity_fingerprint=fingerprint, status="active",
+            )
+            if existing:
+                metadata = self._metadata(existing)
+                if metadata.payload_hash != payload_hash:
+                    raise ArtifactConflictError(
+                        "identical artifact identity has a different payload hash"
+                    )
+                return ArtifactSaveOutcome(metadata, "reused")
+        summary, adapter_version = summarize(artifact_type, summary_payload)
+        artifact_id = f"art_{uuid.uuid4().hex[:12]}"
+        relative_path = f"{artifact_id}.{extension}"
+        final_path = self.root / relative_path
+        temp_path = self.root / f".{artifact_id}.{uuid.uuid4().hex}.tmp"
+        temp_path.write_bytes(payload_bytes)
+        temp_path.replace(final_path)
+        safe_filename = Path(payload_filename or relative_path).name
+        row = {
+            "artifact_id": artifact_id, "artifact_type": artifact_type,
+            "asset_id": asset_id, "snapshot_id": snapshot_id,
+            "comparison_snapshot_id": comparison_snapshot_id,
+            "population_fingerprint": population_fingerprint,
+            "target_fingerprint": target_fingerprint, "feature": feature,
+            "methodology_fingerprint": methodology_fingerprint, "scope": scope,
+            "workflow_id": workflow_id, "owner_id": owner_id,
+            "payload_path": relative_path, "payload_hash": payload_hash,
+            "payload_media_type": payload_media_type,
+            "payload_filename": safe_filename, "status": "active",
+            "source_artifact_ids_json": [ref["artifact_id"] for ref in refs],
+            "source_artifacts_json": list(refs),
+            "identity_fingerprint": None if version else fingerprint,
+            "identity_json": identity, "schema_version": artifact_schema_version,
+            "summary_json": summary, "summary_adapter_version": adapter_version,
+            "integrity_status": "verified", "integrity_checked_at": db.now_ist(),
+            "run_id": run_id, "created_by": created_by,
+            "created_at": db.now_ist(), "superseded_at": None,
+            "superseded_by_artifact_id": None,
+        }
+        try:
+            db.insert_analysis_artifact(row, list(refs))
+        except sqlite3.IntegrityError:
+            final_path.unlink(missing_ok=True)
+            existing = db.query_one(
+                "analysis_artifacts", identity_fingerprint=fingerprint, status="active",
+            )
+            if existing and not version:
+                metadata = self._metadata(existing)
+                if metadata.payload_hash == payload_hash:
+                    return ArtifactSaveOutcome(metadata, "reused")
+                raise ArtifactConflictError(
+                    "concurrent identical identity write has a different payload hash"
+                )
+            raise
+        except Exception:
+            final_path.unlink(missing_ok=True)
+            raise
+        return ArtifactSaveOutcome(
+            self._metadata(row), "versioned" if version else "created"
+        )
 
     def save_or_reuse(self, payload: Any, **kwargs: Any) -> tuple[AnalysisArtifactMetadata, bool]:
         try:
@@ -254,7 +368,10 @@ class AnalysisArtifactRepository:
 
     def _payload_path(self, metadata: AnalysisArtifactMetadata) -> Path:
         root = self.root.resolve(); path = (root / metadata.payload_path).resolve()
-        if path.parent != root or path.suffix != ".json":
+        expected_suffix = (".json" if metadata.payload_media_type == "application/json"
+                           else ".parquet" if metadata.payload_media_type == "application/vnd.apache.parquet"
+                           else None)
+        if path.parent != root or expected_suffix is None or path.suffix != expected_suffix:
             raise ArtifactIntegrityError(f"Artifact {metadata.artifact_id!r} has an invalid payload path")
         return path
 
@@ -270,9 +387,27 @@ class AnalysisArtifactRepository:
             self._mark_integrity(artifact_id, "invalid_path"); raise
         if hashlib.sha256(payload_bytes).hexdigest() != metadata.payload_hash:
             self._mark_integrity(artifact_id, "tampered"); raise ArtifactIntegrityError(f"Artifact {artifact_id!r} payload hash does not match metadata")
+        if metadata.payload_media_type != "application/json":
+            self._mark_integrity(artifact_id, "verified")
+            return self.get_metadata(artifact_id), payload_bytes
         try: payload = json.loads(payload_bytes)
         except json.JSONDecodeError as exc:
             self._mark_integrity(artifact_id, "invalid_json"); raise ArtifactIntegrityError(f"Artifact {artifact_id!r} payload is invalid JSON") from exc
+        self._mark_integrity(artifact_id, "verified")
+        return self.get_metadata(artifact_id), payload
+
+    def read_bytes(self, artifact_id: str) -> tuple[AnalysisArtifactMetadata, bytes]:
+        metadata = self.get_metadata(artifact_id)
+        try:
+            payload = self._payload_path(metadata).read_bytes()
+        except FileNotFoundError as exc:
+            self._mark_integrity(artifact_id, "missing")
+            raise ArtifactIntegrityError(f"Artifact {artifact_id!r} payload is missing") from exc
+        if hashlib.sha256(payload).hexdigest() != metadata.payload_hash:
+            self._mark_integrity(artifact_id, "tampered")
+            raise ArtifactIntegrityError(
+                f"Artifact {artifact_id!r} payload hash does not match metadata"
+            )
         self._mark_integrity(artifact_id, "verified")
         return self.get_metadata(artifact_id), payload
 

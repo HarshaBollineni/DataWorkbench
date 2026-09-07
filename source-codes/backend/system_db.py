@@ -94,7 +94,7 @@ _JSON_COLS: dict[str, set[str]] = {
     "framework_taxonomy": {"coverage_diagnostics_json"},
     "threshold_settings": {"value_json"},
     # Phase 6 — Test Lab run records (testlab-redesign-0.4.0.md §5.2, CFR-12/14).
-    "diag_runs": {"manifest_json", "engine_versions_json"},
+    "diag_runs": {"manifest_json", "engine_versions_json", "status_detail_json"},
     "diag_run_decisions": {"payload_json"},
     "diag_inference_events": {"payload_json"},
     "diag_results": {"metrics_json", "thresholds_used_json", "scope_counts_json"},
@@ -569,7 +569,9 @@ CREATE TABLE IF NOT EXISTS diag_runs (
     run_id TEXT PRIMARY KEY, item_id TEXT, diagnostic_id INTEGER,
     manifest_json TEXT, status TEXT, engine_versions_json TEXT,
     created_at TEXT, started_at TEXT, finished_at TEXT,
-    artifact_origin TEXT NOT NULL DEFAULT 'unclassified'
+    artifact_origin TEXT NOT NULL DEFAULT 'unclassified',
+    heartbeat_at TEXT, lease_expires_at TEXT, execution_owner TEXT,
+    status_detail_json TEXT
 );
 -- CFR-12 — every scope-gate edit (and every documented default an
 -- unattended run fell back on) is an append-only decision record (PLT-05).
@@ -735,6 +737,8 @@ CREATE TABLE IF NOT EXISTS analysis_artifacts (
     workflow_id TEXT,
     payload_path TEXT NOT NULL,
     payload_hash TEXT NOT NULL,
+    payload_media_type TEXT NOT NULL DEFAULT 'application/json',
+    payload_filename TEXT,
     status TEXT NOT NULL,
     source_artifact_ids_json TEXT,
     run_id TEXT,
@@ -1038,6 +1042,8 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "source_artifacts_json": "TEXT",
         "integrity_status": "TEXT NOT NULL DEFAULT 'unknown'",
         "integrity_checked_at": "TEXT",
+        "payload_media_type": "TEXT NOT NULL DEFAULT 'application/json'",
+        "payload_filename": "TEXT",
     },
     # Phase 3 — PLT-02 delivery/family seam (docs/0.4.0/00-framework.md).
     # Existing rows are backfilled (dataset_family_id=item_id, delivery_seq=1)
@@ -1074,7 +1080,13 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
                 "dictionary_mapping_confirmed": "INTEGER DEFAULT 0", "superseded_at": "TEXT",
                 "superseded_by_version_no": "INTEGER", "product": "TEXT",
                 "source_parsing_options_json": "TEXT", "file_context_json": "TEXT",
-                "artifact_origin": "TEXT NOT NULL DEFAULT 'unclassified'"},
+                "artifact_origin": "TEXT NOT NULL DEFAULT 'unclassified'",
+                # An explicit sourcing-draft axis avoids inferring workflow
+                # ownership from ingest_status or a display label. ``active``
+                # is the single current draft; ``recovery`` preserves older
+                # pre-migration drafts until a user explicitly discards them.
+                "sourcing_draft_state": "TEXT", "sourcing_owner": "TEXT",
+                "sourcing_tenant_id": "TEXT"},
     # Data_Sourcing_11 — "product" joins target_variable/use_case as a
     # denormalised asset-level decision (same mirror pattern, P-05).
     "dq_assets": {"product": "TEXT",
@@ -1082,7 +1094,14 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
     # Run provenance is independent of asset provenance: development can run
     # a diagnostic against a user-owned asset without making that asset
     # disposable. Cleanup follows this run root and its descendants only.
-    "diag_runs": {"artifact_origin": "TEXT NOT NULL DEFAULT 'unclassified'"},
+    "diag_runs": {
+        "artifact_origin": "TEXT NOT NULL DEFAULT 'unclassified'",
+        # A persisted execution lease lets Test Lab distinguish an active
+        # worker from a run stranded by a process crash.  status_detail_json
+        # carries only bounded, user-safe reason codes/messages.
+        "heartbeat_at": "TEXT", "lease_expires_at": "TEXT",
+        "execution_owner": "TEXT", "status_detail_json": "TEXT",
+    },
     # Phase 5 — KB-07 rule-record fields (table-aware parse) + KB-08/09 binding
     # status (docs/0.4.0/04-kb-contract.md). Every column is nullable/defaulted
     # so pre-existing rows (prose-parsed under 0.3.0) read back as
@@ -1099,6 +1118,56 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "proposal_metadata_json": "TEXT",
     },
 }
+
+
+def _backfill_sourcing_drafts(conn: sqlite3.Connection) -> None:
+    """Adopt legacy staged uploads without deleting or hiding their work.
+
+    A legacy installation may already contain several ``__staged_`` rows.
+    The newest row for an inferred owner becomes the active continuation;
+    older rows become explicit recovery items. All of them remain visible and
+    block new creation until the user resolves them.
+    """
+    users = conn.execute(
+        "SELECT username, COALESCE(tenant_id, 'bootstrap') AS tenant_id "
+        "FROM users ORDER BY username"
+    ).fetchall()
+    sole_user = users[0] if len(users) == 1 else None
+    staged = conn.execute(
+        "SELECT i.item_id, i.uploaded_by, i.updated_at, i.created_at, "
+        "i.sourcing_draft_state, a.created_by "
+        "FROM dq_items AS i LEFT JOIN dq_assets AS a "
+        "ON a.asset_id=i.dataset_family_id "
+        "WHERE i.snapshot_label LIKE '__staged_%' "
+        "AND NOT EXISTS (SELECT 1 FROM dq_asset_events AS e "
+        "WHERE e.snapshot_id=i.item_id AND e.event_type='snapshot_processed')"
+    ).fetchall()
+    user_tenants = {row["username"]: row["tenant_id"] for row in users}
+    groups: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in staged:
+        if row["sourcing_draft_state"]:
+            continue
+        owner = row["uploaded_by"] or row["created_by"]
+        if not owner and sole_user is not None:
+            owner = sole_user["username"]
+        owner = owner or "__legacy__"
+        tenant_id = user_tenants.get(owner, "bootstrap")
+        groups.setdefault((tenant_id, owner), []).append(row)
+    for (tenant_id, owner), rows in groups.items():
+        already_active = conn.execute(
+            "SELECT 1 FROM dq_items WHERE sourcing_tenant_id=? "
+            "AND sourcing_owner=? AND sourcing_draft_state='active' LIMIT 1",
+            (tenant_id, owner),
+        ).fetchone()
+        rows.sort(key=lambda row: (row["updated_at"] or row["created_at"] or "", row["item_id"]),
+                  reverse=True)
+        for index, row in enumerate(rows):
+            state = "recovery" if already_active or index else "active"
+            conn.execute(
+                "UPDATE dq_items SET sourcing_draft_state=?, sourcing_owner=?, "
+                "sourcing_tenant_id=? WHERE item_id=?",
+                (state, owner, tenant_id, row["item_id"]),
+            )
 
 
 def _backfill_plan_instance_keys(conn: sqlite3.Connection) -> None:
@@ -1428,6 +1497,7 @@ def init_schema() -> None:
         _backfill_delivery_defaults(conn)
         _backfill_ingest_defaults(conn)
         _backfill_asset_model(conn)
+        _backfill_sourcing_drafts(conn)
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_test_plan_instance_key "
             "ON test_plan(instance_key) WHERE instance_key IS NOT NULL"
@@ -1671,6 +1741,11 @@ def init_schema() -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_dq_items_label_in_family "
             "ON dq_items(dataset_family_id, snapshot_label) WHERE snapshot_label IS NOT NULL"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_dq_items_active_sourcing_draft "
+            "ON dq_items(sourcing_tenant_id, sourcing_owner) "
+            "WHERE sourcing_draft_state='active'"
         )
         conn.commit()
 

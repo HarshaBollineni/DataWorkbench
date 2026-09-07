@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import {
   aiSuggestionDraft, bulkEligibleScope, candidateSelectionDraft, expectedBucket,
   governedExactDecisionState, groupExpected, groupObserved, hasUsableAiSuggestion, isBulkEligibleRole,
-  needsAiSuggestion, quickAcceptanceDraft, readableConceptName, REFERENCE_DIRECTION_LABELS,
+  initialRelationshipReviewOpen, needsAiSuggestion, quickAcceptanceDraft, readableConceptName, REFERENCE_DIRECTION_LABELS,
   reviewSuggestionSummary, scopeCandidates, suggestedScope,
   requestAiSuggestionsSequentially, visibleCandidates,
 } from "../../../../../src/features/test-lab/diagnostics/t2-d11-directional-monotonic-consistency/directionalityWorkflow.js";
@@ -234,6 +234,23 @@ test("bulk AI targets only pending variables without a usable AI result", () => 
   }), true);
   assert.equal(needsAiSuggestion({ ...base, review_required: false,
     expected_direction: "INCREASING" }), false);
+  assert.equal(needsAiSuggestion({ ...base, reused_decision: {
+    source_run_id: "drun_prior", reused_from_completed_run: true,
+  } }), false);
+});
+
+test("a rerun starts at the full setup workflow even when prior scope is retained", () => {
+  const rerun = {
+    scope_features: ["CURRENT_LTV"],
+    ready_to_run: true,
+    prior_run_reuse: { source_run_id: "drun_prior", reused_feature_count: 1 },
+    features: [{ feature: "CURRENT_LTV", scope_selected: true }],
+  };
+  assert.equal(initialRelationshipReviewOpen(rerun), false);
+  assert.equal(initialRelationshipReviewOpen({
+    scope_features: ["CURRENT_LTV"],
+    features: [{ feature: "CURRENT_LTV", scope_selected: true }],
+  }), true);
 });
 
 test("bulk AI requests are sequential and count unavailable provider results", async () => {
