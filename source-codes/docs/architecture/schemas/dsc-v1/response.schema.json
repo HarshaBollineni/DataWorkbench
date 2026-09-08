@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dataworkbench.invalid/schemas/dsc/v1/response.schema.json",
+  "title": "Dataset Structure Context resolution response v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["negotiated", "overall_result", "context_ref", "selector_results"],
+  "properties": {"negotiated": {"type": "object", "additionalProperties": false, "required": ["protocol_version", "context_version"], "properties": {"protocol_version": {"const": "1"}, "context_version": {"const": "1"}}}, "overall_result": {"enum": ["fulfilled", "unfulfilled"]}, "context_ref": {"$ref": "#/$defs/context_ref"}, "selector_results": {"type": "array", "items": {"$ref": "#/$defs/selector_result"}, "minItems": 1}},
+  "$defs": {
+    "context_ref": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "payload_hash"], "properties": {"artifact_id": {"$ref": "common.schema.json#/$defs/artifact_id"}, "payload_hash": {"$ref": "common.schema.json#/$defs/sha256"}}},
+    "pin": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "assertion_id", "payload_hash", "resolution", "reuse_disposition"], "properties": {"artifact_id": {"$ref": "common.schema.json#/$defs/artifact_id"}, "assertion_id": {"$ref": "common.schema.json#/$defs/assertion_id"}, "payload_hash": {"$ref": "common.schema.json#/$defs/sha256"}, "resolution": {"$ref": "common.schema.json#/$defs/resolution_status"}, "reuse_disposition": {"$ref": "common.schema.json#/$defs/reuse_disposition"}}},
+    "selector_result": {"$ref": "context.schema.json#/$defs/selector_result"}
+  }
+}

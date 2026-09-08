@@ -12,7 +12,7 @@ from typing import Any, Iterable
 
 import system_db as db
 from workload_governor import serialized_artifact_write
-from .types import summarize, validate_identity_contract, validate_payload
+from .types import get_artifact_type, summarize, validate_identity_contract, validate_payload
 from analysis_runtime.contracts import AnalysisArtifactMetadata, stable_fingerprint
 
 
@@ -183,6 +183,12 @@ class AnalysisArtifactRepository:
             source_types=source_types,
         )
         validate_payload(artifact_type, payload, artifact_schema_version)
+        descriptor = get_artifact_type(artifact_type)
+        if descriptor is not None and descriptor.write_validator is not None:
+            # The hook is generic descriptor plumbing, rather than a
+            # repository special case: producer-owned contracts can inspect
+            # trusted, integrity-checked sources before persistence.
+            descriptor.write_validator(payload, identity, refs, self.get)
         payload_bytes = self._payload_bytes(payload); payload_hash = hashlib.sha256(payload_bytes).hexdigest(); fingerprint = stable_fingerprint(identity)
         if not version:
             existing = db.query_one("analysis_artifacts", identity_fingerprint=fingerprint, status="active")
@@ -258,6 +264,9 @@ class AnalysisArtifactRepository:
             raise ValueError("unsupported binary artifact extension")
         if payload_media_type != "application/vnd.apache.parquet":
             raise ValueError("unsupported binary artifact media type")
+        descriptor = get_artifact_type(artifact_type)
+        if descriptor is not None and not descriptor.allows_blob_payload:
+            raise ValueError(f"artifact type {artifact_type!r} does not allow blob payloads")
         refs = self._source_refs(source_artifact_ids, source_artifacts)
         identity = self._identity(
             artifact_type=artifact_type, asset_id=asset_id, snapshot_id=snapshot_id,
@@ -275,6 +284,8 @@ class AnalysisArtifactRepository:
             comparison_snapshot_id=comparison_snapshot_id, source_types=source_types,
         )
         validate_payload(artifact_type, summary_payload, artifact_schema_version)
+        if descriptor is not None and descriptor.write_validator is not None:
+            descriptor.write_validator(summary_payload, identity, refs, self.get)
         payload_hash = hashlib.sha256(payload_bytes).hexdigest()
         fingerprint = stable_fingerprint(identity)
         if not version:

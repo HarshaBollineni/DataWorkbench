@@ -1551,6 +1551,9 @@ def profile_item(item_id: str, progress_callback: Callable[[dict[str, Any]], Non
                 "classification": classification, "data_type": str(frame[col].dtype),
                 "description": (entry or {}).get("definition", ""), "discrepancies": discrepancies, "notes": "",
                 "role": inventory_role, "dictionary_role": dictionary_role,
+                # Automatic profiling may infer a role, but only an explicit
+                # Review submission may mark that role as reviewed metadata.
+                "role_reviewed": 0,
                 "business_context": (entry or {}).get("business_context") or "",
                 "missing_value_codes_json": missing_codes,
                 "missing_codes_confirmed": int(codes_confirmed),
@@ -1911,6 +1914,9 @@ def put_inventory(item_id: str, rows: list[dict], table: str | None = None) -> l
             [item_id, table_name, col],
         )
         current = found[0] if found else {}
+        submitted_role = row.get("role")
+        role_was_explicitly_reviewed = (isinstance(submitted_role, str)
+                                        and bool(submitted_role.strip()))
         current["missing_value_codes_json"] = _special_value_list(
             current.get("missing_value_codes_json"))
         accepted_mapping = None
@@ -1964,6 +1970,8 @@ def put_inventory(item_id: str, rows: list[dict], table: str | None = None) -> l
             "discrepancies": row.get("discrepancies", current.get("discrepancies", [])),
             "notes": row.get("notes", current.get("notes", "")),
             "role": row.get("role", current.get("role", "Feature")),
+            "role_reviewed": (1 if role_was_explicitly_reviewed
+                              else int(current.get("role_reviewed") or 0)),
             "dictionary_role": row.get("dictionary_role", current.get("dictionary_role", "")),
             "business_context": row.get("business_context", current.get("business_context", "")),
             "missing_value_codes_json": special_values,

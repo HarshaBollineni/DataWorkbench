@@ -9,9 +9,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from analysis_runtime.dataset_structure_context import (
+    safe_assertion_summary,
+    safe_context_summary,
+    validate_assertion_payload,
+    validate_context_payload,
+)
+
 
 PayloadValidator = Callable[[Any], None]
 SummaryAdapter = Callable[[Any], dict[str, Any]]
+WriteValidator = Callable[[Any, dict[str, Any], tuple[dict[str, str], ...], Callable[[str], tuple[Any, Any]]], None]
 
 
 def _mapping(value: Any) -> None:
@@ -316,6 +324,11 @@ class ArtifactTypeDescriptor:
     sensitivity: str = "internal"
     status: str = "active"
     summary_adapter_version: str = "1"
+    # JSON-only descriptors can forbid the binary save path generically.
+    allows_blob_payload: bool = True
+    # Optional producer seam for artifacts whose persistence identity must be
+    # derived from validated payload and trusted source artifacts.
+    write_validator: WriteValidator | None = None
 
     def catalog(self) -> dict[str, Any]:
         return {
@@ -327,6 +340,7 @@ class ArtifactTypeDescriptor:
             "comparison_snapshot_applicability": self.comparison_snapshot_applicability,
             "metric_definitions": list(self.metric_definitions), "sensitivity": self.sensitivity,
             "status": self.status, "summary_adapter_version": self.summary_adapter_version,
+            "allows_blob_payload": self.allows_blob_payload,
         }
 
 
@@ -438,6 +452,50 @@ def _register_defaults() -> None:
             } else "optional"),
             allowed_source_types=source_contracts.get(artifact_type, ()),
         ))
+    # DSC is active only through its descriptor write validators.  The generic
+    # repository invokes these hooks too, so direct writes cannot evade the
+    # dedicated trusted-workspace adapter's persistence contract.
+    from .dataset_structure_context import (
+        validate_assertion_write,
+        validate_context_write,
+    )
+    register_artifact_type(ArtifactTypeDescriptor(
+        artifact_type="dataset_structure_assertion",
+        display_name="Dataset structure assertion",
+        description="Immutable, evidence-backed assertion about one dataset snapshot.",
+        owner="Dataset Structure Context",
+        supported_scopes=("universal", "diagnostic_local"),
+        granularity="assertion",
+        target_applicability="not_applicable",
+        comparison_snapshot_applicability="not_applicable",
+        payload_validator=validate_assertion_payload,
+        summary_adapter=safe_assertion_summary,
+        allowed_source_types=(
+            "snapshot_profile", "table_profile", "schema_profile", "column_profile",
+            "governance_reference", "dataset_structure_assertion",
+        ),
+        sensitivity="confidential",
+        status="active",
+        allows_blob_payload=False,
+        write_validator=validate_assertion_write,
+    ))
+    register_artifact_type(ArtifactTypeDescriptor(
+        artifact_type="dataset_structure_context",
+        display_name="Dataset structure context",
+        description="Consumer-local, consistently resolved context pinned to DSC assertions.",
+        owner="Dataset Structure Context",
+        supported_scopes=("diagnostic_local",),
+        granularity="snapshot_context",
+        target_applicability="not_applicable",
+        comparison_snapshot_applicability="not_applicable",
+        payload_validator=validate_context_payload,
+        summary_adapter=safe_context_summary,
+        allowed_source_types=("dataset_structure_assertion",),
+        sensitivity="confidential",
+        status="active",
+        allows_blob_payload=False,
+        write_validator=validate_context_write,
+    ))
     register_artifact_type(ArtifactTypeDescriptor(
         artifact_type="feature_target_separation_report",
         display_name="Single-feature target separation analysis report",

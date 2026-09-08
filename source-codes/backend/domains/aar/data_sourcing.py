@@ -10,7 +10,7 @@ from .repository import AnalysisArtifactRepository
 from analysis_runtime.contracts import stable_fingerprint
 
 
-_METHODOLOGY = {"name": "data_sourcing_profile", "version": "3",
+_METHODOLOGY = {"name": "data_sourcing_profile", "version": "4",
                 "source": "confirmed_exact_regular_value_profile"}
 _IDENTIFIER_TOP_K_LIMIT = 5
 _DEFAULT_TOP_K_LIMIT = 50
@@ -48,6 +48,9 @@ def _canonical_special_labels(values: list[Any]) -> set[str]:
 def _safe_profile(row: dict[str, Any]) -> dict[str, Any]:
     """Keep the complete exact core profile and bounded categorical evidence."""
     profile = dict(row.get("profile_json") or {})
+    if profile.get("calculation_method") != "exact":
+        raise ValueError(
+            f"{row.get('table_name')}.{row.get('column_name')} has no exact retained profile")
     is_identifier = str(row.get("role") or "").strip().lower() == "identifier"
     top_k_limit = _IDENTIFIER_TOP_K_LIMIT if is_identifier else _DEFAULT_TOP_K_LIMIT
     special_values = _special_value_list(
@@ -74,7 +77,10 @@ def _safe_profile(row: dict[str, Any]) -> dict[str, Any]:
     result = {
         "data_type": row.get("data_type"), "classification": row.get("classification"),
         "role": row.get("role"), "description": row.get("description") or "",
-        "calculation_method": profile.get("calculation_method") or "exact",
+        # Role review is independent from type-confidence provenance. Missing
+        # or NULL role_reviewed deliberately remains unreviewed.
+        "metadata_reviewed": row.get("role_reviewed") == 1,
+        "calculation_method": profile["calculation_method"],
         "profile_basis": profile.get("profile_basis"),
         "special_values_confirmed": confirmed,
         "declared_special_value_count": len(special_values),
@@ -154,7 +160,7 @@ def persist_snapshot_profile_artifacts(
                 snapshot_id=snapshot_id, population_fingerprint=population,
                 methodology_fingerprint=methodology_fingerprint, scope="universal", table=table,
                 feature=row["column_name"], identity_inputs={"dictionary_version_id": dictionary_version,
-                "profile_source": "confirmed_exact_regular_value_profile", "profile_schema_version": 3,
+                "profile_source": "confirmed_exact_regular_value_profile", "profile_schema_version": 4,
                 "schema_role": row.get("role"),
                 "profile_evidence_fingerprint": stable_fingerprint(payload)}, created_by=actor,
             )
@@ -173,7 +179,7 @@ def persist_snapshot_profile_artifacts(
         table_outcome = repo.save(table_payload, artifact_type="table_profile", asset_id=asset_id,
             snapshot_id=snapshot_id, population_fingerprint=population, methodology_fingerprint=methodology_fingerprint,
             scope="universal", table=table, source_artifact_ids=tuple(column_ids),
-            identity_inputs={"dictionary_version_id": dictionary_version, "profile_schema_version": 3}, created_by=actor)
+            identity_inputs={"dictionary_version_id": dictionary_version, "profile_schema_version": 4}, created_by=actor)
         for prior in prior_tables:
             if prior.artifact_id != table_outcome.artifact.artifact_id:
                 repo.supersede(prior.artifact_id,

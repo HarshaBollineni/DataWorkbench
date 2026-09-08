@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dataworkbench.invalid/schemas/dsc/v1/context.schema.json",
+  "title": "Dataset Structure Context v1 payload",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "artifact_type", "protocol_version", "context_version", "request_fingerprint", "request_as_of", "supported_context_versions", "consumer_id", "snapshot", "resolved_as_of", "sensitivity", "selected_tables", "overall_result", "selector_results"],
+  "properties": {
+    "schema_version": {"const": 1}, "artifact_type": {"const": "dataset_structure_context"}, "protocol_version": {"const": "1"}, "context_version": {"const": "1"}, "request_fingerprint": {"$ref": "common.schema.json#/$defs/sha256"}, "request_as_of": {"const": "latest"}, "supported_context_versions": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "uniqueItems": true, "contains": {"const": "1"}}, "consumer_id": {"$ref": "common.schema.json#/$defs/opaque_id"}, "snapshot": {"$ref": "common.schema.json#/$defs/snapshot"}, "resolved_as_of": {"type": "string", "format": "date-time"}, "sensitivity": {"$ref": "common.schema.json#/$defs/sensitivity"}, "selected_tables": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/table_name"}, "minItems": 1, "uniqueItems": true}, "overall_result": {"enum": ["fulfilled", "unfulfilled"]}, "selector_results": {"type": "array", "items": {"$ref": "#/$defs/selector_result"}, "minItems": 1}
+  },
+  "$defs": {
+    "pin": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "assertion_id", "payload_hash", "resolution", "reuse_disposition"], "properties": {"artifact_id": {"$ref": "common.schema.json#/$defs/artifact_id"}, "assertion_id": {"$ref": "common.schema.json#/$defs/assertion_id"}, "payload_hash": {"$ref": "common.schema.json#/$defs/sha256"}, "resolution": {"$ref": "common.schema.json#/$defs/resolution_status"}, "reuse_disposition": {"$ref": "common.schema.json#/$defs/reuse_disposition"}}},
+    "selector_result": {"oneOf": [{"type": "object", "additionalProperties": false, "required": ["selector", "selector_id", "result", "pins"], "properties": {"selector": {"$ref": "request.schema.json#/$defs/selector"}, "selector_id": {"type": "string", "minLength": 1, "maxLength": 256}, "result": {"const": "fulfilled"}, "pins": {"type": "array", "items": {"$ref": "#/$defs/pin"}, "minItems": 1, "uniqueItems": true}}}, {"type": "object", "additionalProperties": false, "required": ["selector", "selector_id", "result", "reason_codes"], "properties": {"selector": {"$ref": "request.schema.json#/$defs/selector"}, "selector_id": {"type": "string", "minLength": 1, "maxLength": 256}, "result": {"enum": ["unavailable", "unsupported"]}, "reason_codes": {"type": "array", "items": {"$ref": "common.schema.json#/$defs/reason_code"}, "minItems": 1, "uniqueItems": true}}}]}
+  }
+}

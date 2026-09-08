@@ -298,7 +298,8 @@ class ArtifactRepositoryTests(unittest.TestCase):
             "discrepancies": [], "notes": "", "role": "feature", "profile_json": {
                 "non_null_count": 8, "null_count": 2, "cardinality": 4, "null_share": .2,
                 "min": 1, "max": 4, "mean": 2.5, "histogram": [], "top_k": {"1": 2},
-            }, "provisional": 0, "updated_at": now,
+                "calculation_method": "exact",
+            }, "role_reviewed": 1, "provisional": 0, "updated_at": now,
         })
         ids = persist_snapshot_profile_artifacts(self.snapshot_id)
         self.assertEqual(len(ids), 2)
@@ -317,7 +318,7 @@ class ArtifactRepositoryTests(unittest.TestCase):
             "classification": "numerical", "data_type": "float64", "description": "",
             "discrepancies": [], "notes": "", "role": "Feature",
             "missing_value_codes_json": ["-999"], "missing_codes_confirmed": 1,
-            "profile_json": profile, "provisional": 0, "updated_at": s.now_ist(),
+            "profile_json": profile, "role_reviewed": 1, "provisional": 0, "updated_at": s.now_ist(),
         })
 
         persist_snapshot_profile_artifacts(
@@ -343,6 +344,7 @@ class ArtifactRepositoryTests(unittest.TestCase):
                 "missing_value_codes_json": json.dumps(["-999"]),
                 "missing_codes_confirmed": 1,
                 "profile_json": {
+                    "calculation_method": "exact",
                     "profile_basis": "confirmed_regular_values",
                     "normalized_special_values": ["[", "9", "]"],
                     "special_value_counts": {"[": 0, "9": 2, "]": 0},
@@ -350,16 +352,26 @@ class ArtifactRepositoryTests(unittest.TestCase):
                 },
             })
 
+    def test_retained_profile_requires_explicit_exactness_and_review_provenance(self):
+        base = {
+            "table_name": "portfolio", "column_name": "score", "role": "Identifier",
+            "profile_json": {"calculation_method": "exact", "cardinality": 1},
+        }
+        self.assertFalse(_safe_profile({**base, "provisional": 0})["metadata_reviewed"])
+        self.assertTrue(_safe_profile({**base, "provisional": 1, "role_reviewed": 1})["metadata_reviewed"])
+        with self.assertRaisesRegex(ValueError, "no exact retained profile"):
+            _safe_profile({**base, "profile_json": {"cardinality": 1}})
+
     def test_categorical_profile_retention_is_role_aware(self):
         values = {f"category-{index:02d}": 100 - index for index in range(60)}
 
         identifier = _safe_profile({
             "role": "Identifier", "classification": "categorical",
-            "profile_json": {"cardinality": 60, "top_k": values},
+            "profile_json": {"calculation_method": "exact", "cardinality": 60, "top_k": values},
         })
         feature = _safe_profile({
             "role": "Feature", "classification": "categorical",
-            "profile_json": {"cardinality": 60, "top_k": values},
+            "profile_json": {"calculation_method": "exact", "cardinality": 60, "top_k": values},
         })
 
         self.assertEqual(len(identifier["top_k"]), 5)
@@ -401,7 +413,8 @@ class ArtifactRepositoryTests(unittest.TestCase):
             "classification": "numerical", "data_type": "float", "description": "",
             "discrepancies": [], "notes": "", "role": "Feature", "profile_json": {
                 "non_null_count": 2, "null_count": 0, "cardinality": 2, "null_share": 0,
-            }, "provisional": 0, "updated_at": now,
+                "calculation_method": "exact",
+            }, "role_reviewed": 1, "provisional": 0, "updated_at": now,
         })
         persist_snapshot_profile_artifacts(self.snapshot_id)
         first = self.repo.list(snapshot_id=self.snapshot_id, artifact_type="column_profile",

@@ -273,7 +273,7 @@ CREATE TABLE IF NOT EXISTS dq_item_tables (
 CREATE TABLE IF NOT EXISTS variable_inventory (
     item_id TEXT, table_name TEXT, column_name TEXT, classification TEXT,
     data_type TEXT, description TEXT, discrepancies TEXT, notes TEXT,
-    role TEXT, profile_json TEXT,
+    role TEXT, role_reviewed INTEGER DEFAULT 0, profile_json TEXT,
     updated_at TEXT, PRIMARY KEY (item_id, table_name, column_name)
 );
 -- Phase 4 (0.4.0) — ingestion redesign (ING-08 persisted substrate,
@@ -1005,7 +1005,8 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
     # Phase 4 — ING-05: per-column flag, true when the column did NOT get a
     # confident (high-tier, type-resolved) dictionary mapping — i.e. its
     # classification came from generic inference, not the dictionary.
-    "variable_inventory": {"role": "TEXT", "profile_json": "TEXT", "provisional": "INTEGER",
+    "variable_inventory": {"role": "TEXT", "role_reviewed": "INTEGER DEFAULT 0",
+                           "profile_json": "TEXT", "provisional": "INTEGER",
                            "dictionary_role": "TEXT", "business_context": "TEXT",
                            "missing_value_codes_json": "TEXT",
                            "missing_codes_confirmed": "INTEGER DEFAULT 0"},
