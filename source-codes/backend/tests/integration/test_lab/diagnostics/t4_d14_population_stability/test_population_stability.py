@@ -206,14 +206,18 @@ def _snapshot(frame, table="portfolio"):
     db.insert("dq_items", {"item_id": item_id, "kind": "dataset", "name": "PSI fixture", "status": "profiled",
         "created_at": now, "updated_at": now, "dataset_family_id": asset_id, "delivery_seq": 1, "version_no": 1,
         "snapshot_status": "active", "snapshot_label": item_id, "intent": "fresh", "ingest_status": "ready",
-        "target_variable": None, "use_case": "Monitoring", "period_column": "period"})
+        "target_variable": None, "use_case": "Monitoring", "period_column": "period",
+        "sourcing_tenant_id": "tenant-psi"})
     service._write_table(item_id, table, frame)
     for column in frame:
+        classification = "numerical" if pd.api.types.is_numeric_dtype(frame[column]) else "categorical"
         db.upsert("variable_inventory", {"item_id": item_id, "table_name": table, "column_name": column,
-            "classification": "numerical", "data_type": str(frame[column].dtype), "description": column,
+            "classification": classification, "data_type": str(frame[column].dtype), "description": column,
             "discrepancies": [], "notes": "", "role": "Period" if column == "period" else "Feature",
-            "dictionary_role": "period" if column == "period" else "feature", "profile_json": {},
-            "provisional": 0, "updated_at": now})
+            "dictionary_role": "period" if column == "period" else "feature",
+            "role_reviewed": 1,
+            "profile_json": service._column_profile(frame[column], [], True, classification),
+            "missing_codes_confirmed": 1, "provisional": 0, "updated_at": now})
     return item_id
 
 

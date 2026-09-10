@@ -28,6 +28,7 @@ from dq_diagnostics.readiness import readiness
 from dq_diagnostics.register import get_diagnostic, require_executable
 from dq_diagnostics.thresholds import effective_threshold
 from .knowledge import resolve_package
+from .dsc_assist import resolved_d06_assist
 
 
 DIAGNOSTIC_ID = 6
@@ -182,6 +183,24 @@ def _bounded_candidates(values: list[dict[str, Any]], limit_per_table: int = 8) 
     return retained
 
 
+def _apply_dsc_assist(item: dict[str, Any], manifest: dict[str, Any], *, table: str) -> None:
+    """Apply only exact-table confirmed DSC defaults as editable draft suggestions."""
+    assist = resolved_d06_assist(item=item, table=table)
+    manifest["dsc_assist"] = {"state": assist["state"], "scope_confirmed": False,
+                              "expected_cadence": assist.get("expected_cadence"),
+                              "provenance": assist.get("provenance")}
+    if assist["state"] != "available":
+        return
+    entity, period = assist["entity_column"], assist["period_column"]
+    if entity == period or entity not in manifest["available_columns"] or period not in manifest["available_columns"]:
+        manifest["dsc_assist"] = {"state": "unavailable", "scope_confirmed": False}
+        return
+    manifest["roles"]["facility_id"] = {"table": table, "column": entity, "source": "dsc_assist", "score": None,
+                                           "reason": "Confirmed Dataset Structure default; review and confirm before execution."}
+    manifest["roles"]["period"] = {"table": table, "column": period, "source": "dsc_assist", "score": None,
+                                      "reason": "Confirmed Dataset Structure default; review and confirm before execution."}
+
+
 def build_manifest(item_id: str, actor: str = "system", *, enforce_register: bool = True) -> dict[str, Any]:
     item = db.query_one("dq_items", item_id=item_id)
     if item is None:
@@ -247,6 +266,9 @@ def build_manifest(item_id: str, actor: str = "system", *, enforce_register: boo
         "engine_version": ENGINE_VERSION,
         "methodology_version": METHODOLOGY_VERSION,
     }
+    _apply_dsc_assist(item, manifest, table=table)
+    manifest["source_artifact_references"] = _source_artifacts(
+        item_id, table, [binding["column"] for binding in manifest["roles"].values() if binding], actor)
     db.insert("diag_runs", {"run_id": run_id, "item_id": item_id,
         "diagnostic_id": DIAGNOSTIC_ID, "manifest_json": manifest, "status": DRAFT,
         "engine_versions_json": {"row_completeness": ENGINE_VERSION},
@@ -371,6 +393,9 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
         manifest["roles"] = roles
         manifest["source_artifact_references"] = _source_artifacts(
             manifest["item_id"], table, [value["column"] for value in roles.values() if value], actor)
+        _apply_dsc_assist(db.query_one("dq_items", item_id=manifest["item_id"]) or {}, manifest, table=table)
+        manifest["source_artifact_references"] = _source_artifacts(
+            manifest["item_id"], table, [value["column"] for value in manifest["roles"].values() if value], actor)
         record_decision(run_id, "scope_exclusion", {"event": "table_selection",
                         "before": before, "after": {"table": table, "roles": roles}}, actor)
         for role, binding in roles.items():
@@ -391,6 +416,8 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
         manifest["roles"][role] = (None if column is None else {
             "table": manifest["table"], "column": column, "source": "manual", "score": None,
             "reason": f"Explicitly selected by {actor} in the scope gate."})
+        if manifest.get("dsc_assist", {}).get("state") == "available":
+            manifest["dsc_assist"]["scope_confirmed"] = False
         record_decision(run_id, "role_override", {"role": role, "column": column,
                         "before": before, "after": manifest["roles"][role]}, actor)
     elif kind == "threshold_tune":
@@ -419,6 +446,12 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
         manifest["configuration"][key] = {"value": value, "source": f"user-set ({actor}, {db.now_ist()})"}
         record_decision(run_id, "threshold_tune", {"event": "parameter_tune", "key": key,
                         "before": before, "after": manifest["configuration"][key]}, actor)
+    elif kind == "dsc_assist_confirmation":
+        if manifest.get("dsc_assist", {}).get("state") != "available" or patch.get("confirmed") is not True:
+            raise ManifestError("a currently available DSC assist must be explicitly confirmed")
+        manifest["dsc_assist"]["scope_confirmed"] = True
+        record_decision(run_id, "dsc_assist_confirmation", {"confirmed": True,
+                        "roles": {name: (value or {}).get("column") for name, value in manifest["roles"].items()}}, actor)
     elif kind == "role_verification_change":
         enabled = bool(patch.get("enabled"))
         if enabled:
@@ -430,7 +463,7 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
             "requested": enabled, "mapping_applied": False,
             "status": manifest["role_verification"]["status"]}, actor)
     else:
-        raise ManifestError("kind must be table_selection, role_override, threshold_tune, parameter_tune, or role_verification_change")
+        raise ManifestError("kind must be table_selection, role_override, threshold_tune, parameter_tune, dsc_assist_confirmation, or role_verification_change")
     manifest["inference_disclosure"] = inference_disclosure(run_id)
     db.update("diag_runs", {"run_id": run_id}, {"manifest_json": manifest})
     return manifest
@@ -439,6 +472,8 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
 def _frozen_scope(manifest: dict[str, Any]) -> RunScope:
     if not manifest["roles"].get("facility_id") or not manifest["roles"].get("period"):
         raise ManifestError("facility identifier and reporting period must both be resolved before running")
+    if manifest.get("dsc_assist", {}).get("state") == "available" and not manifest["dsc_assist"].get("scope_confirmed"):
+        raise ManifestError("confirm the Dataset Structure suggestions or choose manual scope values before running")
     return RunScope(asset_id=manifest["snapshot"]["asset_id"], snapshot_id=manifest["item_id"],
         table=manifest["table"], facility_id=RoleBinding.model_validate(manifest["roles"]["facility_id"]),
         period=RoleBinding.model_validate(manifest["roles"]["period"]),

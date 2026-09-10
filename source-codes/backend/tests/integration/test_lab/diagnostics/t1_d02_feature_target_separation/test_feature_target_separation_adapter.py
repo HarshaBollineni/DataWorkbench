@@ -54,6 +54,7 @@ def _snapshot(frame: pd.DataFrame, *, target: str = "target") -> tuple[str, str]
         "snapshot_status": "active", "snapshot_label": snapshot_id,
         "intent": "fresh", "ingest_status": "ready", "target_variable": target,
         "use_case": "Model development", "period_column": "period",
+        "sourcing_tenant_id": "tenant-a",
     })
     service._write_table(snapshot_id, "portfolio", frame)
     roles = {
@@ -74,6 +75,13 @@ def _snapshot(frame: pd.DataFrame, *, target: str = "target") -> tuple[str, str]
             "notes": "", "role": roles.get(column, "Feature"),
             "dictionary_role": roles.get(column, "").lower(),
             "profile_json": {
+                "calculation_method": "exact",
+                "total_count": int(len(frame)),
+                "non_null_count": int(frame[column].notna().sum()),
+                "null_count": int(frame[column].isna().sum()),
+                "physical_null_count": int(frame[column].isna().sum()),
+                "regular_value_count": int(frame[column].notna().sum()),
+                "cardinality": distinct,
                 "n_levels": distinct,
                 "summary": {"count": int(frame[column].notna().sum()),
                             "missing": int(frame[column].isna().sum())},

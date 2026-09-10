@@ -33,6 +33,12 @@ from routers import auth, sourcing  # noqa: E402
 class S4aUploadTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # pytest may already have imported system_db under another module's
+        # environment. Bind the cached module explicitly before schema setup
+        # so this suite cannot inherit another test's active sourcing draft.
+        s.SYS_DB_PATH = ROOT / "system.db"
+        if s.SYS_DB_PATH.exists():
+            s.SYS_DB_PATH.unlink()
         s.init_schema()
 
     def _item(self, kind="dataset"):

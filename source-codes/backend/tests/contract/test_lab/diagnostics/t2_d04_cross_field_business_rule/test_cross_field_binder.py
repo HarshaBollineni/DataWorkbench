@@ -94,6 +94,13 @@ UNSUPPORTED_MD = """## Unsupported phrasings
 | UN-04 | MATE | Inequality | workout | drawn_balance, other_costs | drawn_balance is broadly consistent with other_costs | - |
 """
 
+TRAILING_NOTE_MD = """## Trailing note
+
+| ID | Sev | Type | Entity | Roles (semantic) | Rule | Reg reference |
+| --- | --- | --- | --- | --- | --- | --- |
+| NT-01 | MATE | Inequality | facility | termmonths | termmonths > 0 (positive tenor) | - |
+"""
+
 
 def _upload(name: str, markdown: str) -> str:
     up = kb.upload_document(TENANT, name, "text/markdown", markdown.encode("utf-8"), None, "tester")
@@ -233,6 +240,24 @@ class RefusalTests(unittest.TestCase):
         eligible = kb.list_eligible_rules(TENANT, "cross_field_engine", require_bound=True)
         self.assertEqual([r for r in eligible["rules"]
                           if r["version_id"] == self.unsupported_version], [])
+
+
+class TrailingNoteBindingTests(unittest.TestCase):
+    def test_generic_inequality_strips_a_trailing_explanatory_note(self):
+        s.init_schema()
+        seed_platform()
+        seed_taxonomy()
+        version_id = _upload("trailing-note.md", TRAILING_NOTE_MD)
+
+        report = binder.bind_version(TENANT, version_id, "tester")
+
+        self.assertEqual(report["counts"], {"considered": 1, "bound": 1, "skipped": 0})
+        row = s.query("kb_rules", version_id=version_id)[0]
+        self.assertEqual(row["binding_status"], "bound")
+        self.assertEqual(row["binding_primitive"], "ineq")
+        self.assertEqual(row["binding_params_json"]["expression"], {
+            "primitive": "ineq", "left": "termmonths", "op": ">", "right_literal": 0.0,
+        })
 
 
 def _executable_source(source: str) -> str:

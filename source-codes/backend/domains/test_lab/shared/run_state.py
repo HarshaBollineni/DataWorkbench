@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import logging
+import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
@@ -10,6 +12,8 @@ from datetime import datetime, timedelta
 from typing import Any
 
 import system_db as db
+
+_LOGGER = logging.getLogger(__name__)
 
 DRAFT, RUNNING, DONE, FAILED, DISCARDED = "draft", "running", "done", "failed", "discarded"
 
@@ -22,6 +26,18 @@ UNCLAIMED_RUN_GRACE_SECONDS = max(
     int(os.environ.get("DIAGNOSTIC_RUN_START_GRACE_SECONDS", "180")),
 )
 PROCESS_EXECUTION_OWNER = f"process-{os.getpid()}-{uuid.uuid4().hex[:10]}"
+# The browser's native EventSource cannot carry an Authorization header.  D06
+# therefore has a deliberately private, short-lived launch-to-stream handoff.
+# It lives in system state (rather than this worker's memory) so a stream can
+# land on another worker after a restart.
+EXECUTION_CONTEXT_SECONDS = max(
+    RUN_LEASE_SECONDS,
+    int(os.environ.get("DIAGNOSTIC_EXECUTION_CONTEXT_SECONDS", "900")),
+)
+# Keep the physical lock wait well below the advisory 100ms policy ceiling:
+# SQLite can otherwise spend a second busy interval in connection setup and a
+# second one acquiring BEGIN IMMEDIATE under an exclusive writer.
+EXECUTION_CONTEXT_DB_BUDGET_SECONDS = 0.0
 
 _FAILURE_MESSAGES = {
     "execution_failed": "Execution failed safely. Review available evidence and start a new run.",
@@ -40,6 +56,125 @@ class ManifestError(RuntimeError):
 
 class RunAlreadyExecuting(ManifestError):
     """Raised when another live worker owns the persisted run lease."""
+
+
+@contextmanager
+def _execution_context_connection():
+    """Open a minimal bounded connection for private D06 handoff state.
+
+    Do not use ``system_db.get_conn`` here: its general-purpose setup may run
+    additional SQLite pragmas before an operation's ``BEGIN IMMEDIATE`` and
+    therefore accumulate lock waits.  This table has no foreign keys and
+    needs neither journal configuration nor any public DB helper behaviour.
+    """
+    conn = sqlite3.connect(str(db.SYS_DB_PATH), timeout=EXECUTION_CONTEXT_DB_BUDGET_SECONDS)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {int(EXECUTION_CONTEXT_DB_BUDGET_SECONDS * 1000)}")
+        yield conn
+    except Exception:
+        # ``close`` rolls back an uncommitted SQLite transaction.  Calling an
+        # explicit rollback while another connection owns an exclusive lock
+        # can itself add another lock wait to this best-effort path.
+        raise
+    else:
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def bind_trusted_execution_tenant(run_id: str, tenant_id: str) -> bool:
+    """Atomically bind D06's authenticated launch tenant exactly once.
+
+    The private context is intentionally outside the immutable manifest.  A
+    repeated authenticated launch from the same tenant is harmless; a tenant
+    switch is refused.  Expired contexts are disposable crash recovery state.
+    """
+    if not isinstance(run_id, str) or not run_id or not isinstance(tenant_id, str) or not tenant_id:
+        raise ManifestError("trusted execution tenant is required")
+    bound_at, expires_at = _lease_times(EXECUTION_CONTEXT_SECONDS)
+    try:
+        with _execution_context_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM diagnostic_execution_context WHERE expires_at <= ?",
+                (bound_at,),
+            )
+            row = conn.execute(
+                "SELECT tenant_id FROM diagnostic_execution_context WHERE run_id=?", (run_id,),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO diagnostic_execution_context "
+                    "(run_id, tenant_id, bound_at, expires_at) VALUES (?,?,?,?)",
+                    (run_id, tenant_id, bound_at, expires_at),
+                )
+            elif row["tenant_id"] != tenant_id:
+                conn.rollback()
+                raise ManifestError("diagnostic execution context is already bound to another tenant")
+            else:
+                # A genuine retry by the same authenticated tenant extends the
+                # short handoff without permitting any tenant switch.
+                conn.execute(
+                    "UPDATE diagnostic_execution_context SET expires_at=? WHERE run_id=?",
+                    (expires_at, run_id),
+                )
+            conn.commit()
+        return True
+    except ManifestError:
+        raise
+    except Exception:
+        _LOGGER.debug("diagnostic_execution_context_bind_unavailable")
+        return False
+
+
+def trusted_execution_tenant(run_id: str) -> str | None:
+    if not isinstance(run_id, str) or not run_id:
+        return None
+    now = db.now_ist()
+    try:
+        with _execution_context_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM diagnostic_execution_context WHERE expires_at <= ?", (now,))
+            row = conn.execute(
+                "SELECT tenant_id FROM diagnostic_execution_context WHERE run_id=?", (run_id,),
+            ).fetchone()
+            conn.commit()
+        return str(row["tenant_id"]) if row is not None else None
+    except Exception:
+        _LOGGER.debug("diagnostic_execution_context_read_unavailable")
+        return None
+
+
+def clear_trusted_execution_tenant(run_id: str, tenant_id: str | None = None) -> bool:
+    """Drop a consumed D06 handoff, never deleting a replacement binding."""
+    if not isinstance(run_id, str) or not run_id:
+        return False
+    try:
+        with _execution_context_connection() as conn:
+            if tenant_id:
+                conn.execute(
+                    "DELETE FROM diagnostic_execution_context WHERE run_id=? AND tenant_id=?",
+                    (run_id, tenant_id),
+                )
+            else:
+                conn.execute("DELETE FROM diagnostic_execution_context WHERE run_id=?", (run_id,))
+        return True
+    except Exception:
+        _LOGGER.debug("diagnostic_execution_context_clear_unavailable")
+        return False
+
+
+def cleanup_expired_execution_contexts() -> int:
+    """Remove abandoned handoffs after a crash without touching run history."""
+    try:
+        with _execution_context_connection() as conn:
+            return conn.execute(
+                "DELETE FROM diagnostic_execution_context WHERE expires_at <= ?", (db.now_ist(),),
+            ).rowcount
+    except Exception:
+        _LOGGER.debug("diagnostic_execution_context_cleanup_unavailable")
+        return 0
 
 
 def new_execution_owner(channel: str) -> str:

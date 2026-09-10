@@ -24,6 +24,7 @@ import pandas as pd
 
 _TMP_DB = Path(tempfile.gettempdir()) / "archimedes-test-ingest.db"
 _TMP_UPLOAD_DIR = Path(tempfile.gettempdir()) / "archimedes-test-ingest-uploads"
+_BACKEND_ROOT = Path(__file__).resolve().parent.parent
 if _TMP_DB.exists():
     _TMP_DB.unlink()
 if _TMP_UPLOAD_DIR.exists():
@@ -76,6 +77,7 @@ class SetupMixin:
     @classmethod
     def setUpClass(cls):
         s.init_schema()
+
 
 
 # ── 4-T2 — confidence-tiered mapping: high pre-applied, fuzzy surfaced,
@@ -666,11 +668,12 @@ class SourceInspectionTests(unittest.TestCase):
                      "_id", " id", "_dt", "is_", "period")
 
     def test_bad_flag_appears_nowhere_in_service_py(self):
-        text = Path("ai/v2/service.py").read_text(encoding="utf-8")
+        text = (_BACKEND_ROOT / "ai" / "v2" / "service.py").read_text(encoding="utf-8")
         self.assertNotIn("bad_flag", text)
 
     def test_type_priority_is_not_defined_anywhere(self):
-        for path in [Path("ai/v2/service.py"), *Path("ingest").glob("*.py")]:
+        for path in [(_BACKEND_ROOT / "ai" / "v2" / "service.py"),
+                     *(_BACKEND_ROOT / "ingest").glob("*.py")]:
             text = path.read_text(encoding="utf-8")
             self.assertIsNone(re.search(r"^TYPE_PRIORITY\s*=", text, re.MULTILINE), path)
 

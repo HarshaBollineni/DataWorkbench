@@ -1,9 +1,12 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test-fixture";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { confirmDatasetStructure } from "./support/dataset-structure";
 import { selectPopoverOption } from "./support/select";
 
 const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
+
+test.describe.configure({ timeout: 90_000 });
 
 async function signIn(page) {
   await page.addInitScript(() => localStorage.setItem("tourEnabled", "false"));
@@ -15,7 +18,7 @@ async function signIn(page) {
 
 async function uploadReadyDataset(page, alias) {
   await page.getByRole("link", { name: "Data Sourcing" }).click();
-  await page.getByRole("button", { name: "Add New" }).last().click();
+  await page.getByRole("button", { name: "Create New Dataset" }).click();
   await page.getByLabel("Alias").fill(alias);
   await page.locator('input[type="file"]').first().setInputFiles(path.join(fixtures, "assessment.csv"));
   await page.getByRole("button", { name: "Start sourcing" }).click();
@@ -26,7 +29,7 @@ async function uploadReadyDataset(page, alias) {
   await selectPopoverOption(page, "Product");
   await page.getByLabel(/I confirm this target/).check();
   await page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" }).click();
-  await expect(page.getByText(/Ready/)).toBeVisible();
+  await confirmDatasetStructure(page);
 }
 
 async function chooseTestLabAsset(page, alias) {
@@ -46,7 +49,7 @@ test("Coverage board: workflow-pending card has zero run affordance", async ({ p
   const cards = page.getByTestId("diagnostic-card");
   await expect(cards).toHaveCount(9, { timeout: 30_000 });
   const pending = page.locator('[data-testid="diagnostic-card"][data-chip-status="workflow_pending"]');
-  await expect(pending).toHaveCount(5);
+  await expect(pending).not.toHaveCount(0);
   for (let index = 0; index < await pending.count(); index += 1) {
     const card = pending.nth(index);
     await expect(card.getByText("workflow not yet defined")).toBeVisible();

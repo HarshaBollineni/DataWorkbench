@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test-fixture";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const version = fs.readFileSync(path.resolve(here, "../../VERSION"), "utf8").trim();

@@ -35,6 +35,20 @@ def _require_governed_tenant(run: dict, principal: dict) -> None:
         raise KeyError("Unknown diagnostic run")
 
 
+def _require_owned_item(item_id: str, principal: dict) -> dict:
+    """Resolve a snapshot only through its authoritative tenant owner."""
+    item = service.require_item(item_id)
+    if item.get("sourcing_tenant_id") != principal["tenant_id"]:
+        # Deliberately indistinguishable from an unknown item.
+        raise KeyError(f"Unknown item: {item_id}")
+    return item
+
+
+def _require_d06_run_owner(run: dict, principal: dict) -> None:
+    """Authorize D06 runs through their snapshot, never a run id alone."""
+    _require_owned_item(run["item_id"], principal)
+
+
 def _require_d11_tenant(run: dict, principal: dict) -> None:
     """Backward-compatible name retained for existing direct tests."""
     _require_governed_tenant(run, principal)
@@ -73,6 +87,7 @@ class ManifestPatch(BaseModel):
     table: str | None = None
     reason: str | None = None
     enabled: bool | None = None
+    confirmed: bool | None = None
     features: list[str] | None = None
     feature: str | None = None
     orientation: str | None = None
@@ -272,6 +287,8 @@ def _board_card(item_id: str, row: dict, areas: dict, principal: dict, store) ->
     from dq_diagnostics.register import REFUSAL_WORKFLOW_PENDING, WorkflowPendingError
 
     did = row["diagnostic_id"]
+    if did == 6:
+        _require_owned_item(item_id, principal)
     try:
         state = readiness_mod.readiness(item_id, did, principal["tenant_id"])
         chip = state.to_dict()
@@ -333,7 +350,10 @@ def diagnostics_board_card(item_id: str, diagnostic_id: int,
     from dq_diagnostics import register as register_mod
     principal = _diagnostic_principal(authorization)
     try:
-        service.require_item(item_id)
+        if diagnostic_id == 6:
+            _require_owned_item(item_id, principal)
+        else:
+            service.require_item(item_id)
         row = register_mod.get_diagnostic(diagnostic_id)
         areas = {a["area_id"]: a for a in _s.query("framework_test_areas")}
         return _board_card(item_id, row, areas, principal, _s)
@@ -350,6 +370,7 @@ def diagnostics_board(item_id: str,
     from dq_diagnostics import register as register_mod
     principal = _diagnostic_principal(authorization)
     try:
+        _require_owned_item(item_id, principal)
         summary = _board_summary(item_id, _s, register_mod)
         areas = {a["area_id"]: a for a in _s.query("framework_test_areas")}
         summary["cards"] = [
@@ -368,10 +389,13 @@ def diagnostic_run_history(item_id: str, diagnostic_id: int,
     """Immutable run history for one diagnostic on one item, newest first."""
     import system_db as _s
     try:
-        service.require_item(item_id)
+        principal = _diagnostic_principal(authorization)
+        if diagnostic_id == 6:
+            _require_owned_item(item_id, principal)
+        else:
+            service.require_item(item_id)
         if not _s.query_one("diagnostic_register", diagnostic_id=diagnostic_id):
             raise KeyError(f"Unknown diagnostic: {diagnostic_id}")
-        principal = _diagnostic_principal(authorization)
         return {"item_id": item_id, "diagnostic_id": diagnostic_id,
                 **_diagnostic_run_history(
                     item_id, diagnostic_id, _s,
@@ -396,6 +420,8 @@ def build_diagnostic_manifest(
         from dq_diagnostics.dispatch import adapter
         selected = adapter(body.diagnostic_id)
         principal = _diagnostic_principal(authorization)
+        if body.diagnostic_id == 6:
+            _require_owned_item(item_id, principal)
         if body.diagnostic_id not in {8, 11, 14}:
             if body.start_afresh:
                 _discard_diagnostic_drafts(item_id, body.diagnostic_id, principal)
@@ -454,8 +480,11 @@ def resumable_diagnostic_draft(
 ):
     """Discover an open setup before launch; never resumes it implicitly."""
     try:
-        service.require_item(item_id)
         principal = _diagnostic_principal(authorization)
+        if diagnostic_id == 6:
+            _require_owned_item(item_id, principal)
+        else:
+            service.require_item(item_id)
         return {"draft": _latest_diagnostic_draft(
             item_id, diagnostic_id, principal,
         )}
@@ -474,6 +503,8 @@ def discard_diagnostic_draft(
         from domains.test_lab.shared import run_state
         principal = _diagnostic_principal(authorization)
         run = run_state.get_run(run_id)
+        if run["diagnostic_id"] == 6:
+            _require_d06_run_owner(run, principal)
         service.require_item(run["item_id"])
         if run["diagnostic_id"] in {8, 11}:
             _require_governed_tenant(run, principal)
@@ -498,10 +529,13 @@ def patch_diagnostic_manifest(
         run = manifest_mod.get_run(run_id)
         from dq_diagnostics.dispatch import adapter
         actor = "system"
-        if run["diagnostic_id"] in {8, 11}:
+        if run["diagnostic_id"] in {6, 8, 11}:
             principal = _diagnostic_principal(authorization)
-            _require_governed_tenant(run, principal)
-            actor = principal["username"]
+            if run["diagnostic_id"] == 6:
+                _require_d06_run_owner(run, principal)
+            else:
+                _require_governed_tenant(run, principal)
+                actor = principal["username"]
         return adapter(run["diagnostic_id"])["manifest"].patch_manifest(
             run_id, body.model_dump(exclude_none=True), actor=actor)
     except Exception as exc:  # noqa: BLE001
@@ -519,10 +553,13 @@ def get_diagnostic_manifest(
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
     principal = None
-    if run["diagnostic_id"] in {8, 11}:
+    if run["diagnostic_id"] in {6, 8, 11}:
         principal = _diagnostic_principal(authorization)
         try:
-            _require_governed_tenant(run, principal)
+            if run["diagnostic_id"] == 6:
+                _require_d06_run_owner(run, principal)
+            else:
+                _require_governed_tenant(run, principal)
         except Exception as exc:  # noqa: BLE001
             _diag_err(exc)
     if run["diagnostic_id"] == 2 and run["status"] == manifest_mod.DRAFT:
@@ -567,10 +604,26 @@ def run_diagnostic_manifest(
         run = manifest_mod.get_run(run_id)
         diagnostic_id = run["diagnostic_id"]
         actor = "system"
-        if diagnostic_id in {8, 11}:
+        principal = None
+        d06_context_bound = False
+        if diagnostic_id in {6, 8, 11}:
             principal = _diagnostic_principal(authorization)
-            _require_governed_tenant(run, principal)
-            actor = principal["username"]
+            if diagnostic_id == 6:
+                _require_d06_run_owner(run, principal)
+                try:
+                    d06_context_bound = bool(
+                        manifest_mod.bind_trusted_execution_tenant(run_id, principal["tenant_id"])
+                    )
+                except manifest_mod.ManifestError:
+                    # A persisted, live binding to another tenant is a real
+                    # security refusal.  Advisory storage outages are handled
+                    # below and must not prevent the authoritative D06 run.
+                    raise
+                except Exception:
+                    logger.warning("diagnostic_execution_context_bind_unavailable")
+            if diagnostic_id in {8, 11}:
+                _require_governed_tenant(run, principal)
+                actor = principal["username"]
         # FWK-17 — refuse a pending diagnostic with the exact refusal text.
         from dq_diagnostics.register import require_executable
         require_executable(diagnostic_id)
@@ -607,12 +660,14 @@ def run_diagnostic_manifest(
                     "stream_url": f"/api/v2/diagnostics/runs/{run_id}/stream",
                     "rules": work_count(manifest)}
         if run["status"] == manifest_mod.DONE:
-            return runner.execute_now(run_id, actor=actor)
+            return (runner.execute_now(run_id, actor=actor, tenant_id=(principal["tenant_id"] if d06_context_bound else None))
+                    if diagnostic_id == 6 else runner.execute_now(run_id, actor=actor))
         with manifest_mod.managed_run_execution(
             run_id, channel="synchronous", actor=actor,
         ) as lease:
             lease.heartbeat()
-            return runner.execute_now(run_id, actor=actor)
+            return (runner.execute_now(run_id, actor=actor, tenant_id=(principal["tenant_id"] if d06_context_bound else None))
+                    if diagnostic_id == 6 else runner.execute_now(run_id, actor=actor))
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
 
@@ -753,7 +808,7 @@ def promote_psi_iv_bins(run_id: str, feature: str, body: PsiBinPromotionIn):
 
 @router.get("/diagnostics/runs/{run_id}/stream")
 @router.post("/diagnostics/runs/{run_id}/stream")
-def stream_diagnostic_run(run_id: str):
+def stream_diagnostic_run(run_id: str, authorization: str | None = Header(default=None)):
     """CFR-13 — ``start`` -> ``progress`` (rules evaluated / total) -> ``done``.
 
     An error surfaces as a sanitized ``error`` frame (PLT-04): the real
@@ -768,6 +823,25 @@ def stream_diagnostic_run(run_id: str):
     # deliberately an observer only once the launch has moved the run out of
     # DRAFT.  Keep the legacy stream-start behavior for other diagnostics.
     requested_run = _s.query_one("diag_runs", run_id=run_id)
+    if requested_run and requested_run["diagnostic_id"] == 6:
+        # EventSource has no authenticated request identity. Its only
+        # authority is the short-lived launch handoff, which must still map to
+        # the tenant owning this immutable snapshot.
+        handoff_tenant = manifest_mod.trusted_execution_tenant(run_id)
+        if not handoff_tenant:
+            raise HTTPException(
+                status_code=409,
+                detail="Launch this diagnostic through the authenticated run action before opening its event stream.",
+            )
+        try:
+            _require_d06_run_owner(requested_run, {"tenant_id": handoff_tenant})
+            if isinstance(authorization, str):
+                principal = _diagnostic_principal(authorization)
+                _require_d06_run_owner(requested_run, principal)
+                if principal["tenant_id"] != handoff_tenant:
+                    raise KeyError("Unknown diagnostic run")
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Unknown diagnostic run") from exc
     if (requested_run and requested_run["diagnostic_id"] in {8, 11}
             and requested_run["status"] == manifest_mod.DRAFT):
         raise HTTPException(
@@ -807,7 +881,22 @@ def stream_diagnostic_run(run_id: str):
             with manifest_mod.managed_run_execution(
                 run_id, channel="stream", actor=actor,
             ) as lease:
-                for event in runner.run(run_id, actor=actor):
+                # Browser EventSource is headerless. D06 retrieves its tenant
+                # only from the preceding authenticated launch handoff.
+                if run["diagnostic_id"] == 6:
+                    # Preflight made the handoff mandatory. Re-read it right
+                    # before execution so expiry/outage never becomes an
+                    # unscoped D06 execution.
+                    tenant_id = manifest_mod.trusted_execution_tenant(run_id)
+                    if not tenant_id:
+                        raise manifest_mod.ManifestError(
+                            "authenticated D06 stream handoff is unavailable"
+                        )
+                    _require_d06_run_owner(run, {"tenant_id": tenant_id})
+                else:
+                    tenant_id = None
+                stream_args = {"tenant_id": tenant_id} if tenant_id else {}
+                for event in runner.run(run_id, actor=actor, **stream_args):
                     if manifest_mod.get_run(run_id)["status"] == manifest_mod.RUNNING:
                         lease.heartbeat()
                     if event.get("phase") == "error":
@@ -833,7 +922,12 @@ def diagnostic_results(item_id: str, run_id: str | None = None,
     """Decision-type-shaped results + per-rule findings for display."""
     import system_db as _s
     try:
-        service.require_item(item_id)
+        principal = None
+        if diagnostic_id == 6:
+            principal = _diagnostic_principal(authorization)
+            _require_owned_item(item_id, principal)
+        else:
+            service.require_item(item_id)
         if not run_id:
             filters = {"item_id": item_id, "status": "done"}
             if diagnostic_id is not None:
@@ -852,8 +946,14 @@ def diagnostic_results(item_id: str, run_id: str | None = None,
             run_id = latest["run_id"]
         from dq_diagnostics.dispatch import adapter
         source_run = _s.query_one("diag_runs", run_id=run_id)
-        if source_run and source_run["diagnostic_id"] in {8, 11}:
-            _require_governed_tenant(source_run, _diagnostic_principal(authorization))
+        if not source_run:
+            raise KeyError(f"Unknown diagnostic run: {run_id}")
+        if source_run["diagnostic_id"] == 6:
+            principal = principal or _diagnostic_principal(authorization)
+            _require_d06_run_owner(source_run, principal)
+        elif source_run["diagnostic_id"] in {8, 11}:
+            principal = principal or _diagnostic_principal(authorization)
+            _require_governed_tenant(source_run, principal)
         runner = adapter(source_run["diagnostic_id"])["runner"]
         from assets.staleness import annotate_payload
         payload = annotate_payload(runner.run_results(run_id))
@@ -864,7 +964,8 @@ def diagnostic_results(item_id: str, run_id: str | None = None,
 
 @router.post("/diagnostics/findings/{finding_id}/disposition")
 @_plt04_sanitize
-def disposition_finding(finding_id: str, body: DispositionIn):
+def disposition_finding(finding_id: str, body: DispositionIn,
+                        authorization: str | None = Header(default=None)):
     """The SME decision (human decision #2). ``dismiss`` REQUIRES a reason —
     enforced here, not by a disabled button."""
     import system_db as _s
@@ -876,6 +977,13 @@ def disposition_finding(finding_id: str, body: DispositionIn):
     if not finding:
         raise HTTPException(status_code=404, detail=f"Unknown finding: {finding_id}")
     source_run = _s.query_one("diag_runs", run_id=finding["run_id"])
+    if not source_run:
+        raise KeyError(f"Unknown diagnostic run: {finding['run_id']}")
+    if source_run["diagnostic_id"] == 6:
+        try:
+            _require_d06_run_owner(source_run, _diagnostic_principal(authorization))
+        except Exception as exc:  # noqa: BLE001
+            _diag_err(exc)
     row_completeness_decision = None
     issue_row_id = None
     if source_run and source_run.get("diagnostic_id") == 6:
@@ -971,12 +1079,18 @@ def promote_feature_target_result(result_id: str, body: PsiResultPromotionIn):
 
 @router.post("/diagnostics/results/{result_id}/promotion")
 @_plt04_sanitize
-def promote_diagnostic_result(result_id: str, body: PsiResultPromotionIn):
+def promote_diagnostic_result(result_id: str, body: PsiResultPromotionIn,
+                              authorization: str | None = Header(default=None)):
     """Shared override route for every non-summary diagnostic result."""
     import system_db as _s
     try:
         result = _s.query_one("diag_results", result_id=result_id)
         if not result: raise KeyError(f"Unknown diagnostic result: {result_id}")
+        source_run = _s.query_one("diag_runs", run_id=result["run_id"])
+        if not source_run:
+            raise KeyError(f"Unknown diagnostic run: {result['run_id']}")
+        if source_run["diagnostic_id"] == 6:
+            _require_d06_run_owner(source_run, _diagnostic_principal(authorization))
         if result["diagnostic_id"] == 2:
             from domains.test_lab.diagnostics.t1_d02_feature_target_separation.runner import ensure_candidate_finding
             finding_id = ensure_candidate_finding(result_id, reason=body.reason, actor="system")
@@ -988,7 +1102,7 @@ def promote_diagnostic_result(result_id: str, body: PsiResultPromotionIn):
             finding_id = ensure_override_finding(result_id, reason=body.reason, actor="system")
         return disposition_finding(finding_id, DispositionIn(
             action="confirm_issue", reason=body.reason,
-            overwrite_existing=body.overwrite_existing))
+            overwrite_existing=body.overwrite_existing), authorization=authorization)
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
 
@@ -1076,7 +1190,9 @@ def diagnostic_run_report(run_id: str, fmt: str = "pdf",
         from dq_diagnostics.dispatch import adapter
         run = _s.query_one("diag_runs", run_id=run_id)
         if not run: raise KeyError(f"Unknown run: {run_id}")
-        if run["diagnostic_id"] in {8, 11}:
+        if run["diagnostic_id"] == 6:
+            _require_d06_run_owner(run, _diagnostic_principal(authorization))
+        elif run["diagnostic_id"] in {8, 11}:
             _require_governed_tenant(run, _diagnostic_principal(authorization))
         runner = adapter(run["diagnostic_id"])["runner"]
         if fmt == "text":

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-from routers import asset_catalogue, diagnostics, framework, issues, sourcing
+from routers import asset_catalogue, dataset_structure, diagnostics, framework, issues, sourcing
 from routers.asset_catalogue import catalogue, catalogue_asset, select_asset, version_diff
 from routers.diagnostics import (
     BinningReviewIn,
@@ -89,6 +89,7 @@ from routers.sourcing import (
 )
 router = APIRouter(prefix="/api/v2", tags=["galileo-v2"])
 router.include_router(sourcing.router)
+router.include_router(dataset_structure.router)
 router.include_router(issues.router)
 router.include_router(diagnostics.router)
 router.include_router(asset_catalogue.router)

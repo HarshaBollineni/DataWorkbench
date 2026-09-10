@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dataworkbench.invalid/schemas/dsc/v2/assertion.schema.json",
+  "title": "Dataset Structure authority assertion v2 payload",
+  "type": "object", "additionalProperties": false,
+  "required": ["schema_version", "artifact_type", "assertion_id", "context_version", "snapshot", "subject", "predicate", "instance_key", "multiplicity", "claims", "evidence", "conflicts", "resolution", "dependency_fingerprint", "sensitivity"],
+  "properties": {
+    "schema_version": {"const": 2}, "artifact_type": {"const": "dataset_structure_assertion"}, "assertion_id": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/assertion_id"}, "context_version": {"const": "2"}, "snapshot": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/snapshot"}, "subject": {"type": "object", "additionalProperties": false, "required": ["kind", "table"], "properties": {"kind": {"const": "table"}, "table": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/table_name"}}}, "predicate": {"enum": ["table.structure/default_entity_binding", "table.temporal/default_temporal_binding", "table.temporal/expected_cadence"]}, "instance_key": {"type": "string", "minLength": 1, "maxLength": 512}, "multiplicity": {"const": "single"}, "claims": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"$ref": "#/$defs/claim"}}, "evidence": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"allOf": [{"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/evidence"}, {"properties": {"kind": {"const": "structural_decision"}}, "required": ["kind"]}]}}, "conflicts": {"type": "array", "maxItems": 0}, "resolution": {"$ref": "#/$defs/resolution"}, "dependency_fingerprint": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/sha256"}, "sensitivity": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/sensitivity"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"predicate": {"const": "table.structure/default_entity_binding"}}, "required": ["predicate"]},
+      "then": {"properties": {"claims": {"items": {"properties": {"value": {"oneOf": [{"$ref": "#/$defs/default_entity"}, {"$ref": "#/$defs/none_entity"}]}}}}}}
+    },
+    {
+      "if": {"properties": {"predicate": {"const": "table.temporal/default_temporal_binding"}}, "required": ["predicate"]},
+      "then": {"properties": {"claims": {"items": {"properties": {"value": {"oneOf": [{"$ref": "#/$defs/default_temporal"}, {"$ref": "#/$defs/none_temporal"}]}}}}}}
+    },
+    {
+      "if": {"properties": {"predicate": {"const": "table.temporal/expected_cadence"}}, "required": ["predicate"]},
+      "then": {"properties": {"claims": {"items": {"properties": {"value": {"oneOf": [{"$ref": "#/$defs/expected_cadence"}, {"$ref": "#/$defs/none_cadence"}]}}}}}}
+    },
+    {
+      "if": {"properties": {"claims": {"contains": {"properties": {"decision": {"properties": {"action": {"const": "confirm"}}}}}}}},
+      "then": {"properties": {"claims": {"items": {"properties": {"value": {"not": {"$ref": "#/$defs/none"}}}}}, "resolution": {"properties": {"status": {"const": "confirmed"}, "effective_claim_ids": {"minItems": 1, "maxItems": 1}, "reason_codes": {"maxItems": 0}}}}}
+    },
+    {
+      "if": {"properties": {"claims": {"contains": {"properties": {"decision": {"properties": {"action": {"const": "clear"}}}}}}}},
+      "then": {"properties": {"claims": {"items": {"properties": {"value": {"$ref": "#/$defs/none"}}}}, "resolution": {"properties": {"status": {"const": "unknown"}, "effective_claim_ids": {"maxItems": 0}, "reason_codes": {"const": ["DSC_R_DECISION_CLEARED"]}}}}}
+    },
+    {
+      "if": {"properties": {"claims": {"contains": {"properties": {"decision": {"properties": {"action": {"const": "mark_not_applicable"}}}}}}}},
+      "then": {"properties": {"claims": {"items": {"properties": {"value": {"$ref": "#/$defs/none"}}}}, "resolution": {"properties": {"status": {"const": "not_applicable"}, "effective_claim_ids": {"maxItems": 0}, "reason_codes": {"contains": {"const": "DSC_R_NOT_APPLICABLE_CONFIRMED"}}}}}}
+    }
+  ],
+  "$defs": {
+    "locator": {"type": "object", "additionalProperties": false, "required": ["predicate", "instance_key"], "properties": {"predicate": {"enum": ["table.structure/entity_binding", "table.temporal/temporal_binding"]}, "instance_key": {"type": "string", "minLength": 1}}},
+    "pin": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "assertion_id", "payload_hash", "dependency_fingerprint"], "properties": {"artifact_id": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/artifact_id"}, "assertion_id": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/assertion_id"}, "payload_hash": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/sha256"}, "dependency_fingerprint": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/sha256"}}},
+    "none": {"type": "object", "additionalProperties": false, "required": ["kind", "selection"], "properties": {"kind": {"enum": ["default_entity_binding", "default_temporal_binding", "expected_cadence"]}, "selection": {"const": "none"}}},
+    "none_entity": {"type": "object", "additionalProperties": false, "required": ["kind", "selection"], "properties": {"kind": {"const": "default_entity_binding"}, "selection": {"const": "none"}}},
+    "none_temporal": {"type": "object", "additionalProperties": false, "required": ["kind", "selection"], "properties": {"kind": {"const": "default_temporal_binding"}, "selection": {"const": "none"}}},
+    "none_cadence": {"type": "object", "additionalProperties": false, "required": ["kind", "selection"], "properties": {"kind": {"const": "expected_cadence"}, "selection": {"const": "none"}}},
+    "default_entity": {"type": "object", "additionalProperties": false, "required": ["kind", "candidate_locator", "candidate_pin"], "properties": {"kind": {"const": "default_entity_binding"}, "candidate_locator": {"allOf": [{"$ref": "#/$defs/locator"}, {"properties": {"predicate": {"const": "table.structure/entity_binding"}}}]}, "candidate_pin": {"$ref": "#/$defs/pin"}}},
+    "default_temporal": {"type": "object", "additionalProperties": false, "required": ["kind", "candidate_locator", "candidate_pin"], "properties": {"kind": {"const": "default_temporal_binding"}, "candidate_locator": {"allOf": [{"$ref": "#/$defs/locator"}, {"properties": {"predicate": {"const": "table.temporal/temporal_binding"}}}]}, "candidate_pin": {"$ref": "#/$defs/pin"}}},
+    "expected_cadence": {"type": "object", "additionalProperties": false, "required": ["kind", "unit", "step", "axis", "grouping"], "properties": {"kind": {"const": "expected_cadence"}, "unit": {"enum": ["day", "week", "month", "quarter", "year"]}, "step": {"type": "integer", "minimum": 1}, "axis": {"type": "object", "additionalProperties": false, "required": ["axis_id", "locator", "pin"], "properties": {"axis_id": {"type": "string", "minLength": 1}, "locator": {"allOf": [{"$ref": "#/$defs/locator"}, {"properties": {"predicate": {"const": "table.temporal/temporal_binding"}}}]}, "pin": {"$ref": "#/$defs/pin"}}}, "grouping": {"oneOf": [{"type": "null"}, {"type": "object", "additionalProperties": false, "required": ["locator", "pin"], "properties": {"locator": {"allOf": [{"$ref": "#/$defs/locator"}, {"properties": {"predicate": {"const": "table.structure/entity_binding"}}}]}, "pin": {"$ref": "#/$defs/pin"}}}]}}},
+    "claim": {"type": "object", "additionalProperties": false, "required": ["claim_id", "authority", "value", "evidence_ids", "decision"], "properties": {"claim_id": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/claim_id"}, "authority": {"const": "source_confirmed_structural"}, "value": {"oneOf": [{"$ref": "#/$defs/default_entity"}, {"$ref": "#/$defs/default_temporal"}, {"$ref": "#/$defs/expected_cadence"}, {"$ref": "#/$defs/none"}]}, "evidence_ids": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/evidence_id"}, "uniqueItems": true}, "decision": {"type": "object", "additionalProperties": false, "required": ["decision_id", "action", "scope"], "properties": {"decision_id": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/opaque_id"}, "action": {"enum": ["confirm", "clear", "mark_not_applicable"]}, "scope": {"const": "source_confirmed_structural"}}}}},
+    "resolution": {"type": "object", "additionalProperties": false, "required": ["status", "effective_claim_ids", "reason_codes", "conflict_ids"], "properties": {"status": {"enum": ["confirmed", "unknown", "not_applicable"]}, "effective_claim_ids": {"type": "array", "items": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/claim_id"}, "maxItems": 1}, "reason_codes": {"type": "array", "items": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/reason_code"}, "uniqueItems": true}, "conflict_ids": {"type": "array", "maxItems": 0}}}
+  }
+}

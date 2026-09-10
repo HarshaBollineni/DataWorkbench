@@ -57,7 +57,7 @@ const scrollWorkflow = (element, deltaY) => {
   }
 };
 
-const VariableInventory = forwardRef(function VariableInventory({ item, readOnly = false, mapping = [], onSaved, deferSave = false, onRowsLoaded }, ref) {
+const VariableInventory = forwardRef(function VariableInventory({ item, readOnly = false, mapping = [], onSaved, deferSave = false, onRowsLoaded, initialTable = "", focusColumn = "" }, ref) {
   const [tables, setTables] = useState([]);
   const [table, setTable] = useState("");
   const [rows, setRows] = useState([]);
@@ -68,11 +68,15 @@ const VariableInventory = forwardRef(function VariableInventory({ item, readOnly
   const [specialValueDrafts, setSpecialValueDrafts] = useState({});
   const inventoryScrollRef = useRef(null);
   const specialInputRefs = useRef(new Map());
+  const columnRefs = useRef(new Map());
 
   useEffect(() => {
     if (!item?.item_id) return;
-    getItemTablesV2(item.item_id).then((next) => { setTables(next); setTable(next[0]?.table_name || ""); });
-  }, [item?.item_id]);
+    getItemTablesV2(item.item_id).then((next) => {
+      setTables(next);
+      setTable(next.some((entry) => entry.table_name === initialTable) ? initialTable : (next[0]?.table_name || ""));
+    });
+  }, [item?.item_id, initialTable]);
 
   useEffect(() => {
     if (!item?.item_id || !table) return;
@@ -87,6 +91,17 @@ const VariableInventory = forwardRef(function VariableInventory({ item, readOnly
       setSpecialValueDrafts({});
     });
   }, [item?.item_id, table, onRowsLoaded]);
+
+  useEffect(() => {
+    if (!focusColumn || !rows.some((row) => row.column_name === focusColumn)) return;
+    setQuery(focusColumn);
+    const timer = window.setTimeout(() => {
+      const target = columnRefs.current.get(`${table}.${focusColumn}`);
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+      target?.querySelector("select, input, button")?.focus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [focusColumn, rows, table]);
 
   const update = (idx, key, value) => {
     setStatus("");
@@ -196,7 +211,7 @@ const VariableInventory = forwardRef(function VariableInventory({ item, readOnly
           const codeKey = `${row.table_name}.${row.column_name}`;
           const observedSpecialCounts = row.profile_json?.proposed_special_value_counts || row.profile_json?.special_value_counts || {};
           const observedSpecialRows = row.profile_json?.proposed_special_value_row_count ?? row.profile_json?.special_value_row_count;
-          return <tr key={`${row.table_name}.${row.column_name}`} className={`border-t align-top ${codeIssue ? "border-red-200 bg-red-50/30" : "border-slate-100"}`}>
+          return <tr key={`${row.table_name}.${row.column_name}`} ref={(node) => { const key = `${row.table_name}.${row.column_name}`; if (node) columnRefs.current.set(key, node); else columnRefs.current.delete(key); }} data-column-focus={row.column_name} className={`border-t align-top ${codeIssue ? "border-red-200 bg-red-50/30" : "border-slate-100"}`}>
             <td className="w-36 max-w-36 whitespace-normal break-words px-3 py-3 font-semibold text-slate-900 [overflow-wrap:anywhere]">{row.column_name}{suggestion && <button type="button" className="mt-2 block max-w-full whitespace-normal break-words text-left text-[11px] font-normal text-dq-purple [overflow-wrap:anywhere]" onClick={() => update(index, "mapping_confirmed", true)}><Sparkles className="mr-1 inline h-3 w-3" />Accept link to {suggestion.canonical_field}</button>}</td>
             <td className="px-3 py-3">{readOnly ? FORMAT_LABEL[formatFor(row)] : <select aria-label={`Format for ${row.column_name}`} className="h-10 rounded-md border border-slate-200 bg-white px-3" value={formatFor(row)} onChange={(event) => update(index, "classification", event.target.value)}>{FORMATS.map((format) => <option key={format} value={format}>{FORMAT_LABEL[format]}</option>)}</select>}</td>
             <td className="px-3 py-3 text-slate-600">{FORMAT_LABEL[formatFor(row, true)]}</td>

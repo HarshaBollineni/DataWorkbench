@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dataworkbench.invalid/schemas/dsc/v2/response.schema.json",
+  "title": "Dataset Structure Context resolution response v2",
+  "type": "object", "additionalProperties": false,
+  "required": ["negotiated", "overall_result", "context_ref", "selector_results"],
+  "properties": {"negotiated": {"type": "object", "additionalProperties": false, "required": ["protocol_version", "context_version"], "properties": {"protocol_version": {"const": "1"}, "context_version": {"const": "2"}}}, "overall_result": {"enum": ["fulfilled", "unfulfilled"]}, "context_ref": {"type": "object", "additionalProperties": false, "required": ["artifact_id", "payload_hash"], "properties": {"artifact_id": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/artifact_id"}, "payload_hash": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json#/$defs/sha256"}}}, "selector_results": {"type": "array", "items": {"$ref": "https://dataworkbench.invalid/schemas/dsc/v2/context.schema.json#/$defs/selector_result"}, "minItems": 1}}
+  }

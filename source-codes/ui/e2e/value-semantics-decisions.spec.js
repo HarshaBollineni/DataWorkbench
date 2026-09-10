@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test-fixture";
 
 const reason = "CLTV measures current loan-to-value; no governed D08 role applies.";
 const field = (column) => ({

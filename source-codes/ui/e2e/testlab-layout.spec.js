@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test-fixture";
 
 const item = {
   item_id: "snapshot-layout",

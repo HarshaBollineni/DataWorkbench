@@ -1,20 +1,24 @@
 import { defineConfig } from "@playwright/test";
+import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "..");
-const e2eRoot = path.join(repoRoot, ".e2e");
+const e2eRoot = path.join(repoRoot, ".e2e", `run-${Date.now()}-${process.pid}`);
+fs.mkdirSync(e2eRoot, { recursive: true });
 const python = path.join(repoRoot, ".venv", "Scripts", "python.exe");
 const backendPort = process.env.E2E_BACKEND_PORT || "8001";
 const frontendPort = process.env.E2E_FRONTEND_PORT || "5175";
 
 export default defineConfig({
   testDir: "./e2e",
-  timeout: 90_000,
+  timeout: 45_000,
   expect: { timeout: 15_000 },
-  // All specs share one backend process and one .e2e/system_state.db (by
+  // All specs share one backend process and one invocation-specific E2E database.
+  // The shared test fixture performs a surgical reset after every test, so
+  // failed drafts cannot cascade into later serial journeys.
   // design — see the fixture-uniqueness comments in the specs themselves).
   // As the suite grew past 2 spec files, real concurrent uploads/executions
   // against that single process started intermittently timing out under the
@@ -23,7 +27,7 @@ export default defineConfig({
   // product bug. Serial execution measured faster in practice (no
   // contention/retries) as well as reliable, so it isn't a speed trade-off.
   workers: 1,
-  reporter: [["list"], ["html", { open: "never" }]],
+  reporter: [["list"], ["json", { outputFile: path.join(e2eRoot, "results.json") }], ["html", { open: "never" }]],
   use: {
     baseURL: `http://127.0.0.1:${frontendPort}`,
     browserName: "chromium",

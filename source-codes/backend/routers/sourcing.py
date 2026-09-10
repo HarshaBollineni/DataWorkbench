@@ -47,6 +47,24 @@ def _require_draft_access(item_id: str, principal: dict) -> dict:
     return item
 
 
+def _require_inventory_access(item_id: str, authorization: str | None) -> tuple[dict, dict]:
+    """Same-tenant guard for the canonical column-review authority.
+
+    Inventory is used by both staged Data Sourcing and ready DSC correction,
+    so draft-only authorization is too narrow.  Missing principal, tenantless
+    principal, unknown snapshot, and cross-tenant snapshot intentionally have
+    the same closed response and are checked before any service mutation.
+    """
+    principal = tenancy.resolve_principal(authorization)
+    if not principal.get("tenant_resolved"):
+        raise HTTPException(status_code=404, detail="Unknown column definitions.")
+    import system_db as db
+    item = db.query_one("dq_items", item_id=item_id)
+    if item is None or not item.get("sourcing_tenant_id") or item["sourcing_tenant_id"] != principal["tenant_id"]:
+        raise HTTPException(status_code=404, detail="Unknown column definitions.")
+    return principal, item
+
+
 class ItemIn(BaseModel):
     kind: str
     name: str
@@ -93,6 +111,13 @@ class ProcessSnapshotIn(BaseModel):
     replacement_confirmation: bool = False
     full_replacement_confirmation: bool = False
     uploaded_by: str | None = None
+
+
+class TechnicalRowIdIn(BaseModel):
+    table: str
+    source_revision: str
+    acknowledge_non_business_identifier: bool = False
+    acknowledge_snapshot_transformation: bool = False
 
 
 class ItemPatch(BaseModel):
@@ -260,6 +285,38 @@ def finalize_item(item_id: str, body: FinalizeIn):
         return service.finalize_item(item_id, body.target_variable, body.use_case)
     except Exception as exc:  # noqa: BLE001
         raise_api_error(exc)
+
+
+@router.get("/items/{item_id}/technical-row-id/source-revision")
+def technical_row_id_source_revision(item_id: str,
+                                       authorization: str | None = Header(default=None)):
+    principal = _sourcing_principal(authorization)
+    _require_draft_access(item_id, principal)
+    eligibility = service.technical_row_id_eligibility(item_id)
+    return {
+        "source_revision": service.technical_row_id_source_revision(item_id),
+        "eligible": eligibility["eligible"],
+        "ineligibility_reason": eligibility["reason"],
+    }
+
+
+@router.post("/items/{item_id}/technical-row-id")
+def create_technical_row_id(item_id: str, body: TechnicalRowIdIn,
+                            idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+                            authorization: str | None = Header(default=None)):
+    principal = _sourcing_principal(authorization)
+    _require_draft_access(item_id, principal)
+    if not idempotency_key:
+        raise HTTPException(status_code=422, detail="Idempotency-Key is required.")
+    try:
+        return service.create_technical_row_id(
+            item_id, table=body.table, source_revision=body.source_revision,
+            acknowledge_non_business_identifier=body.acknowledge_non_business_identifier,
+            acknowledge_snapshot_transformation=body.acknowledge_snapshot_transformation,
+            idempotency_key=idempotency_key, tenant_id=principal["tenant_id"], actor=principal["username"],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409 if str(exc) == "idempotency_key_reused" else 422, detail=str(exc))
 
 
 @router.get("/items")
@@ -500,16 +557,24 @@ def profile_stream(item_id: str):
 
 
 @router.get("/items/{item_id}/inventory")
-def get_inventory(item_id: str, table: str | None = None):
+def get_inventory(item_id: str, table: str | None = None,
+                  authorization: str | None = Header(default=None)):
     try:
+        _require_inventory_access(item_id, authorization)
         return service.get_inventory(item_id, table)
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise_api_error(exc)
 
 
 @router.put("/items/{item_id}/inventory")
-def put_inventory(item_id: str, rows: list[dict], table: str | None = None):
+def put_inventory(item_id: str, rows: list[dict], table: str | None = None,
+                  authorization: str | None = Header(default=None)):
     try:
+        _require_inventory_access(item_id, authorization)
         return service.put_inventory(item_id, rows, table)
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise_api_error(exc)

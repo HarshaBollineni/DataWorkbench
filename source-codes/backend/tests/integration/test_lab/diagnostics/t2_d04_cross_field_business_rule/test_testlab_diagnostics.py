@@ -641,7 +641,7 @@ class ManifestDecisionTests(unittest.TestCase):
 
     def setUp(self):
         self.manifest = v2.build_diagnostic_manifest(
-            self.item_id, v2.ManifestIn(diagnostic_id=4))
+            self.item_id, v2.ManifestIn(diagnostic_id=4, start_afresh=True))
         self.run_id = self.manifest["run_id"]
 
     def test_a_role_override_writes_a_decision_record_and_wins_the_ladder(self):

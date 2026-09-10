@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 _TMP_DB = Path(tempfile.gettempdir()) / "archimedes-test-migration-idempotency.db"
@@ -64,6 +65,51 @@ class MigrationIdempotencyTests(unittest.TestCase):
         seed_platform_and_taxonomy()
         after_three = _table_inventory()
         self.assertEqual(after_two, after_three)
+
+
+class DiagnosticDecisionKindMigrationTests(unittest.TestCase):
+    """D06's explicit DSC acknowledgement must survive the legacy CHECK."""
+
+    def setUp(self):
+        self._prior_path = s.SYS_DB_PATH
+        s.SYS_DB_PATH = Path(tempfile.gettempdir()) / f"archimedes-diag-decisions-{uuid.uuid4().hex}.db"
+
+    def tearDown(self):
+        s.SYS_DB_PATH = self._prior_path
+
+    def test_boot_upgrades_legacy_decision_check_and_preserves_audit_rows(self):
+        conn = s.get_conn()
+        try:
+            conn.execute("""CREATE TABLE diag_run_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT,
+                kind TEXT CHECK(kind IN ('role_override','threshold_tune','scope_exclusion',
+                                         'default_applied','role_verification_change')),
+                payload_json TEXT, actor TEXT, ts TEXT
+            )""")
+            conn.execute("""INSERT INTO diag_run_decisions
+                            (run_id,kind,payload_json,actor,ts)
+                            VALUES ('legacy-run','default_applied','{}','tester','then')""")
+            conn.commit()
+        finally:
+            conn.close()
+
+        s.init_schema()
+        conn = s.get_conn()
+        try:
+            row = conn.execute("SELECT run_id,kind,payload_json FROM diag_run_decisions").fetchone()
+            self.assertEqual(tuple(row), ("legacy-run", "default_applied", "{}"))
+            conn.execute("""INSERT INTO diag_run_decisions
+                            (run_id,kind,payload_json,actor,ts)
+                            VALUES ('d06-run','dsc_assist_confirmation','{}','tester','now')""")
+            conn.commit()
+        finally:
+            conn.close()
+
+        s.init_schema()
+        self.assertEqual(
+            s.query("diag_run_decisions", run_id="d06-run")[0]["kind"],
+            "dsc_assist_confirmation",
+        )
 
 
 class LegacyRcaTableUpgradeTests(unittest.TestCase):
@@ -134,6 +180,146 @@ class LegacyRcaTableUpgradeTests(unittest.TestCase):
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='rca_cases_legacy_v1'"
             ).fetchone()[0]
             self.assertEqual(count, 1)
+        finally:
+            conn.close()
+
+
+class D06ShadowAuditMigrationTests(unittest.TestCase):
+    """Boot repair for every D06 shadow-audit shape shipped before C2.
+
+    The index at the end of ``init_schema`` must never be the first code that
+    notices a partial table: the upgrade itself owns schema repair and must be
+    safe to repeat against the same on-disk database.
+    """
+
+    def setUp(self):
+        self._prior_path = s.SYS_DB_PATH
+        s.SYS_DB_PATH = Path(tempfile.gettempdir()) / f"archimedes-d06-shadow-{uuid.uuid4().hex}.db"
+
+    def tearDown(self):
+        s.SYS_DB_PATH = self._prior_path
+
+    @staticmethod
+    def _columns(conn):
+        return [row[1] for row in conn.execute("PRAGMA table_info(d06_dsc_cadence_shadow_audit)")]
+
+    @staticmethod
+    def _has_run_version_key(conn):
+        for index in conn.execute("PRAGMA index_list(d06_dsc_cadence_shadow_audit)"):
+            if index[2]:
+                names = tuple(row[2] for row in conn.execute(f'PRAGMA index_info("{index[1]}")'))
+                if names == ("run_id", "adapter_version"):
+                    return True
+        return False
+
+    def test_fresh_database_creates_the_canonical_shadow_audit_schema(self):
+        s.init_schema()
+        conn = s.get_conn()
+        try:
+            self.assertEqual(self._columns(conn), list(s._D06_SHADOW_AUDIT_COLUMNS))
+            self.assertTrue(self._has_run_version_key(conn))
+        finally:
+            conn.close()
+
+    def test_legacy_unique_run_id_rows_receive_safe_defaults(self):
+        conn = s.get_conn()
+        try:
+            conn.execute("""CREATE TABLE d06_dsc_cadence_shadow_audit (
+                event_id TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE,
+                event_type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL
+            )""")
+            conn.execute("INSERT INTO d06_dsc_cadence_shadow_audit VALUES (?,?,?,?,?)", (
+                "legacy-event", "legacy-run", "legacy-type", '{"run_id":"legacy-run"}', "2026-01-01T00:00:00+00:00",
+            ))
+            conn.commit()
+        finally:
+            conn.close()
+
+        s.init_schema()
+        conn = s.get_conn()
+        try:
+            row = conn.execute("SELECT tenant_id, run_id, adapter_version, event_type FROM d06_dsc_cadence_shadow_audit").fetchone()
+            self.assertEqual(tuple(row), ("bootstrap", "legacy-run", "v1", "legacy-type"))
+            self.assertTrue(self._has_run_version_key(conn))
+        finally:
+            conn.close()
+
+    def test_partial_table_missing_run_id_recovers_it_from_the_payload(self):
+        conn = s.get_conn()
+        try:
+            # This is the exact interrupted additive shape that caused startup
+            # to fail: tenant/version were added but run_id never existed.
+            conn.execute("""CREATE TABLE d06_dsc_cadence_shadow_audit (
+                event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL, tenant_id TEXT NOT NULL DEFAULT 'bootstrap',
+                adapter_version TEXT NOT NULL DEFAULT 'v1'
+            )""")
+            conn.execute("INSERT INTO d06_dsc_cadence_shadow_audit (event_id,event_type,payload_json,created_at) VALUES (?,?,?,?)", (
+                "partial-event", "legacy-type", '{"run_id":"payload-run"}', "2026-01-01T00:00:00+00:00",
+            ))
+            conn.commit()
+        finally:
+            conn.close()
+
+        s.init_schema()
+        conn = s.get_conn()
+        try:
+            row = conn.execute("SELECT event_id, run_id FROM d06_dsc_cadence_shadow_audit").fetchone()
+            self.assertEqual(tuple(row), ("partial-event", "payload-run"))
+            self.assertEqual(self._columns(conn), list(s._D06_SHADOW_AUDIT_COLUMNS))
+        finally:
+            conn.close()
+
+    def test_unrecoverable_partial_rows_are_quarantined_not_silently_dropped(self):
+        conn = s.get_conn()
+        try:
+            conn.execute("""CREATE TABLE d06_dsc_cadence_shadow_audit (
+                event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )""")
+            conn.execute("INSERT INTO d06_dsc_cadence_shadow_audit VALUES (?,?,?,?)", (
+                "unrecoverable-event", "legacy-type", '{}', "2026-01-01T00:00:00+00:00",
+            ))
+            conn.commit()
+        finally:
+            conn.close()
+
+        s.init_schema()
+        conn = s.get_conn()
+        try:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM d06_dsc_cadence_shadow_audit").fetchone()[0], 0)
+            legacy = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'd06_dsc_cadence_shadow_audit_legacy_v2%'"
+            ).fetchone()[0]
+            self.assertEqual(conn.execute(f'SELECT event_id FROM "{legacy}"').fetchone()[0], "unrecoverable-event")
+        finally:
+            conn.close()
+
+    def test_current_schema_is_a_fixed_point_across_repeat_initialization(self):
+        s.init_schema()
+        conn = s.get_conn()
+        try:
+            conn.execute("""INSERT INTO d06_dsc_cadence_shadow_audit
+                (event_id,tenant_id,run_id,adapter_version,event_type,payload_json,created_at)
+                VALUES (?,?,?,?,?,?,?)""", (
+                "current-event", "tenant-a", "current-run", "v1", "current-type",
+                '{"run_id":"current-run"}', "2026-01-01T00:00:00+00:00",
+            ))
+            conn.commit()
+        finally:
+            conn.close()
+
+        s.init_schema()
+        s.init_schema()
+        conn = s.get_conn()
+        try:
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM d06_dsc_cadence_shadow_audit").fetchone()[0], 1)
+            self.assertEqual(conn.execute("SELECT tenant_id FROM d06_dsc_cadence_shadow_audit").fetchone()[0], "tenant-a")
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' "
+                "AND name LIKE 'd06_dsc_cadence_shadow_audit_legacy_v2%'"
+            ).fetchone()[0], 0)
         finally:
             conn.close()
 

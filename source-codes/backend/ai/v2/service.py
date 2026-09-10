@@ -60,6 +60,8 @@ ITEM_DB_ROOT = Path(os.environ.get("ITEM_DB_DIR") or
 FINGERPRINT_HISTOGRAM_BINS = 10  # AST-17 fixed-bin numeric distribution fingerprint.
 FINGERPRINT_DISTINCT_SET_MAX = 100  # AST-17 hash only low-cardinality sets.
 PROFILE_TOP_K_LIMIT = 50  # Retain enough categorical evidence for non-identifier analysis.
+TECHNICAL_ROW_ID_ORDINAL_COLUMN = "__dw_technical_source_ordinal_v1__"
+TECHNICAL_ROW_ID_ORDINAL_PROVENANCE = "tri-cache-ordinal-v1"
 TIME_BASIS_PERIOD = "period"
 DICTIONARY_PERIOD_ROLE = TIME_BASIS_PERIOD
 INVENTORY_ROLE_BY_DICTIONARY = {
@@ -162,6 +164,56 @@ def _data_files(item_id: str) -> list[Path]:
     return [Path(row["path"]) for row in rows if row.get("path")]
 
 
+def technical_row_id_source_revision(item_id: str) -> str:
+    """Stable source/parser revision used to fence staged transformations."""
+    item = require_item(item_id)
+    files = []
+    source_rows = db.query("dq_item_files", item_id=item_id, role="source_data")
+    # Before the first transform the uploaded data is the source. Afterwards
+    # canonical `data` is derived and must not replace the pinned source hash.
+    source_rows = source_rows or db.query("dq_item_files", item_id=item_id, role="data")
+    for row in sorted(source_rows, key=lambda value: value.get("file_id") or ""):
+        path = Path(row.get("path") or "")
+        if not path.is_file():
+            raise ValueError("The retained source data is unavailable.")
+        files.append({"file_id": row.get("file_id"), "filename": row.get("filename"),
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    if not files:
+        raise ValueError("A retained source data file is required.")
+    return hashlib.sha256(json.dumps({"snapshot_id": item_id, "files": files,
+                                      "parser_options": item.get("source_parsing_options_json") or {}},
+                                     sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def technical_row_id_eligibility(item_id: str) -> dict[str, Any]:
+    item = require_item(item_id)
+    if item.get("sourcing_draft_state") not in {"active", "recovery"} or db.query_one("dq_asset_events", snapshot_id=item_id, event_type="snapshot_processed"):
+        return {"eligible": False, "reason": "Technical row identifiers are available only before snapshot finalization."}
+    source_tables = tables(item_id)
+    if len(source_tables) != 1:
+        return {"eligible": False, "reason": "Technical row identifiers currently require a single-table staged source."}
+    return {"eligible": True, "reason": None}
+
+
+def _technical_row_id_path(item_id: str, table: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_]+", "_", table).strip("_") or "table"
+    path = _item_dir(item_id) / "derived" / "technical_row_id"
+    path.mkdir(parents=True, exist_ok=True)
+    return path / f"{safe}.parquet"
+
+
+def _apply_completed_technical_row_ids(item_id: str) -> None:
+    """Restore only verified completed derived tables after cache recovery."""
+    for transform in db.query("technical_row_id_transforms", snapshot_id=item_id, status="complete"):
+        path = Path(transform.get("derived_path") or "")
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != transform.get("derived_hash"):
+            raise ValueError("A technical row identifier transformation is unavailable or corrupt.")
+        frame = pd.read_parquet(path)
+        if len(frame) != int(transform.get("row_count") or -1) or "technical_row_id" not in frame.columns:
+            raise ValueError("A technical row identifier transformation is invalid.")
+        _write_table(item_id, transform["table_name"], frame)
+
+
 def _rebuild_item_db(item_id: str) -> None:
     """Recreate the local execution cache from durable uploaded sources."""
     for source in _data_files(item_id):
@@ -169,6 +221,7 @@ def _rebuild_item_db(item_id: str) -> None:
             continue
         for table, frame in _read_tabular(source, _source_options(item_id)).items():
             _write_table(item_id, table, frame)
+    _apply_completed_technical_row_ids(item_id)
 
 
 def _jsonable(value: Any) -> Any:
@@ -185,7 +238,29 @@ def _read_table(item_id: str, table: str) -> pd.DataFrame:
     if not item_db.exists():
         _rebuild_item_db(item_id)
     with closing(sqlite3.connect(item_db)) as conn:
-        return pd.read_sql_query(f'SELECT * FROM "{table}"', conn)
+        frame = pd.read_sql_query(f'SELECT * FROM "{table}"', conn)
+    # The persisted ordinal is cache-private and never a business column.
+    return frame.drop(columns=[TECHNICAL_ROW_ID_ORDINAL_COLUMN], errors="ignore")
+
+
+def _read_table_with_technical_row_ordinals(item_id: str, table: str) -> tuple[pd.DataFrame, list[int]]:
+    """Read a staged source through its persisted, parser-order ordinal."""
+    import sqlite3
+    item_db = _item_db(item_id)
+    if not item_db.exists():
+        _rebuild_item_db(item_id)
+    with closing(sqlite3.connect(item_db)) as conn:
+        fields = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+        if TECHNICAL_ROW_ID_ORDINAL_COLUMN not in fields:
+            raise ValueError("The staged source has no persisted technical row ordinal.")
+        frame = pd.read_sql_query(
+            f'SELECT * FROM "{table}" ORDER BY "{TECHNICAL_ROW_ID_ORDINAL_COLUMN}" ASC', conn,
+        )
+    ordinals = frame.pop(TECHNICAL_ROW_ID_ORDINAL_COLUMN).tolist()
+    if (not all(isinstance(value, (int, np.integer)) for value in ordinals)
+            or ordinals != list(range(len(ordinals)))):
+        raise ValueError("The staged source row ordinal is invalid.")
+    return frame, [int(value) for value in ordinals]
 
 
 def read_snapshot_table(item_id: str, table: str,
@@ -229,9 +304,16 @@ def _write_table(item_id: str, table: str, df: pd.DataFrame) -> None:
             f"Cannot write to snapshot {item_id!r}: it has been superseded and its stored "
             "content is immutable (AST-08) — add a new snapshot instead of overwriting one."
         )
+    if TECHNICAL_ROW_ID_ORDINAL_COLUMN in df.columns:
+        raise ValueError("The reserved technical source ordinal column cannot be supplied by source data.")
     clean = re.sub(r"[^A-Za-z0-9_]+", "_", table).strip("_") or "dataset"
+    cache_frame = df.copy()
+    # This is generated at parser/write time, not inferred from SQLite row
+    # storage. It is intentionally excluded from dq_item_tables metadata and
+    # public readers, but makes transformation order reproducible.
+    cache_frame[TECHNICAL_ROW_ID_ORDINAL_COLUMN] = range(len(cache_frame))
     with closing(sqlite3.connect(_item_db(item_id))) as conn:
-        df.to_sql(clean, conn, if_exists="replace", index=False)
+        cache_frame.to_sql(clean, conn, if_exists="replace", index=False)
         conn.commit()
     db.upsert("dq_item_tables", {
         "item_id": item_id, "table_name": clean, "row_count": int(len(df)),
@@ -245,6 +327,265 @@ def _write_table(item_id: str, table: str, df: pd.DataFrame) -> None:
         column_count = totals[0]["cc"] if totals else int(len(df.columns))
         db.update("dq_items", {"item_id": item_id},
                  {"row_count": row_count, "column_count": column_count})
+
+
+def _technical_row_id_values(item_id: str, table: str, source_revision: str,
+                             parser_options: dict[str, Any], ordinals: list[int]) -> list[str]:
+    namespace = {"algorithm": "tri-v1", "snapshot_id": item_id, "source_revision": source_revision,
+                 "parser_options": parser_options, "table": table,
+                 "ordinal_provenance": TECHNICAL_ROW_ID_ORDINAL_PROVENANCE}
+    return ["tri_" + hashlib.sha256(json.dumps({**namespace, "ordinal": ordinal}, sort_keys=True,
+            separators=(",", ":")).encode("utf-8")).hexdigest() for ordinal in ordinals]
+
+
+def _technical_row_id_inventory(item_id: str, table: str, values: pd.Series) -> None:
+    profile = _column_profile(values, [], True, "identifier")
+    db.upsert("variable_inventory", {"item_id": item_id, "table_name": table, "column_name": "technical_row_id",
+               "classification": "identifier", "data_type": str(values.dtype),
+               "description": "System-generated technical row identifier; not a business entity.", "discrepancies": [], "notes": "derived technical row identifier",
+               "role": "Ignore", "dictionary_role": "ignore", "role_reviewed": 1, "business_context": "",
+               "missing_value_codes_json": [], "missing_codes_confirmed": 1, "profile_json": profile,
+               "provisional": 0, "updated_at": db.now_ist()})
+
+
+_TECHNICAL_ROW_ID_PROVENANCE = {
+    "classification": "identifier",
+    "description": "System-generated technical row identifier; not a business entity.",
+    "notes": "derived technical row identifier",
+    "role": "Ignore", "dictionary_role": "ignore", "role_reviewed": 1,
+    "business_context": "", "missing_value_codes_json": [],
+    "missing_codes_confirmed": 1, "provisional": 0,
+}
+
+
+def _technical_row_id_is_protected(item_id: str, table: str, column: str, *, conn=None) -> bool:
+    """The transform ledger, rather than editable inventory text, owns protection."""
+    if column != "technical_row_id":
+        return False
+    sql = ("SELECT 1 FROM technical_row_id_transforms WHERE snapshot_id=? AND table_name=? "
+           "AND ((status='complete' AND publication_state='active') "
+           "OR (status='writing' AND publication_state='published')) LIMIT 1")
+    if conn is not None:
+        return conn.execute(sql, (item_id, table)).fetchone() is not None
+    return bool(db.execute(sql, [item_id, table]))
+
+
+def _enforce_technical_row_id_protection(item_id: str, table: str, column: str,
+                                         submitted: dict[str, Any], current: dict[str, Any], *, conn=None) -> bool:
+    if not _technical_row_id_is_protected(item_id, table, column, conn=conn):
+        return False
+    for field, expected in _TECHNICAL_ROW_ID_PROVENANCE.items():
+        if field not in submitted:
+            continue
+        value = submitted[field]
+        if field == "role_reviewed":
+            value = int(bool(value))
+        elif field == "missing_value_codes_json":
+            value = _special_value_list(value)
+        if value != expected:
+            raise ValueError("technical_row_id is a protected derived Ignore column and its provenance cannot be changed.")
+    current.update(_TECHNICAL_ROW_ID_PROVENANCE)
+    return True
+
+
+def _published_technical_row_id_frame(transform: dict) -> pd.DataFrame:
+    """Validate the durable, canonical output before it can become active."""
+    path = Path(transform.get("derived_path") or "")
+    if (transform.get("publication_state") != "published" or not path.is_file()
+            or technical_row_id_source_revision(transform["snapshot_id"]) != transform["source_revision"]):
+        raise ValueError("published technical row identifier evidence is unavailable")
+    canonical = db.query("dq_item_files", item_id=transform["snapshot_id"], role="data")
+    retained = db.query("dq_item_files", item_id=transform["snapshot_id"], role="source_data")
+    if len(canonical) != 1 or not retained or Path(canonical[0].get("path") or "") != path:
+        raise ValueError("published technical row identifier canonical ownership is invalid")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if transform.get("derived_hash") != digest:
+        raise ValueError("published technical row identifier hash is invalid")
+    frame = pd.read_parquet(path)
+    options = transform.get("parser_options_json") or {}
+    if isinstance(options, str):
+        options = json.loads(options)
+    expected = _technical_row_id_values(
+        transform["snapshot_id"], transform["table_name"], transform["source_revision"], options,
+        list(range(len(frame))),
+    )
+    if (transform.get("ordinal_provenance") != TECHNICAL_ROW_ID_ORDINAL_PROVENANCE
+            or len(frame) != int(transform["row_count"]) or "technical_row_id" not in frame.columns
+            or frame["technical_row_id"].tolist() != expected):
+        raise ValueError("published technical row identifier output is invalid")
+    return frame
+
+
+def _activate_published_technical_row_id(transform_id: str) -> bool:
+    """Idempotently finish cache/profile activation after canonical publication.
+
+    Cache and inventory writes cannot share the file/SQLite transaction which
+    changes canonical file ownership.  ``published`` therefore stays durable
+    until every replayable seam succeeds; it is never converted to ``failed``.
+    """
+    transform = db.query_one("technical_row_id_transforms", transform_id=transform_id)
+    if not transform or transform.get("status") == "complete":
+        return False
+    frame = _published_technical_row_id_frame(transform)
+    _write_table(transform["snapshot_id"], transform["table_name"], frame)
+    _technical_row_id_inventory(transform["snapshot_id"], transform["table_name"], frame["technical_row_id"])
+    _mark_technical_row_id_active(transform_id)
+    return True
+
+
+def _mark_technical_row_id_active(transform_id: str) -> None:
+    """Commit the replayable activation ledger transition."""
+    with db.get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT status, publication_state FROM technical_row_id_transforms WHERE transform_id=?",
+            (transform_id,),
+        ).fetchone()
+        if current is None or current["status"] != "writing" or current["publication_state"] != "published":
+            conn.rollback()
+            raise ValueError("published technical row identifier state changed during activation")
+        conn.execute(
+            "UPDATE technical_row_id_transforms SET status='complete', publication_state='active', "
+            "closed_error_code=NULL, updated_at=? WHERE transform_id=?",
+            (db.now_ist(), transform_id),
+        )
+        conn.commit()
+
+
+def recover_technical_row_id_transforms(item_id: str) -> int:
+    """Replay every durable published-but-not-active transform after restart."""
+    recovered = 0
+    for transform in db.query("technical_row_id_transforms", snapshot_id=item_id, status="writing"):
+        if transform.get("publication_state") != "published":
+            continue
+        try:
+            recovered += int(_activate_published_technical_row_id(transform["transform_id"]))
+        except Exception:
+            # A published canonical source must remain retryable.  Preserve an
+            # observable code, but never strand it as an unrecoverable failure.
+            db.update("technical_row_id_transforms", {
+                "transform_id": transform["transform_id"], "status": "writing",
+            }, {"closed_error_code": "DSC_R_TECHNICAL_ROW_ID_RECOVERY_RETRYABLE", "updated_at": db.now_ist()})
+    return recovered
+
+
+def create_technical_row_id(item_id: str, *, table: str, source_revision: str,
+                            acknowledge_non_business_identifier: bool,
+                            acknowledge_snapshot_transformation: bool,
+                            idempotency_key: str, tenant_id: str, actor: str) -> dict[str, Any]:
+    """Create the opt-in, deterministic non-business row ID on a staged table.
+
+    The original upload is retained as ``source_data`` while the derived
+    Parquet becomes the one canonical ``data`` source.  The transformation has
+    durable lineage, is deliberately metadata ``Ignore``, and cannot become a
+    DSC entity.
+    """
+    recover_technical_row_id_transforms(item_id)
+    if not idempotency_key or len(idempotency_key) > 200:
+        raise ValueError("Idempotency-Key is required.")
+    if not (acknowledge_non_business_identifier and acknowledge_snapshot_transformation):
+        raise ValueError("Both technical row identifier acknowledgements are required.")
+    item = require_item(item_id)
+    if (item.get("sourcing_tenant_id") != tenant_id or item.get("sourcing_draft_state") not in {"active", "recovery"}
+            or db.query_one("dq_asset_events", snapshot_id=item_id, event_type="snapshot_processed")):
+        raise ValueError("Technical row identifiers are available only before snapshot finalization.")
+    if not isinstance(table, str) or table not in {row["table_name"] for row in tables(item_id)}:
+        raise ValueError("table is invalid")
+    eligibility = technical_row_id_eligibility(item_id)
+    if not eligibility["eligible"]:
+        # Canonical ownership switches at source-file scope. Until the later
+        # multi-table canonical-bundle writer is implemented, accepting one
+        # table would make untouched tables disappear after cache recovery.
+        raise ValueError(eligibility["reason"])
+    actual_revision = technical_row_id_source_revision(item_id)
+    if source_revision != actual_revision:
+        raise ValueError("source_revision is stale; reload the staged source before transforming it.")
+    request_digest = hashlib.sha256(json.dumps({"table": table, "source_revision": source_revision,
+        "acks": [True, True]}, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    existing = db.query_one("technical_row_id_transforms", tenant_id=tenant_id, idempotency_key=idempotency_key)
+    if existing:
+        if existing["request_digest"] != request_digest:
+            raise ValueError("idempotency_key_reused")
+        if existing["status"] == "complete":
+            return {"transform_id": existing["transform_id"], "table": table, "status": "complete",
+                    "source_revision": existing["source_revision"], "column": "technical_row_id"}
+        if existing.get("publication_state") == "published":
+            recover_technical_row_id_transforms(item_id)
+            existing = db.query_one("technical_row_id_transforms", transform_id=existing["transform_id"])
+            if existing and existing["status"] == "complete":
+                return {"transform_id": existing["transform_id"], "table": table, "status": "complete",
+                        "source_revision": existing["source_revision"], "column": "technical_row_id"}
+            raise ValueError("technical row identifier transformation is still pending recovery")
+        if existing.get("publication_state") != "preparing" or existing.get("source_revision") != source_revision:
+            raise ValueError("technical row identifier transformation is still pending recovery")
+    frame, ordinals = _read_table_with_technical_row_ordinals(item_id, table)
+    if any(_norm_name(column) == "technical_row_id" for column in frame.columns):
+        raise ValueError("technical_row_id already exists; source columns are never overwritten.")
+    if len(frame) <= 0:
+        raise ValueError("The source row order cannot be verified for this transformation.")
+    source_files = [{"file_id": row.get("file_id"), "filename": row.get("filename")}
+                    for row in (db.query("dq_item_files", item_id=item_id, role="source_data")
+                                or db.query("dq_item_files", item_id=item_id, role="data"))]
+    transform_id, now = (existing["transform_id"] if existing else _id("tri")), db.now_ist()
+    path = (Path(existing["derived_path"]) if existing and existing.get("derived_path")
+            else _technical_row_id_path(item_id, table))
+    with db.get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute("SELECT * FROM dq_items WHERE item_id=?", (item_id,)).fetchone()
+        if (current is None or current["sourcing_tenant_id"] != tenant_id
+                or current["sourcing_draft_state"] not in {"active", "recovery"}
+                or conn.execute("SELECT 1 FROM dq_asset_events WHERE snapshot_id=? AND event_type='snapshot_processed'", (item_id,)).fetchone()):
+            conn.rollback(); raise ValueError("Technical row identifiers are available only before snapshot finalization.")
+        if technical_row_id_source_revision(item_id) != source_revision:
+            conn.rollback(); raise ValueError("source_revision is stale; reload the staged source before transforming it.")
+        if existing:
+            # A legacy pre-publication row has no trusted ordinal contract or
+            # durable output path.  Reusing its transform ID is safe only when
+            # this retry records the current parser-order provenance and a
+            # deterministic derived destination before recreating the file.
+            conn.execute("UPDATE technical_row_id_transforms SET status='writing',publication_state='preparing',ordinal_provenance=?,derived_path=?,derived_hash=NULL,row_count=?,closed_error_code=NULL,updated_at=? WHERE transform_id=? AND publication_state='preparing'", (TECHNICAL_ROW_ID_ORDINAL_PROVENANCE, str(path), len(frame), now, transform_id))
+        else:
+            conn.execute("INSERT INTO technical_row_id_transforms (transform_id,tenant_id,snapshot_id,table_name,idempotency_key,request_digest,source_revision,parser_options_json,source_files_json,status,publication_state,ordinal_provenance,derived_path,derived_hash,row_count,closed_error_code,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (transform_id, tenant_id, item_id, table, idempotency_key, request_digest, source_revision, json.dumps(item.get("source_parsing_options_json") or {}, sort_keys=True), json.dumps(source_files, sort_keys=True), "writing", "preparing", TECHNICAL_ROW_ID_ORDINAL_PROVENANCE, str(path), None, len(frame), None, actor, now, now))
+        conn.commit()
+    try:
+        values = _technical_row_id_values(item_id, table, source_revision,
+                                          item.get("source_parsing_options_json") or {}, ordinals)
+        derived = frame.copy(); derived.insert(len(derived.columns), "technical_row_id", values)
+        temporary = path.parent / f".{path.stem}.{uuid.uuid4().hex}.tmp.parquet"
+        derived.to_parquet(temporary, index=False)
+        temporary.replace(path)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        # Source must not change while the derived file is being produced.
+        if technical_row_id_source_revision(item_id) != source_revision:
+            raise ValueError("DSC_R_TECHNICAL_ROW_ID_SOURCE_CHANGED")
+        # The derived Parquet becomes the sole canonical data input only after
+        # it exists and passes its hash check. Original uploads are retained
+        # unchanged as source_data for lineage/recovery, never double-read.
+        with db.get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute("SELECT * FROM dq_items WHERE item_id=?", (item_id,)).fetchone()
+            record = conn.execute("SELECT * FROM technical_row_id_transforms WHERE transform_id=? AND status='writing' AND publication_state='preparing'", (transform_id,)).fetchone()
+            if (current is None or record is None or current["sourcing_tenant_id"] != tenant_id
+                    or current["sourcing_draft_state"] not in {"active", "recovery"}
+                    or conn.execute("SELECT 1 FROM dq_asset_events WHERE snapshot_id=? AND event_type='snapshot_processed'", (item_id,)).fetchone()
+                    or technical_row_id_source_revision(item_id) != source_revision):
+                conn.rollback(); raise ValueError("DSC_R_TECHNICAL_ROW_ID_SOURCE_CHANGED")
+            conn.execute("UPDATE dq_item_files SET role='source_data' WHERE item_id=? AND role='data'", (item_id,))
+            conn.execute("INSERT INTO dq_item_files (file_id,item_id,role,filename,path,completed_at) VALUES (?,?,?,?,?,?)", (_id("file"), item_id, "data", path.name, str(path), db.now_ist()))
+            conn.execute("UPDATE technical_row_id_transforms SET publication_state='published', derived_hash=?, updated_at=? WHERE transform_id=?", (digest, db.now_ist(), transform_id))
+            conn.commit()
+        _activate_published_technical_row_id(transform_id)
+    except Exception as exc:
+        transform = db.query_one("technical_row_id_transforms", transform_id=transform_id) or {}
+        if transform.get("publication_state") == "published":
+            db.update("technical_row_id_transforms", {"transform_id": transform_id, "status": "writing"},
+                      {"closed_error_code": "DSC_R_TECHNICAL_ROW_ID_ACTIVATION_RETRYABLE", "updated_at": db.now_ist()})
+        else:
+            db.update("technical_row_id_transforms", {"transform_id": transform_id, "status": "writing"},
+                      {"status": "failed", "closed_error_code": "DSC_R_TECHNICAL_ROW_ID_FAILED", "updated_at": db.now_ist()})
+        raise
+    return {"transform_id": transform_id, "table": table, "status": "complete", "source_revision": source_revision,
+            "column": "technical_row_id"}
 
 
 def _delimiter_value(value: Any) -> str | None:
@@ -273,7 +614,11 @@ def _read_tabular(path: Path, options: dict[str, Any] | None = None) -> dict[str
     if suffix in {".csv", ".tsv", ".txt"}:
         if suffix == ".tsv" and not delimiter:
             delimiter = "\t"
-        return {path.stem: pd.read_csv(path, sep=delimiter or None, engine="python")}
+        # A staged CSV with a one-column header lets Python's sniffer choose a
+        # character from that header (for example ``v`` in ``value``) as a
+        # delimiter.  Row-order recovery must replay the same uploaded CSV
+        # deterministically, so ordinary CSV defaults to its literal comma.
+        return {path.stem: pd.read_csv(path, sep=delimiter or ",", engine="python")}
     if suffix in {".xlsx", ".xls"}:
         sheets = pd.read_excel(path, sheet_name=selected_sheet if selected_sheet is not None else None)
         if isinstance(sheets, pd.DataFrame):
@@ -288,6 +633,8 @@ def _read_tabular(path: Path, options: dict[str, Any] | None = None) -> dict[str
                     with zf.open(name) as fh:
                         out[Path(name).stem] = pd.read_csv(fh, sep=delimiter or None, engine="python")
         return out
+    if suffix == ".parquet":
+        return {path.stem: pd.read_parquet(path)}
     raise ValueError(f"Unsupported data file type: {suffix}")
 
 
@@ -797,6 +1144,12 @@ def _column_profile(series: pd.Series, special_values: list[Any] | None = None,
                 "end_date": f"{last_year:04d}-{last_month:02d}-{last_day:02d}",
                 "format": "calendar_quarter",
             },
+            # The quarter recognizer inspected every regular value.  Retain
+            # that exact coverage separately from bounds so downstream DSC
+            # need not treat a bounds-shaped value as format evidence.
+            "period_format_evidence_available": True,
+            "period_format_checked_regular_count": regular_count,
+            "period_format_failure_count": 0,
         })
         profile["top_values"] = {
             str(k): int(v)
@@ -1257,6 +1610,9 @@ def discard_staged_upload(item_id: str, actor: str = "system") -> dict:
     if dictionary_version_id:
         db.delete("dq_asset_dictionaries", dictionary_version_id=dictionary_version_id)
     for table, key in (
+        ("dataset_structure_materialization_jobs", "snapshot_id"),
+        ("dataset_structure_profile_publications", "snapshot_id"),
+        ("dataset_structure_profile_publication_completions", "snapshot_id"),
         ("dq_snapshot_fingerprints", "snapshot_id"),
         ("dq_item_warnings", "item_id"),
         ("dq_item_mappings", "item_id"),
@@ -1541,6 +1897,7 @@ def profile_item(item_id: str, progress_callback: Callable[[dict[str, Any]], Non
                 col, classification, item.get("target_variable"), frame[col])
             missing_codes = _special_value_list((entry or {}).get("missing_value_codes"))
             prior = prior_inventory.get(col) or {}
+            technical_row_id = _technical_row_id_is_protected(item_id, table_name, col)
             codes_confirmed = bool(
                 not dictionary_changed
                 and prior.get("missing_codes_confirmed")
@@ -1549,21 +1906,22 @@ def profile_item(item_id: str, progress_callback: Callable[[dict[str, Any]], Non
             row = {
                 "item_id": item_id, "table_name": table_name, "column_name": col,
                 "classification": classification, "data_type": str(frame[col].dtype),
-                "description": (entry or {}).get("definition", ""), "discrepancies": discrepancies, "notes": "",
-                "role": inventory_role, "dictionary_role": dictionary_role,
+                "description": (_TECHNICAL_ROW_ID_PROVENANCE["description"] if technical_row_id else (entry or {}).get("definition", "")), "discrepancies": discrepancies, "notes": (_TECHNICAL_ROW_ID_PROVENANCE["notes"] if technical_row_id else ""),
+                "role": "Ignore" if technical_row_id else inventory_role,
+                "dictionary_role": "ignore" if technical_row_id else dictionary_role,
                 # Automatic profiling may infer a role, but only an explicit
                 # Review submission may mark that role as reviewed metadata.
-                "role_reviewed": 0,
-                "business_context": (entry or {}).get("business_context") or "",
-                "missing_value_codes_json": missing_codes,
-                "missing_codes_confirmed": int(codes_confirmed),
+                "role_reviewed": 1 if technical_row_id else 0,
+                "business_context": "" if technical_row_id else (entry or {}).get("business_context") or "",
+                "missing_value_codes_json": [] if technical_row_id else missing_codes,
+                "missing_codes_confirmed": 1 if technical_row_id else int(codes_confirmed),
                 "profile_json": {
                     **_column_profile(frame[col], missing_codes, codes_confirmed, classification),
                     "inferred_type": observed,
                     "sample_values": [_jsonable(value) for value in _regular_values(
                         frame[col], missing_codes, codes_confirmed).head(5).tolist()],
                 },
-                "provisional": 0 if confident else 1,
+                "provisional": 0 if technical_row_id or confident else 1,
                 "updated_at": db.now_ist(),
             }
             _write_snapshot_fingerprint(item_id, table_name, col, row["profile_json"], classification)
@@ -1644,11 +2002,14 @@ def _profile_summary(row: dict) -> str:
     return ", ".join(parts) + "."
 
 
-def _persist_confirmed_type_map(item_id: str) -> dict:
+def _persist_confirmed_type_map(item_id: str, *, inventory_rows: list[dict] | None = None,
+                                conn: Any | None = None) -> dict:
     """Persist the post-override type map on the snapshot and fresh schema."""
-    item = require_item(item_id)
+    item = (db.query_one("dq_items", conn=conn, item_id=item_id) if conn is not None else require_item(item_id))
+    if item is None:
+        raise KeyError(item_id)
     schema_tables: dict[str, dict] = {}
-    for row in get_inventory(item_id):
+    for row in (inventory_rows if inventory_rows is not None else get_inventory(item_id)):
         table_name = row["table_name"]
         table_schema = schema_tables.setdefault(table_name, {"columns": [], "types": {}})
         table_schema["columns"].append(row["column_name"])
@@ -1657,19 +2018,19 @@ def _persist_confirmed_type_map(item_id: str) -> dict:
         table_schema["column_count"] = len(table_schema["columns"])
     schema = {"tables": schema_tables}
     encoded = json.dumps(schema, sort_keys=True)
-    db.update("dq_items", {"item_id": item_id}, {"column_type_map_json": encoded})
+    db.update("dq_items", {"item_id": item_id}, {"column_type_map_json": encoded}, conn=conn)
     family_id = item.get("dataset_family_id")
     if family_id and item.get("intent") == "fresh":
         db.update(
             "dq_asset_versions",
             {"asset_id": family_id, "version_no": item.get("version_no") or 1},
-            {"reference_schema_json": encoded, "created_from_snapshot_id": item_id},
+            {"reference_schema_json": encoded, "created_from_snapshot_id": item_id}, conn=conn,
         )
     return schema
 
 
 def _write_snapshot_fingerprint(snapshot_id: str, table_name: str, column_name: str,
-                                profile: dict, confirmed_type: str) -> None:
+                                profile: dict, confirmed_type: str, *, conn: Any | None = None) -> None:
     """Write one fingerprint row using the profile already in memory."""
     db.upsert("dq_snapshot_fingerprints", {
         "snapshot_id": snapshot_id, "table_name": table_name, "column_name": column_name,
@@ -1682,7 +2043,7 @@ def _write_snapshot_fingerprint(snapshot_id: str, table_name: str, column_name: 
         "distinct_set_hash": profile.get("distinct_set_hash"),
         "top_k_json": json.dumps(profile.get("top_k") or {}, sort_keys=True),
         "computed_at": db.now_ist(),
-    })
+    }, conn=conn)
 
 
 def _record_schema_check(item_id: str) -> dict:
@@ -1768,6 +2129,9 @@ def process_snapshot(item_id: str, *, intent: str | None = None, start_date: str
                      full_replacement_confirmed: bool = False, uploaded_by: str | None = None) -> dict:
     """Server-side Step 4/5 confirmation and Step 6 commit for a staged row."""
     item = require_item(item_id)
+    transforms = db.query("technical_row_id_transforms", snapshot_id=item_id)
+    if any(row.get("status") != "complete" or row.get("publication_state") != "active" for row in transforms):
+        raise ValueError("A technical row identifier transformation is pending; wait for recovery before finalizing.")
     if item.get("ingest_status") == "failed":
         raise ValueError("A failed sourcing run cannot be saved and promoted to Test Lab.")
     # Step 3's reviewed rows are authoritative schema metadata. Persist them
@@ -1895,6 +2259,136 @@ def get_inventory(item_id: str, table: str | None = None) -> list[dict]:
 
 
 def put_inventory(item_id: str, rows: list[dict], table: str | None = None) -> list[dict]:
+    return _put_inventory_transactional(item_id, rows, table)
+
+
+def _put_inventory_transactional(item_id: str, rows: list[dict], table: str | None = None) -> list[dict]:
+    """Validate the complete column-review batch before one authoritative UoW.
+
+    Profile reads, special-value validation and mapping lookup are all
+    side-effect free.  Only after every submitted row has a complete exact
+    replacement profile do we fence DSC and apply inventory/fingerprint/type
+    map/status changes inside one ``BEGIN IMMEDIATE`` transaction.
+    """
+    frame_cache: dict[str, pd.DataFrame] = {}
+    item = require_item(item_id)
+    prepared: list[tuple[dict, dict | None, dict]] = []
+    seen: set[tuple[str, str]] = set()
+    dsc_metadata_changed = False
+    for submitted in rows:
+        if not isinstance(submitted, dict):
+            raise ValueError("Each column definition must be an object.")
+        row = dict(submitted)
+        table_name, col = row.get("table_name") or table, row.get("column_name")
+        if not isinstance(table_name, str) or not table_name or not isinstance(col, str) or not col:
+            raise ValueError("Each column definition requires table_name and column_name.")
+        key = (table_name, col)
+        if key in seen:
+            raise ValueError(f"Duplicate column definition '{table_name}.{col}'.")
+        seen.add(key)
+        current = db.query_one("variable_inventory", item_id=item_id, table_name=table_name, column_name=col)
+        if current is None:
+            raise ValueError(f"Reviewed column '{col}' is not present in table '{table_name}'.")
+        protected_technical_row_id = _enforce_technical_row_id_protection(
+            item_id, table_name, col, row, current)
+        current["missing_value_codes_json"] = _special_value_list(current.get("missing_value_codes_json"))
+        mapping_update = None
+        if row.get("mapping_confirmed") is not None:
+            candidates = db.execute("SELECT * FROM dq_item_mappings WHERE item_id=? AND table_name=? AND source_column=?", [item_id, table_name, col])
+            pending = next((candidate for candidate in candidates if candidate.get("tier") == "fuzzy" and candidate.get("status") == "confirm_suggestion"), None)
+            mapping_update = (pending, bool(row["mapping_confirmed"])) if pending else None
+            if pending and row["mapping_confirmed"]:
+                declared = _classification_from_declared(pending.get("declared_type"))
+                if declared: row["classification"] = declared
+                row["description"] = pending.get("definition") or row.get("description")
+                row["dictionary_role"] = pending.get("role") or ""
+                row["role"] = INVENTORY_ROLE_BY_DICTIONARY.get(str(pending.get("role") or "").lower(), row.get("role") or current.get("role") or "Feature")
+                row["business_context"] = pending.get("business_context") or ""
+                row["missing_value_codes_json"] = _special_value_list(pending.get("missing_value_codes_json"))
+                row["missing_codes_confirmed"] = False
+        role_was_explicitly_reviewed = isinstance(row.get("role"), str) and bool(row["role"].strip())
+        special_values = _special_value_list(row.get("missing_value_codes_json", current["missing_value_codes_json"]))
+        specials_confirmed = bool(row.get("missing_codes_confirmed", current.get("missing_codes_confirmed", 0)))
+        if specials_confirmed:
+            special_values = _validate_confirmed_special_values(special_values, row.get("classification", current.get("classification")))
+        next_classification = row.get("classification", current.get("classification", "other"))
+        next_data_type = row.get("data_type", current.get("data_type", ""))
+        next_role = row.get("role", current.get("role", "Feature"))
+        next_role_reviewed = 1 if role_was_explicitly_reviewed else int(current.get("role_reviewed") or 0)
+        if any((next_classification != current.get("classification"), next_data_type != current.get("data_type"),
+                next_role != current.get("role"), next_role_reviewed != int(current.get("role_reviewed") or 0),
+                special_values != current["missing_value_codes_json"], int(specials_confirmed) != int(current.get("missing_codes_confirmed") or 0))):
+            dsc_metadata_changed = True
+        if table_name not in frame_cache:
+            frame_cache[table_name] = _read_table(item_id, table_name)
+        frame = frame_cache[table_name]
+        if col not in frame.columns:
+            raise ValueError(f"Reviewed column '{col}' is not present in table '{table_name}'.")
+        regular = _regular_values(frame[col], special_values, specials_confirmed)
+        next_row = {**current, "classification": next_classification, "data_type": str(frame[col].dtype),
+                    "description": row.get("description", current.get("description", "")),
+                    "discrepancies": row.get("discrepancies", current.get("discrepancies", [])),
+                    "notes": row.get("notes", current.get("notes", "")), "role": next_role,
+                    "role_reviewed": next_role_reviewed,
+                    "dictionary_role": row.get("dictionary_role", current.get("dictionary_role", "")),
+                    "business_context": row.get("business_context", current.get("business_context", "")),
+                    "missing_value_codes_json": special_values, "missing_codes_confirmed": int(specials_confirmed),
+                    "provisional": 0, "updated_at": db.now_ist()}
+        next_row["profile_json"] = {**_column_profile(frame[col], special_values, specials_confirmed, next_classification),
+                                    "inferred_type": _classify(col, regular, item.get("target_variable")),
+                                    "sample_values": [_jsonable(value) for value in regular.head(5).tolist()]}
+        if protected_technical_row_id:
+            next_row.update(_TECHNICAL_ROW_ID_PROVENANCE)
+        prepared.append((next_row, mapping_update, row))
+
+    # Build the prospective complete type map before mutating anything.
+    all_rows = {(row["table_name"], row["column_name"]): row for row in db.query("variable_inventory", item_id=item_id)}
+    all_rows.update({(row["table_name"], row["column_name"]): row for row, _mapping, _submitted in prepared})
+    unconfirmed_specials = any(row.get("missing_value_codes_json") and not row.get("missing_codes_confirmed") for row in all_rows.values())
+    schema_result, has_data = schema_check_for_snapshot(item_id), bool(tables(item_id))
+    next_status = ing_status.derive(has_data_file=has_data, profiling_complete=True, fail_reason=None,
+                                    outstanding_confirmations=(1 if unconfirmed_specials or _step4_confirmation_outstanding(item_id) or not schema_result.get("is_match", True) else 0))
+    with db.get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        live = db.query_one("dq_items", conn=conn, item_id=item_id)
+        if live is None:
+            conn.rollback(); raise KeyError(item_id)
+        if dsc_metadata_changed:
+            from domains.aar.dataset_structure_review import begin_metadata_correction_in_transaction
+            begin_metadata_correction_in_transaction(conn, item_id, tenant_id=live.get("sourcing_tenant_id") or "")
+        for row, mapping_update, submitted in prepared:
+            # Re-evaluate under this same BEGIN IMMEDIATE transaction. A
+            # concurrent publisher may have crossed into ``published`` after
+            # pre-validation but before this inventory write commits.
+            _enforce_technical_row_id_protection(
+                item_id, row["table_name"], row["column_name"], submitted, row, conn=conn)
+            if mapping_update is not None:
+                pending, accepted = mapping_update
+                conn.execute("UPDATE dq_item_mappings SET status=?,confirmed_by=?,updated_at=? WHERE item_id=? AND table_name=? AND canonical_field=?",
+                             ("applied" if accepted else "dismissed", "user" if accepted else None, db.now_ist(), item_id, row["table_name"], pending["canonical_field"]))
+            db.upsert("variable_inventory", row, conn=conn)
+            _write_snapshot_fingerprint(item_id, row["table_name"], row["column_name"], row["profile_json"], row["classification"], conn=conn)
+        _persist_confirmed_type_map(item_id, inventory_rows=list(all_rows.values()), conn=conn)
+        if live.get("ingest_status") != "failed":
+            db.update("dq_items", {"item_id": item_id}, {"ingest_status": next_status, "ingest_fail_reason": None,
+                                                          "updated_at": db.now_ist()}, conn=conn)
+        conn.commit()
+    # Legacy/test snapshots without a resolved sourcing tenant are outside the
+    # DSC materialization contract. Their established column-review behaviour
+    # remains local; authenticated tenant snapshots publish the replacement
+    # governed profile generation below.
+    if require_item(item_id).get("sourcing_tenant_id"):
+        from domains.aar.data_sourcing import persist_snapshot_profile_artifacts
+        try:
+            persist_snapshot_profile_artifacts(item_id, actor="system")
+        except Exception:
+            if require_item(item_id).get("ingest_status") == "ready":
+                ing_records.set_status(item_id, "needs_review")
+            raise
+    return get_inventory(item_id, table)
+
+
+def _put_inventory_legacy(item_id: str, rows: list[dict], table: str | None = None) -> list[dict]:
     """ING-06: the Review screen's one decision surface. A row may also carry
     ``mapping_confirmed`` (true/false, optional) — set when the user accepts
     or dismisses a fuzzy-tier ("confirm suggestion") dictionary mapping for
@@ -1903,6 +2397,10 @@ def put_inventory(item_id: str, rows: list[dict], table: str | None = None) -> l
     ING-06 ("nothing else to decide").
     """
     frame_cache: dict[str, pd.DataFrame] = {}
+    # Only a confirmed column-review save is metadata authority.  Track the
+    # narrow fields DSC derives from so an unrelated description edit never
+    # interrupts a resumable structure review.
+    dsc_metadata_changed = False
     item = require_item(item_id)
     for row in rows:
         table_name = row.get("table_name") or table
@@ -1915,6 +2413,8 @@ def put_inventory(item_id: str, rows: list[dict], table: str | None = None) -> l
         )
         current = found[0] if found else {}
         submitted_role = row.get("role")
+        protected_technical_row_id = _enforce_technical_row_id_protection(
+            item_id, table_name, col, row, current)
         role_was_explicitly_reviewed = (isinstance(submitted_role, str)
                                         and bool(submitted_role.strip()))
         current["missing_value_codes_json"] = _special_value_list(
@@ -1962,16 +2462,29 @@ def put_inventory(item_id: str, rows: list[dict], table: str | None = None) -> l
                 )
             except ValueError as exc:
                 raise ValueError(f"{table_name}.{col}: {exc}") from exc
+        next_classification = row.get("classification", current.get("classification", "other"))
+        next_data_type = row.get("data_type", current.get("data_type", ""))
+        next_role = row.get("role", current.get("role", "Feature"))
+        next_role_reviewed = (1 if role_was_explicitly_reviewed
+                              else int(current.get("role_reviewed") or 0))
+        if current and any((
+            next_classification != current.get("classification"),
+            next_data_type != current.get("data_type"),
+            next_role != current.get("role"),
+            next_role_reviewed != int(current.get("role_reviewed") or 0),
+            special_values != current.get("missing_value_codes_json"),
+            int(specials_confirmed) != int(current.get("missing_codes_confirmed") or 0),
+        )):
+            dsc_metadata_changed = True
         current.update({
             "item_id": item_id, "table_name": table_name, "column_name": col,
-            "classification": row.get("classification", current.get("classification", "other")),
-            "data_type": row.get("data_type", current.get("data_type", "")),
+            "classification": next_classification,
+            "data_type": next_data_type,
             "description": row.get("description", current.get("description", "")),
             "discrepancies": row.get("discrepancies", current.get("discrepancies", [])),
             "notes": row.get("notes", current.get("notes", "")),
-            "role": row.get("role", current.get("role", "Feature")),
-            "role_reviewed": (1 if role_was_explicitly_reviewed
-                              else int(current.get("role_reviewed") or 0)),
+            "role": next_role,
+            "role_reviewed": next_role_reviewed,
             "dictionary_role": row.get("dictionary_role", current.get("dictionary_role", "")),
             "business_context": row.get("business_context", current.get("business_context", "")),
             "missing_value_codes_json": special_values,
@@ -1983,6 +2496,8 @@ def put_inventory(item_id: str, rows: list[dict], table: str | None = None) -> l
             "provisional": 0,
             "updated_at": db.now_ist(),
         })
+        if protected_technical_row_id:
+            current.update(_TECHNICAL_ROW_ID_PROVENANCE)
         # A Review decision changes the analytical population. Re-read each
         # table once and regenerate exact evidence from the confirmed regular
         # values rather than retaining the provisional upload profile.
@@ -2019,6 +2534,13 @@ def put_inventory(item_id: str, rows: list[dict], table: str | None = None) -> l
                                        not schema_result.get("is_match", True) else 0),
         ))
     from domains.aar.data_sourcing import persist_snapshot_profile_artifacts
+    if dsc_metadata_changed:
+        # Preserve the complete draft and any intended cadence/actions before
+        # profile publication revokes the previous materialization lease.
+        # No route other than this established column-review save can enter
+        # this state or alter source metadata.
+        from domains.aar.dataset_structure_review import begin_metadata_correction
+        begin_metadata_correction(item_id, tenant_id=item.get("sourcing_tenant_id") or "")
     try:
         persist_snapshot_profile_artifacts(item_id, actor="system")
     except Exception:

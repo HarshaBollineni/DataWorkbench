@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test-fixture";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { E2E_API_BASE } from "./support/endpoints";
@@ -120,7 +120,7 @@ test("RCA vertical slice: case through the staged view to an honest closure atte
   await signIn(page);
 
   await page.getByRole("link", { name: "Data Sourcing" }).click();
-  await page.getByRole("button", { name: "Add New" }).first().click();
+  await page.getByRole("button", { name: "Create New Database" }).click();
   await page.getByLabel("Alias").fill(name);
   const inputs = page.locator('input[type="file"]');
   await inputs.nth(0).setInputFiles(path.join(fixtures, "assessment.csv"));

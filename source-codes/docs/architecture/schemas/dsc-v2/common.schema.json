@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dataworkbench.invalid/schemas/dsc/v2/common.schema.json",
+  "title": "Dataset Structure Context v2 common types",
+  "$ref": "https://dataworkbench.invalid/schemas/dsc/v1/common.schema.json"
+}

@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
 from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -11,7 +13,7 @@ import pytest
 
 import system_db as db
 from analysis_runtime.contracts import stable_fingerprint
-from analysis_runtime.dataset_structure_context import request_fingerprint
+from analysis_runtime.dataset_structure_context import payload_hash, request_fingerprint, project_materialized_dataset_structure
 from analysis_runtime.dataset_structure_context import DSCContractError, ERROR_SNAPSHOT_MISMATCH
 import domains.aar.dataset_structure_producer as dsc_producer
 from domains.aar.repository import AnalysisArtifactRepository
@@ -48,7 +50,7 @@ def aar(tmp_path, monkeypatch):
         "status": "profiled", "created_at": now, "updated_at": now,
         "dataset_family_id": asset_id, "delivery_seq": 1, "version_no": 1,
         "snapshot_status": "active", "snapshot_label": snapshot_id,
-        "intent": "fresh", "ingest_status": "ready",
+        "intent": "fresh", "ingest_status": "ready", "sourcing_tenant_id": "tenant-a",
     })
     db.insert("dq_item_tables", {
         "item_id": snapshot_id, "table_name": "private_applications",
@@ -184,7 +186,7 @@ def test_dsc_descriptor_contracts():
     assert assertion.sensitivity == context.sensitivity == "confidential"
     assert not assertion.allows_blob_payload and not context.allows_blob_payload
     assert assertion.allowed_source_types == (
-        "snapshot_profile", "table_profile", "schema_profile", "column_profile",
+        "snapshot_profile", "table_profile", "table_inventory_profile", "schema_profile", "column_profile",
         "governance_reference", "dataset_structure_assertion",
     )
     assert context.allowed_source_types == ("dataset_structure_assertion",)
@@ -399,7 +401,8 @@ def test_profile_backed_schema_observer_and_resolver_are_atomic_and_reusable(aar
     persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
     assert SUPPORTED_OBSERVER_PREDICATES == {
         "table.physical/schema_column", "table.structure/entity_binding",
-        "table.structure/row_grain",
+        "table.structure/row_grain", "table.temporal/temporal_binding",
+        "table.temporal/observed_cadence",
     }
 
     first = observe_dataset_structure(repo, snapshot_id, tables=["private_applications"])
@@ -857,3 +860,594 @@ def test_phase_b_composite_grain_resolver_scans_once_reuses_and_refreshes(aar, m
     assert len(calls) == 2 and replacement_pin["reuse_disposition"] == "fresh"
     assert replacement_pin["artifact_id"] != first_pin["artifact_id"]
     assert repo.get_metadata(first_pin["artifact_id"]).status == "superseded"
+
+
+def test_phase_c2_temporal_candidates_are_atomic_aggregate_only_and_dependency_local(aar, monkeypatch):
+    repo, asset_id, snapshot_id = aar
+    table = "private_applications"
+    columns = ["reviewed_date", "reviewed_period", "unreviewed_date", "provisional_period", "missing_review_date"]
+    db.update("dq_item_tables", {"item_id": snapshot_id, "table_name": table}, {
+        "columns": columns, "col_count": len(columns), "row_count": 10,
+    })
+    seed = {
+        "reviewed_date": {"role": " Date ", "reviewed": 1, "provisional": 0,
+                          "date_parse_failure_count": 2, "special": 2},
+        "reviewed_period": {"role": "period", "reviewed": 1, "provisional": 0,
+                            "period_bounds": {"start_date": "2024-01-01", "end_date": "2024-12-31",
+                                              "format": "calendar_quarter"},
+                            "period_format_evidence_available": True,
+                            "period_format_checked_regular_count": 9,
+                            "period_format_failure_count": 0, "special": 0},
+        "unreviewed_date": {"role": "Date", "reviewed": 0, "provisional": 0, "special": 0},
+        "provisional_period": {"role": "Period", "reviewed": 1, "provisional": 1, "special": 0},
+        "missing_review_date": {"role": "Date", "reviewed": None, "provisional": 0, "special": 0},
+    }
+    for column, settings in seed.items():
+        special = settings["special"]
+        profile = {"total_count": 10, "non_null_count": 9, "null_count": 1,
+                   "physical_null_count": 1, "regular_value_count": 9 - special,
+                   "cardinality": 3, "calculation_method": "exact", "top_k": {"raw-private": 1},
+                   **{key: value for key, value in settings.items()
+                      if key not in {"role", "reviewed", "provisional", "special"}}}
+        row = {"item_id": snapshot_id, "table_name": table, "column_name": column,
+               "classification": "categorical", "data_type": "string", "description": "private detail",
+               "discrepancies": [], "notes": "", "role": settings["role"],
+               "role_reviewed": settings["reviewed"], "provisional": settings["provisional"],
+               "missing_value_codes_json": [-999] if special else [],
+               "missing_codes_confirmed": int(bool(special)), "profile_json": profile,
+               "updated_at": db.now_ist()}
+        if special:
+            profile.update({"profile_basis": "confirmed_regular_values", "normalized_special_values": ["-999"],
+                            "special_value_counts": {"-999": special}, "special_value_row_count": special})
+        db.insert("variable_inventory", row)
+    persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
+
+    optional = resolve_dataset_structure_context(
+        repo, _phase_a_request(asset_id, snapshot_id, "table.temporal/temporal_binding", ["proposed"], "optional"),
+        clock=lambda: "2030-04-01T00:00:00+00:00")
+    assert optional["selector_results"][0]["reason_codes"] == ["DSC_R_OPTIONAL_NOT_MATERIALIZED"]
+    assert not repo.list(snapshot_id=snapshot_id, artifact_type="dataset_structure_assertion", status="active")
+
+    created = observe_dataset_structure(repo, snapshot_id, tables=[table],
+                                         predicates=["table.temporal/temporal_binding"])
+    payloads = {repo.get(outcome.artifact.artifact_id)[1]["instance_key"]: repo.get(outcome.artifact.artifact_id)[1]
+                for outcome in created}
+    assert set(payloads) == {"column:reviewed_date", "column:reviewed_period", "column:provisional_period"}
+    date, period, provisional = (payloads["column:reviewed_date"], payloads["column:reviewed_period"],
+                                 payloads["column:provisional_period"])
+    assert date["resolution"]["status"] == period["resolution"]["status"] == "proposed"
+    assert date["claims"][0]["authority"] == "source_reviewed_metadata"
+    assert date["claims"][0]["value"] == {
+        "kind": "temporal_binding", "axis_id": "column:reviewed_date", "temporal_type": "date",
+        "columns": [{"table": table, "column": "reviewed_date"}], "precision": "unknown", "calendar": "unknown",
+    }
+    assert period["claims"][0]["value"]["temporal_type"] == "period"
+    assert period["claims"][0]["value"]["precision"] == "quarter"
+    assert period["claims"][0]["value"]["calendar"] == "gregorian"
+    assert "timezone" not in date["claims"][0]["value"] and "timezone" not in period["claims"][0]["value"]
+    date_basis = date["evidence"][0]["basis"]
+    assert date_basis == {"population": table, "total_count": 10,
+                          "exclusions": {"physical_null": 1, "confirmed_special": 2, "parse_failure": 2},
+                          "usable_count": 5, "computation": "exact"}
+    assert {item["name"]: item["count"] for item in date["evidence"][0]["measurements"]} == {
+        "regular_value_rows": 7, "temporal_parse_failure_available": 1, "temporal_parse_failure_rows": 2}
+    assert {item["name"]: item["count"] for item in period["evidence"][0]["measurements"]} == {
+        "regular_value_rows": 9, "temporal_parse_failure_available": 1, "temporal_parse_failure_rows": 0}
+    rendered = json.dumps(payloads)
+    assert all(secret not in rendered for secret in ("raw-private", "private detail", "top_k", "period_bounds"))
+
+    def no_raw_scan(*_args, **_kwargs):
+        raise AssertionError("temporal profile observation must not read raw rows")
+    monkeypatch.setattr(dsc_producer.SnapshotLoader, "load_table", no_raw_scan)
+    request = _phase_a_request(asset_id, snapshot_id, "table.temporal/temporal_binding", ["proposed"])
+    reused = resolve_dataset_structure_context(repo, request, clock=lambda: "2030-04-01T00:00:01+00:00")
+    old_pins = {pin["assertion_id"]: pin for pin in reused["selector_results"][0]["pins"]}
+    assert len(old_pins) == 3 and all(pin["reuse_disposition"] == "exact_reused" for pin in old_pins.values())
+
+    date_profile = next(row for row in db.query("variable_inventory", item_id=snapshot_id)
+                        if row["column_name"] == "reviewed_date")["profile_json"]
+    date_profile["date_parse_failure_count"] = 1
+    db.update("variable_inventory", {"item_id": snapshot_id, "table_name": table, "column_name": "reviewed_date"},
+              {"profile_json": date_profile, "updated_at": db.now_ist()})
+    persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
+    refreshed = resolve_dataset_structure_context(repo, request, clock=lambda: "2030-04-01T00:00:02+00:00")
+    new_pins = {pin["assertion_id"]: pin for pin in refreshed["selector_results"][0]["pins"]}
+    old_by_key = {payload["instance_key"]: metadata.artifact_id for metadata in
+                  repo.list(snapshot_id=snapshot_id, artifact_type="dataset_structure_assertion", status="superseded")
+                  for _checked, payload in [repo.get(metadata.artifact_id)]}
+    active_by_key = {repo.get(pin["artifact_id"])[1]["instance_key"]: pin["artifact_id"]
+                     for pin in new_pins.values()}
+    assert active_by_key["column:reviewed_date"] != old_by_key["column:reviewed_date"]
+    assert active_by_key["column:reviewed_period"] == old_pins[period["assertion_id"]]["artifact_id"]
+    assert active_by_key["column:provisional_period"] == old_pins[provisional["assertion_id"]]["artifact_id"]
+
+
+def test_phase_c2_temporal_parse_evidence_is_explicitly_unavailable_when_not_profiled(aar):
+    repo, asset_id, snapshot_id = aar
+    table = "private_applications"
+    db.update("dq_item_tables", {"item_id": snapshot_id, "table_name": table}, {
+        "columns": ["reviewed_period"], "col_count": 1, "row_count": 2,
+    })
+    db.insert("variable_inventory", {
+        "item_id": snapshot_id, "table_name": table, "column_name": "reviewed_period",
+        "classification": "categorical", "data_type": "string", "description": "", "discrepancies": [],
+        "notes": "", "role": "Period", "role_reviewed": 1, "provisional": 0,
+        "missing_value_codes_json": [], "missing_codes_confirmed": 0,
+        "profile_json": {"total_count": 2, "non_null_count": 2, "null_count": 0,
+                         "physical_null_count": 0, "regular_value_count": 2, "cardinality": 2,
+                         "calculation_method": "exact", "top_k": {"private-period": 1}}, "updated_at": db.now_ist(),
+    })
+    persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
+    payload = repo.get(observe_dataset_structure(repo, snapshot_id, tables=[table],
+                       predicates=["table.temporal/temporal_binding"])[0].artifact.artifact_id)[1]
+    assert payload["claims"][0]["value"]["precision"] == payload["claims"][0]["value"]["calendar"] == "unknown"
+    assert payload["evidence"][0]["basis"]["exclusions"]["parse_failure"] == 0
+    assert {item["name"]: item["count"] for item in payload["evidence"][0]["measurements"]} == {
+        "regular_value_rows": 2, "temporal_parse_failure_available": 0}
+
+
+def test_phase_c2_period_precision_requires_full_zero_failure_format_evidence():
+    column = SimpleNamespace(artifact_id="art_period_profile", payload_hash="a" * 64,
+                             artifact_type="column_profile", feature="period")
+    inventory = SimpleNamespace(artifact_id="art_period_inventory", payload_hash="b" * 64,
+                                artifact_type="table_inventory_profile")
+    profile = {"role": "Period", "metadata_reviewed": True, "total_count": 3,
+               "non_null_count": 3, "physical_null_count": 0, "null_count": 0,
+               "regular_value_count": 3, "distinct_count": 3,
+               "period_bounds": {"start_date": "2024-01-01", "end_date": "2024-09-30",
+                                 "format": "calendar_quarter"},
+               "period_format_evidence_available": True,
+               "period_format_checked_regular_count": 3, "period_format_failure_count": 1}
+    payload = dsc_producer._temporal_payload("asset_x", "item_x", "orders", inventory, column, profile)
+    assert payload["claims"][0]["value"]["precision"] == payload["claims"][0]["value"]["calendar"] == "unknown"
+    assert payload["evidence"][0]["basis"]["exclusions"]["parse_failure"] == 1
+    assert {item["name"]: item["count"] for item in payload["evidence"][0]["measurements"]} == {
+        "regular_value_rows": 3, "temporal_parse_failure_available": 1, "temporal_parse_failure_rows": 1}
+
+
+def test_phase_c2_temporal_withdrawal_is_owned_and_fails_closed(aar):
+    repo, asset_id, snapshot_id = aar
+    table, column = "private_applications", "reviewed_date"
+    db.update("dq_item_tables", {"item_id": snapshot_id, "table_name": table}, {
+        "columns": [column], "col_count": 1, "row_count": 2,
+    })
+    db.insert("variable_inventory", {
+        "item_id": snapshot_id, "table_name": table, "column_name": column,
+        "classification": "categorical", "data_type": "string", "description": "", "discrepancies": [],
+        "notes": "", "role": "Date", "role_reviewed": 1, "provisional": 0,
+        "missing_value_codes_json": [], "missing_codes_confirmed": 0,
+        "profile_json": {"total_count": 2, "non_null_count": 2, "null_count": 0,
+                         "physical_null_count": 0, "regular_value_count": 2, "cardinality": 2,
+                         "calculation_method": "exact"}, "updated_at": db.now_ist(),
+    })
+    persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
+    proposal_outcome = observe_dataset_structure(repo, snapshot_id, tables=[table],
+                                                 predicates=["table.temporal/temporal_binding"])[0]
+    proposal = repo.get(proposal_outcome.artifact.artifact_id)[1]
+    unauthored_proposal = deepcopy(proposal)
+    # Same temporal locator and proposed shape, but not the producer's exact
+    # immutable provenance/dependency projection.
+    unauthored_proposal["dependency_fingerprint"] = "f" * 64
+    unauthored_artifact = save_dataset_structure_assertion(
+        repo, unauthored_proposal, version=True).artifact
+    confirmation = deepcopy(proposal)
+    confirmation["assertion_id"] = "dsca_independent_temporal_confirmation"
+    confirmation["claims"][0].update({
+        "claim_id": "dscc_independent_temporal_confirmation",
+        "authority": "source_confirmed_structural",
+        "decision": {"decision_id": "decision_independent_temporal_confirmation", "action": "confirm",
+                     "scope": "source_confirmed_structural"},
+    })
+    confirmation["resolution"] = {"status": "confirmed",
+                                    "effective_claim_ids": ["dscc_independent_temporal_confirmation"],
+                                    "reason_codes": [], "conflict_ids": []}
+    # An external confirmation is an independently versioned assertion.  It
+    # intentionally shares the candidate key but must not collide with (or be
+    # mistaken for) the producer-owned proposal identity.
+    confirmation_artifact = save_dataset_structure_assertion(repo, confirmation, version=True).artifact
+
+    db.update("variable_inventory", {"item_id": snapshot_id, "table_name": table, "column_name": column}, {
+        "role_reviewed": 0, "updated_at": db.now_ist(),
+    })
+    persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
+    assert observe_dataset_structure(repo, snapshot_id, tables=[table],
+                                     predicates=["table.temporal/temporal_binding"]) == ()
+    assert repo.get_metadata(proposal_outcome.artifact.artifact_id).status == "superseded"
+    assert repo.get_metadata(unauthored_artifact.artifact_id).status == "active"
+    assert repo.get_metadata(confirmation_artifact.artifact_id).status == "active"
+    response = resolve_dataset_structure_context(
+        repo, _phase_a_request(asset_id, snapshot_id, "table.temporal/temporal_binding", ["proposed"]),
+        clock=lambda: "2030-04-02T00:00:00+00:00")
+    assert response["selector_results"][0]["reason_codes"] == ["DSC_R_NO_EVIDENCE"]
+
+
+def test_phase_cadence_states_parser_privacy_and_exact_reuse(aar, monkeypatch):
+    """Cadence remains an aggregate-only, one-read observation over C1/C2 facts."""
+    repo, asset_id, snapshot_id = aar
+    table = "private_applications"
+
+    def materialize(frame):
+        rows = len(frame.index)
+        db.update("dq_item_tables", {"item_id": snapshot_id, "table_name": table}, {
+            "columns": ["entity", "observed_on"], "col_count": 2, "row_count": rows})
+        for column, role, cardinality in (("entity", "Identifier", frame["entity"].nunique()),
+                                          ("observed_on", "Date", frame["observed_on"].nunique())):
+            db.insert("variable_inventory", {
+                "item_id": snapshot_id, "table_name": table, "column_name": column,
+                "classification": "categorical", "data_type": "string", "description": "private raw description",
+                "discrepancies": [], "notes": "", "role": role, "role_reviewed": 1, "provisional": 0,
+                "missing_value_codes_json": [], "missing_codes_confirmed": 0,
+                "profile_json": {"total_count": rows, "non_null_count": rows, "null_count": 0,
+                                 "physical_null_count": 0, "regular_value_count": rows,
+                                 "cardinality": int(cardinality), "calculation_method": "exact",
+                                 "top_k": {"private-entity-value": 1}}, "updated_at": db.now_ist()})
+        persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
+        observe_dataset_structure(repo, snapshot_id, tables=[table], predicates=[
+            "table.structure/entity_binding", "table.temporal/temporal_binding"])
+
+    regular = pd.DataFrame({"entity": ["private-a"] * 3 + ["private-b"] * 3,
+                            "observed_on": ["2024-01-01", "2024-02-01", "2024-03-01"] * 2})
+    materialize(regular)
+    calls = []
+    def load_table(_self, received_snapshot, received_table, columns=None, **_kwargs):
+        calls.append((received_snapshot, received_table, list(columns or [])))
+        return regular.loc[:, columns].copy()
+    monkeypatch.setattr(dsc_producer.SnapshotLoader, "load_table", load_table)
+    created = observe_dataset_structure(repo, snapshot_id, tables=[table],
+                                         predicates=["table.temporal/observed_cadence"])
+    assert len(created) == 1 and calls == [(snapshot_id, table, ["entity", "observed_on"])]
+    payload = repo.get(created[0].artifact.artifact_id)[1]
+    assert payload["resolution"]["status"] == "observed"
+    assert payload["claims"][0]["value"]["cadence"] == "regular"
+    assert payload["claims"][0]["value"]["observed_interval_class"] == {"unit": "month", "step": 1}
+    counts = {item["name"]: item.get("count") for item in payload["evidence"][0]["measurements"]}
+    assert counts["distinct_entity_axis_observations"] == 6
+    assert counts["duplicate_entity_axis_excess_rows"] == 0
+    assert counts["usable_delta_count"] == 4
+    assert "private-a" not in json.dumps(payload) and "private-entity-value" not in json.dumps(payload)
+    shadow_request = {"asset_id": asset_id, "snapshot_id": snapshot_id, "table": table,
+        "predicate": "table.temporal/observed_cadence", "axis_id": "column:observed_on",
+        "axis_column": {"table": table, "column": "observed_on"},
+        "grouping": [{"table": table, "column": "entity"}],
+        "consumer_id": "diagnostic:6:dsc-cadence-shadow-v1"}
+    before_rows = db.query("analysis_artifacts", order_by="artifact_id")
+    before_events = db.query("analysis_artifact_events", order_by="event_id")
+    projected = project_materialized_dataset_structure(shadow_request, repository=repo)
+    assert projected["outcome"] == "fulfilled"
+    assert projected["projection_version"] == 1
+    assert projected["request_identity"] == request_fingerprint(shadow_request)
+    assert projected["cadence"]["resolution_state"] == "observed"
+    assert db.query("analysis_artifacts", order_by="artifact_id") == before_rows
+    assert db.query("analysis_artifact_events", order_by="event_id") == before_events
+
+    def no_scan(*_args, **_kwargs):
+        raise AssertionError("exact cadence reuse must not read source rows")
+    monkeypatch.setattr(dsc_producer.SnapshotLoader, "load_table", no_scan)
+    reused = observe_dataset_structure(repo, snapshot_id, tables=[table],
+                                        predicates=["table.temporal/observed_cadence"])
+    assert len(reused) == 1 and reused[0].outcome != "created"
+
+    confirmed = deepcopy(payload)
+    confirmed["assertion_id"] = "dsca_confirmed_cadence"
+    confirmed["claims"][0].update({
+        "claim_id": "dscc_confirmed_cadence", "authority": "source_confirmed_structural",
+        "decision": {"decision_id": "decision_confirmed_cadence", "action": "confirm",
+                     "scope": "source_confirmed_structural"}})
+    confirmed["resolution"] = {"status": "confirmed", "effective_claim_ids": ["dscc_confirmed_cadence"],
+                                 "reason_codes": [], "conflict_ids": []}
+    confirmed["evidence"][0]["source_refs"].append({
+        "artifact_id": created[0].artifact.artifact_id, "role": "dependency",
+        "payload_hash": created[0].artifact.payload_hash})
+    confirmation = save_dataset_structure_assertion(repo, confirmed, version=True).artifact
+    response = resolve_dataset_structure_context(
+        repo, _phase_a_request(asset_id, snapshot_id, "table.temporal/observed_cadence", ["confirmed"]),
+        clock=lambda: "2030-05-01T00:00:00+00:00")
+    assert response["selector_results"][0]["pins"][0]["artifact_id"] == confirmation.artifact_id
+    assert project_materialized_dataset_structure(shadow_request, repository=repo)["cadence"]["resolution_state"] == "confirmed"
+
+    forged = deepcopy(payload)
+    forged["assertion_id"] = "dsca_forged_cadence"
+    forged["dependency_fingerprint"] = "f" * 64
+    forged_artifact = save_dataset_structure_assertion(repo, forged, version=True).artifact
+    # A malformed active same-locator row fails closed; it cannot be silently
+    # ignored in favour of the otherwise valid confirmed cadence.
+    forged_projection = project_materialized_dataset_structure(shadow_request, repository=repo)
+    assert forged_projection["outcome"] == "ambiguous"
+    assert repo.get_metadata(forged_artifact.artifact_id).status == "active"
+
+    duplicate = deepcopy(confirmed)
+    duplicate["assertion_id"] = "dsca_duplicate_cadence_confirmation"
+    duplicate["claims"][0]["claim_id"] = "dscc_duplicate_cadence_confirmation"
+    duplicate["claims"][0]["decision"]["decision_id"] = "decision_duplicate_cadence_confirmation"
+    duplicate["resolution"]["effective_claim_ids"] = ["dscc_duplicate_cadence_confirmation"]
+    save_dataset_structure_assertion(repo, duplicate, version=True)
+    ambiguous = resolve_dataset_structure_context(
+        repo, _phase_a_request(asset_id, snapshot_id, "table.temporal/observed_cadence", ["confirmed"]),
+        clock=lambda: "2030-05-01T00:00:01+00:00")
+    assert ambiguous["selector_results"][0]["reason_codes"] == ["DSC_R_AMBIGUOUS_CANDIDATES"]
+    assert project_materialized_dataset_structure(shadow_request, repository=repo)["outcome"] == "ambiguous"
+
+    # Removing the reviewed grouping withdraws only the mechanically proven
+    # producer fact.  An independent bounded scan at the former locator is
+    # not producer-owned and remains readable.
+    db.update("variable_inventory", {"item_id": snapshot_id, "table_name": table, "column_name": "entity"},
+              {"role_reviewed": 0, "updated_at": db.now_ist()})
+    persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
+    assert observe_dataset_structure(repo, snapshot_id, tables=[table],
+                                     predicates=["table.temporal/observed_cadence"]) == ()
+    assert repo.get_metadata(forged_artifact.artifact_id).status == "active"
+
+
+@pytest.mark.parametrize(("frame", "expected"), [
+    (pd.DataFrame({"entity": ["a"] * 4 + ["b"] * 4,
+                  "observed_on": ["2024-01-01", "2024-02-01", "2024-03-01", "2024-04-01",
+                                  "2024-01-01", "2024-04-01", "2024-07-01", "2024-10-01"]}), "mixed"),
+    (pd.DataFrame({"entity": ["a", "a", "b", "b"],
+                  "observed_on": ["2024-01-01", "not-a-date", "2024-01-01", "2024-02-01"]}), "unknown"),
+])
+def test_phase_cadence_mixed_and_unknown_have_closed_evidence(frame, expected):
+    axis = {"column": "observed_on", "temporal_type": "date"}
+    profile = {"special_values": []}
+    candidate = {"axis": {**axis, "profile": (None, profile)}, "group": {"column": "entity", "profile": (None, profile)},
+                 "table": (None, {"table": "orders"})}
+    result = dsc_producer._cadence_scan_pair(frame, candidate)
+    assert result["cadence"] == expected
+    assert result["basis"]["total_count"] == sum(result["basis"]["exclusions"].values()) + result["basis"]["usable_count"]
+    assert "not-a-date" not in json.dumps(result)
+
+
+@pytest.mark.parametrize(("value", "accepted"), [
+    ("2024Q1", True), ("2024-Q1", True), ("2024q1", True),
+    (" 2024 Q1 ", True), ("2024Q0", False), ("2024-Q5", False), ("Q1-2024", False),
+])
+def test_phase_cadence_quarter_parser_matches_c2_profile_grammar(value, accepted):
+    assert (dsc_producer._strict_quarter_key(value) is not None) is accepted
+
+
+def test_d06_shadow_projector_rejects_deadline_and_broad_selector_without_writes(aar):
+    repo, asset_id, snapshot_id = aar
+    request = {"asset_id": asset_id, "snapshot_id": snapshot_id, "table": "private_applications",
+        "predicate": "table.temporal/observed_cadence", "axis_id": "column:period",
+        "axis_column": {"table": "private_applications", "column": "period"},
+        "grouping": [{"table": "private_applications", "column": "facility"}],
+        "consumer_id": "diagnostic:6:dsc-cadence-shadow-v1"}
+    before = (db.query("analysis_artifacts", order_by="artifact_id"),
+              db.query("analysis_artifact_events", order_by="event_id"))
+    import time
+    timed = project_materialized_dataset_structure(request, repository=repo, deadline=time.monotonic() - 1)
+    assert timed["outcome"] == "error" and timed["reason"] == "deadline_exceeded"
+    assert set(timed) == {"projection_version", "request_identity", "outcome", "resolved_as_of", "reason"}
+    assert set(timed["resolved_as_of"]) == {"timestamp", "read_boundary_fingerprint"}
+    broad = dict(request, grouping=[])
+    assert project_materialized_dataset_structure(broad, repository=repo)["outcome"] == "error"
+    assert (db.query("analysis_artifacts", order_by="artifact_id"),
+            db.query("analysis_artifact_events", order_by="event_id")) == before
+
+
+def test_d06_shadow_projector_projects_real_producer_unknown_and_fails_closed(aar, monkeypatch):
+    """Exercise the narrow seam against a producer artifact, not an envelope stub."""
+    repo, asset_id, snapshot_id = aar
+    table = "private_applications"
+    frame = pd.DataFrame({"entity": ["a", "a", "b", "b"],
+                          "observed_on": ["2024-01-01", "bad-date", "2024-01-01", "2024-02-01"]})
+    db.update("dq_item_tables", {"item_id": snapshot_id, "table_name": table}, {
+        "columns": list(frame.columns), "col_count": 2, "row_count": len(frame)})
+    for column, role in (("entity", "Identifier"), ("observed_on", "Date")):
+        db.insert("variable_inventory", {
+            "item_id": snapshot_id, "table_name": table, "column_name": column,
+            "classification": "categorical", "data_type": "string", "description": "",
+            "discrepancies": [], "notes": "", "role": role, "role_reviewed": 1,
+            "provisional": 0, "missing_value_codes_json": [], "missing_codes_confirmed": 0,
+            "profile_json": {"total_count": 4, "non_null_count": 4, "null_count": 0,
+                             "physical_null_count": 0, "regular_value_count": 4,
+                             "cardinality": 2, "calculation_method": "exact", "top_k": {}},
+            "updated_at": db.now_ist()})
+    persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
+    observe_dataset_structure(repo, snapshot_id, tables=[table], predicates=[
+        "table.structure/entity_binding", "table.temporal/temporal_binding"])
+    monkeypatch.setattr(dsc_producer.SnapshotLoader, "load_table",
+                        lambda _self, _snapshot, _table, columns=None, **_kwargs: frame.loc[:, columns].copy())
+    created = observe_dataset_structure(repo, snapshot_id, tables=[table],
+                                        predicates=["table.temporal/observed_cadence"])
+    assert len(created) == 1
+    assertion = created[0].artifact
+    request = {"asset_id": asset_id, "snapshot_id": snapshot_id, "table": table,
+        "predicate": "table.temporal/observed_cadence", "axis_id": "column:observed_on",
+        "axis_column": {"table": table, "column": "observed_on"},
+        "grouping": [{"table": table, "column": "entity"}],
+        "consumer_id": "diagnostic:6:dsc-cadence-shadow-v1"}
+    baseline = (db.query("analysis_artifacts", order_by="artifact_id"),
+                db.query("analysis_artifact_events", order_by="event_id"))
+    monkeypatch.setattr(dsc_producer, "_temporal_payload", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("projection called producer")))
+    monkeypatch.setattr(dsc_producer, "_entity_payload", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("projection called producer")))
+    projected = project_materialized_dataset_structure(request, repository=repo)
+    assert projected["outcome"] == "fulfilled"
+    assert projected["cadence"]["resolution_state"] == "unknown"
+    assert projected["cadence"]["value"] == {"state": "unknown"}
+    repeat = project_materialized_dataset_structure(request, repository=repo)
+    assert repeat["resolved_as_of"]["read_boundary_fingerprint"] == projected["resolved_as_of"]["read_boundary_fingerprint"]
+    assert (db.query("analysis_artifacts", order_by="artifact_id"),
+            db.query("analysis_artifact_events", order_by="event_id")) == baseline
+
+    # The boundary includes the selected snapshot/table catalogue marker even
+    # though the cadence payload itself has not changed.
+    db.update("dq_item_tables", {"item_id": snapshot_id, "table_name": table}, {"row_count": 5})
+    catalogue_changed = project_materialized_dataset_structure(request, repository=repo)
+    assert catalogue_changed["outcome"] == "fulfilled"
+    assert catalogue_changed["resolved_as_of"]["read_boundary_fingerprint"] != projected["resolved_as_of"]["read_boundary_fingerprint"]
+    db.update("dq_item_tables", {"item_id": snapshot_id, "table_name": table}, {"row_count": 4})
+
+    path = repo.root / db.query_one("analysis_artifacts", artifact_id=assertion.artifact_id)["payload_path"]
+    original = path.read_bytes()
+    path.unlink()
+    assert project_materialized_dataset_structure(request, repository=repo)["reason"] == "source_missing"
+    path.write_bytes(original + b" ")
+    assert project_materialized_dataset_structure(request, repository=repo)["reason"] == "source_integrity_failed"
+    path.write_bytes(original)
+    original_payload = json.loads(original)
+    def replace_payload(value):
+        raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        path.write_bytes(raw)
+        db.update("analysis_artifacts", {"artifact_id": assertion.artifact_id},
+                  {"payload_hash": payload_hash(value)})
+
+    forged_unknown = deepcopy(original_payload)
+    forged_unknown["dependency_fingerprint"] = "f" * 64
+    replace_payload(forged_unknown)
+    assert project_materialized_dataset_structure(request, repository=repo)["reason"] == "source_integrity_failed"
+    replace_payload(original_payload)
+    forged_sufficient = deepcopy(original_payload)
+    measurements = {entry["name"]: entry for entry in forged_sufficient["evidence"][0]["measurements"]}
+    measurements["usable_delta_count"]["count"] = 1
+    measurements["entities_with_usable_observation"]["count"] = 2
+    measurements["entities_with_three_or_more_observations"]["count"] = 2
+    replace_payload(forged_sufficient)
+    assert project_materialized_dataset_structure(request, repository=repo)["reason"] == "source_integrity_failed"
+    replace_payload(original_payload)
+    # A syntactically valid forged prerequisite assertion cannot become a
+    # producer-owned unknown. Update its reference hash too, so this proves
+    # the producer reconstruction rather than merely a stale pin.
+    temporal_ref = next(ref for ref in original_payload["evidence"][0]["source_refs"]
+                        if db.query_one("analysis_artifacts", artifact_id=ref["artifact_id"])["artifact_type"] == "dataset_structure_assertion"
+                        and repo.get(ref["artifact_id"])[1]["predicate"] == "table.temporal/temporal_binding")
+    temporal_row = db.query_one("analysis_artifacts", artifact_id=temporal_ref["artifact_id"])
+    temporal_path = repo.root / temporal_row["payload_path"]
+    temporal_original = temporal_path.read_bytes()
+    temporal_forged = json.loads(temporal_original)
+    temporal_forged["dependency_fingerprint"] = "e" * 64
+    temporal_raw = json.dumps(temporal_forged, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    temporal_path.write_bytes(temporal_raw)
+    temporal_hash = hashlib.sha256(temporal_raw).hexdigest()
+    db.update("analysis_artifacts", {"artifact_id": temporal_ref["artifact_id"]}, {"payload_hash": temporal_hash})
+    forged_source = deepcopy(original_payload)
+    next(ref for ref in forged_source["evidence"][0]["source_refs"] if ref["artifact_id"] == temporal_ref["artifact_id"])["payload_hash"] = temporal_hash
+    replace_payload(forged_source)
+    assert project_materialized_dataset_structure(request, repository=repo)["reason"] == "source_integrity_failed"
+    temporal_path.write_bytes(temporal_original)
+    db.update("analysis_artifacts", {"artifact_id": temporal_ref["artifact_id"]}, {"payload_hash": temporal_row["payload_hash"]})
+    replace_payload(original_payload)
+    too_many_refs = deepcopy(original_payload)
+    too_many_refs["evidence"][0]["source_refs"] = [{
+        "artifact_id": f"art_dependency_{index}", "role": "dependency", "payload_hash": "a" * 64,
+    } for index in range(17)]
+    replace_payload(too_many_refs)
+    assert project_materialized_dataset_structure(request, repository=repo)["reason"] == "dependency_limit_exceeded"
+    too_many_evidence = deepcopy(original_payload)
+    too_many_evidence["evidence"] = [dict(original_payload["evidence"][0], evidence_id=f"dsce_bound_{index}")
+                                      for index in range(9)]
+    replace_payload(too_many_evidence)
+    assert project_materialized_dataset_structure(request, repository=repo)["reason"] == "evidence_limit_exceeded"
+    oversized = deepcopy(original_payload)
+    oversized["evidence"][0]["source_refs"] = [{
+        "artifact_id": "art_" + "x" * (256 * 1024), "role": "dependency", "payload_hash": "a" * 64,
+    }]
+    replace_payload(oversized)
+    oversized_path = path
+    original_open = Path.open
+    def reject_oversized_open(candidate_path, *args, **kwargs):
+        if candidate_path == oversized_path:
+            raise AssertionError("oversized payload must be rejected from stat before open")
+        return original_open(candidate_path, *args, **kwargs)
+    monkeypatch.setattr(Path, "open", reject_oversized_open)
+    assert project_materialized_dataset_structure(request, repository=repo)["reason"] == "payload_limit_exceeded"
+    monkeypatch.setattr(Path, "open", original_open)
+    replace_payload(original_payload)
+    dependency_id = repo.get(assertion.artifact_id)[1]["evidence"][0]["source_refs"][0]["artifact_id"]
+    db.update("analysis_artifacts", {"artifact_id": dependency_id}, {"status": "superseded"})
+    assert project_materialized_dataset_structure(request, repository=repo)["reason"] == "dependency_changed"
+    db.update("analysis_artifacts", {"artifact_id": assertion.artifact_id}, {"status": "superseded"})
+    changed = project_materialized_dataset_structure(request, repository=repo)
+    assert changed["outcome"] == "selected_pair_absent"
+    assert changed["resolved_as_of"]["read_boundary_fingerprint"] != projected["resolved_as_of"]["read_boundary_fingerprint"]
+
+
+def test_d06_shadow_projector_enforces_candidate_and_payload_bounds(aar, monkeypatch):
+    """The fifth candidate and any oversized payload fail closed without truncation."""
+    repo, asset_id, snapshot_id = aar
+    table = "private_applications"
+    frame = pd.DataFrame({"entity": ["a", "a", "b", "b"],
+                          "observed_on": ["2024-01-01", "bad-date", "2024-01-01", "2024-02-01"]})
+    db.update("dq_item_tables", {"item_id": snapshot_id, "table_name": table}, {
+        "columns": list(frame.columns), "col_count": 2, "row_count": len(frame)})
+    for column, role in (("entity", "Identifier"), ("observed_on", "Date")):
+        db.insert("variable_inventory", {
+            "item_id": snapshot_id, "table_name": table, "column_name": column,
+            "classification": "categorical", "data_type": "string", "description": "",
+            "discrepancies": [], "notes": "", "role": role, "role_reviewed": 1,
+            "provisional": 0, "missing_value_codes_json": [], "missing_codes_confirmed": 0,
+            "profile_json": {"total_count": 4, "non_null_count": 4, "null_count": 0,
+                             "physical_null_count": 0, "regular_value_count": 4,
+                             "cardinality": 2, "calculation_method": "exact", "top_k": {}},
+            "updated_at": db.now_ist()})
+    persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
+    observe_dataset_structure(repo, snapshot_id, tables=[table], predicates=[
+        "table.structure/entity_binding", "table.temporal/temporal_binding"])
+    monkeypatch.setattr(dsc_producer.SnapshotLoader, "load_table",
+                        lambda _self, _snapshot, _table, columns=None, **_kwargs: frame.loc[:, columns].copy())
+    created = observe_dataset_structure(repo, snapshot_id, tables=[table],
+                                        predicates=["table.temporal/observed_cadence"])
+    payload = repo.get(created[0].artifact.artifact_id)[1]
+    request = {"asset_id": asset_id, "snapshot_id": snapshot_id, "table": table,
+        "predicate": "table.temporal/observed_cadence", "axis_id": "column:observed_on",
+        "axis_column": {"table": table, "column": "observed_on"},
+        "grouping": [{"table": table, "column": "entity"}],
+        "consumer_id": "diagnostic:6:dsc-cadence-shadow-v1"}
+    copies = [save_dataset_structure_assertion(repo, payload, version=True).artifact for _ in range(4)]
+    # Candidate LIMIT 5 is checked from metadata before any candidate payload
+    # is touched; a corrupt fifth row cannot replace ambiguity with integrity.
+    fifth_path = repo.root / db.query_one("analysis_artifacts", artifact_id=copies[-1].artifact_id)["payload_path"]
+    fifth_path.write_bytes(b"not-json")
+    capped = project_materialized_dataset_structure(request, repository=repo)
+    assert (capped["outcome"], capped["reason"]) == ("ambiguous", None)
+
+
+def test_phase_cadence_batch_guard_leaves_two_candidates_unpublished(aar, monkeypatch):
+    """A mutation after the one read but before batch commit has no partial output."""
+    repo, asset_id, snapshot_id = aar
+    table = "private_applications"
+    frame = pd.DataFrame({"entity_a": ["a"] * 3 + ["b"] * 3,
+                          "entity_b": ["x", "x", "x", "y", "y", "y"],
+                          "observed_on": ["2024-01-01", "2024-02-01", "2024-03-01"] * 2})
+    db.update("dq_item_tables", {"item_id": snapshot_id, "table_name": table}, {
+        "columns": list(frame.columns), "col_count": 3, "row_count": len(frame)})
+    for column, role in (("entity_a", "Identifier"), ("entity_b", "Identifier"), ("observed_on", "Date")):
+        db.insert("variable_inventory", {
+            "item_id": snapshot_id, "table_name": table, "column_name": column,
+            "classification": "categorical", "data_type": "string", "description": "", "discrepancies": [],
+            "notes": "", "role": role, "role_reviewed": 1, "provisional": 0,
+            "missing_value_codes_json": [], "missing_codes_confirmed": 0,
+            "profile_json": {"total_count": 6, "non_null_count": 6, "null_count": 0,
+                             "physical_null_count": 0, "regular_value_count": 6, "cardinality": 2,
+                             "calculation_method": "exact", "top_k": {}}, "updated_at": db.now_ist()})
+    persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
+    observe_dataset_structure(repo, snapshot_id, tables=[table], predicates=[
+        "table.structure/entity_binding", "table.temporal/temporal_binding"])
+    monkeypatch.setattr(dsc_producer.SnapshotLoader, "load_table",
+                        lambda _self, _snapshot, _table, columns=None, **_kwargs: frame.loc[:, columns].copy())
+    original = repo.save_batch
+    def mutate_before_guard(entries, **kwargs):
+        db.update("variable_inventory", {"item_id": snapshot_id, "table_name": table, "column_name": "entity_a"},
+                  {"role_reviewed": 0, "updated_at": db.now_ist()})
+        return original(entries, **kwargs)
+    monkeypatch.setattr(repo, "save_batch", mutate_before_guard)
+    before = list(repo.list(snapshot_id=snapshot_id, artifact_type="dataset_structure_assertion"))
+    before_files = {path.name for path in repo.root.glob("*.json")}
+    with pytest.raises(dsc_producer.DatasetStructureObservationError) as exc:
+        observe_dataset_structure(repo, snapshot_id, tables=[table], predicates=["table.temporal/observed_cadence"])
+    assert exc.value.reason_code == "DSC_R_SOURCE_INTEGRITY_FAILED"
+    after = list(repo.list(snapshot_id=snapshot_id, artifact_type="dataset_structure_assertion"))
+    assert [(item.artifact_id, item.status) for item in after] == [(item.artifact_id, item.status) for item in before]
+    assert {path.name for path in repo.root.glob("*.json")} == before_files
+
+    # Retry from a refreshed prerequisite projection produces both pairs; an
+    # unchanged retry is local exact reuse and needs no new materialization.
+    monkeypatch.setattr(repo, "save_batch", original)
+    db.update("variable_inventory", {"item_id": snapshot_id, "table_name": table, "column_name": "entity_a"},
+              {"role_reviewed": 1, "updated_at": db.now_ist()})
+    persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
+    observe_dataset_structure(repo, snapshot_id, tables=[table], predicates=[
+        "table.structure/entity_binding", "table.temporal/temporal_binding"])
+    retry = observe_dataset_structure(repo, snapshot_id, tables=[table], predicates=["table.temporal/observed_cadence"])
+    assert len(retry) == 2 and all(item.outcome == "created" for item in retry)
+    exact = observe_dataset_structure(repo, snapshot_id, tables=[table], predicates=["table.temporal/observed_cadence"])
+    assert len(exact) == 2 and all(item.outcome == "reused" for item in exact)

@@ -4,7 +4,7 @@
 
 **Scope:** diagnostic-neutral platform context for immutable dataset snapshots.
 
-**Refined by:** the normative Step 1-c [schema and protocol](dataset-structure-context-schema-protocol.md) resolves its assertion, persistence, and negotiation details.
+**Refined by:** the normative Step 1-c [schema and protocol](dataset-structure-context-schema-protocol.md) resolves its assertion, persistence, and negotiation details. The later [integrated Data Sourcing review contract](dataset-structure-context-data-sourcing-review.md) adopts completed DSC evidence into the Data Sourcing workflow; it supersedes only this document's earlier UI/API/readiness/expected-frequency exclusions, not its evidence or consumer-ownership boundaries.
 
 ## Decision and ownership
 

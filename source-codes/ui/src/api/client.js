@@ -74,6 +74,12 @@ export const processSnapshotV2 = (snapshotId, body) =>
   req(`/v2/items/${encodeURIComponent(snapshotId)}/process`, {
     method: "POST", body: JSON.stringify(body),
   });
+export const getTechnicalRowIdSourceRevisionV2 = (snapshotId) =>
+  req(`/v2/items/${encodeURIComponent(snapshotId)}/technical-row-id/source-revision`);
+export const createTechnicalRowIdV2 = (snapshotId, body, idempotencyKey) =>
+  req(`/v2/items/${encodeURIComponent(snapshotId)}/technical-row-id`, {
+    method: "POST", body: JSON.stringify(body), headers: { "Idempotency-Key": idempotencyKey },
+  });
 export const discardSourcingDraftV2 = (snapshotId) =>
   req(`/v2/items/${encodeURIComponent(snapshotId)}/draft`, { method: "DELETE" });
 export const restoreAssetVersionV2 = (assetId, versionNo) =>
@@ -150,6 +156,41 @@ export const getIngestV2 = (id, { table } = {}) =>
 export const getItemsV2 = (kind) =>
   req(`/v2/items${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`);
 export const getItemTablesV2 = (id) => req(`/v2/items/${encodeURIComponent(id)}/tables`);
+// Dataset Structure review (DSC Slice 2). These remain item-scoped because
+// the governed snapshot, rather than an AAR surface, owns the review draft.
+// `table`, `facet`, `page`, `limit`, and `query` are optional forward-compatible
+// inputs for a bounded backend facet-page/search projection. Current servers
+// may return the whole already-bounded review projection instead.
+export const getDatasetStructureReviewV2 = (id, options = {}) => {
+  const { signal, table, facet, page, limit, query } = options;
+  const params = new URLSearchParams();
+  [["table", table], ["facet", facet], ["page", page], ["limit", limit], ["query", query]].forEach(([key, value]) => {
+    if (value != null && value !== "") params.set(key, String(value));
+  });
+  return req(`/v2/items/${encodeURIComponent(id)}/dataset-structure/review${params.size ? `?${params}` : ""}`, { signal });
+};
+export const getDatasetStructureMaterializationV2 = (id, jobId, { signal } = {}) =>
+  req(`/v2/items/${encodeURIComponent(id)}/dataset-structure/materializations/${encodeURIComponent(jobId)}`, { signal });
+export const getDatasetStructureReviewCandidatesV2 = (id, { tableId, facet, q, cursor, limit = 20, signal } = {}) => {
+  const params = new URLSearchParams({ table_id: tableId || "", facet: facet || "", limit: String(limit) });
+  if (q) params.set("q", q);
+  if (cursor != null) params.set("cursor", String(cursor));
+  return req(`/v2/items/${encodeURIComponent(id)}/dataset-structure/review/candidates?${params}`, { signal });
+};
+export const retryDatasetStructureMaterializationV2 = (id) =>
+  req(`/v2/items/${encodeURIComponent(id)}/dataset-structure/materializations`, {
+    method: "POST", body: JSON.stringify({ reason: "retry" }),
+  });
+export const patchDatasetStructureDraftV2 = (id, body, idempotencyKey) =>
+  req(`/v2/items/${encodeURIComponent(id)}/dataset-structure/draft`, {
+    method: "PATCH",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(body),
+  });
+export const postDatasetStructureDecisionsV2 = (id, body, idempotencyKey) =>
+  req(`/v2/items/${encodeURIComponent(id)}/dataset-structure/decisions`, {
+    method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify(body),
+  });
 export const profileStreamUrlV2 = (id) => `${API_BASE}/v2/items/${encodeURIComponent(id)}/profile/stream`;
 export const getInventoryV2 = (id, { table } = {}) =>
   req(`/v2/items/${encodeURIComponent(id)}/inventory${table ? `?table=${encodeURIComponent(table)}` : ""}`);

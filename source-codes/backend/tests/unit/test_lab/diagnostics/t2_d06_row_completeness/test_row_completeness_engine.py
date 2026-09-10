@@ -2,17 +2,21 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pandas as pd
 import pytest
 
+import system_db as db
 from analysis_runtime.contracts import stable_fingerprint
+from analysis_runtime.dataset_structure_context import project_materialized_dataset_structure
 from dq_diagnostics.engines.row_completeness.engine import (
     RowCompletenessInputError,
     evaluate_row_completeness,
 )
 from dq_diagnostics.engines.row_completeness.models import build_external_report_payload
 from dq_diagnostics.engines.row_completeness.periods import key_from_ordinal, parse_period
+from domains.test_lab.diagnostics.t2_d06_row_completeness.dsc_cadence_shadow import _comparison, observe, schedule, _validate_projection, request_fingerprint
 
 
 ZERO_LLM = {
@@ -24,6 +28,210 @@ ZERO_LLM = {
     "deterministic_inferences": [],
     "event_set_hash": "0" * 64,
 }
+
+
+@pytest.mark.parametrize(("grain", "interval"), [
+    ("monthly", {"unit": "month", "step": 1}),
+    ("quarterly", {"unit": "quarter", "step": 1}),
+    ("quarterly", {"unit": "month", "step": 3}),
+    ("semiannual", {"unit": "quarter", "step": 2}),
+    ("semiannual", {"unit": "month", "step": 6}),
+    ("annual", {"unit": "year", "step": 1}),
+    ("annual", {"unit": "quarter", "step": 4}),
+    ("annual", {"unit": "month", "step": 12}),
+])
+def test_d06_cadence_shadow_closed_interval_equivalences(grain, interval):
+    result = {"outcome": "fulfilled", "cadence": {"value": {
+        "state": "regular", "observed_interval_class": interval}}}
+    assert _comparison(result, grain)[0] == "supports"
+
+
+def test_d06_cadence_shadow_never_calls_projection_when_flag_is_disabled(monkeypatch):
+    monkeypatch.setattr("tenancy.is_flag_enabled", lambda *_args, **_kwargs: False)
+    called = []
+    frozen = {"run_id": "drun_shadow", "manifest_fingerprint": "0" * 64,
+              "scope": _scope()}
+    assert observe(frozen, tenant_id="tenant-a", projection=lambda *_args, **_kwargs: called.append(True)) is None
+    assert called == []
+
+
+def test_d06_cadence_shadow_contains_tenant_flag_failures_before_projection(monkeypatch):
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("feature flag service unavailable")
+    monkeypatch.setattr("tenancy.is_flag_enabled", unavailable)
+    called = []
+    frozen = {"run_id": "drun_shadow", "manifest_fingerprint": "0" * 64,
+              "scope": _scope()}
+    assert observe(frozen, tenant_id="tenant-a", projection=lambda *_args, **_kwargs: called.append(True)) is None
+    assert called == []
+
+
+def test_d06_cadence_shadow_deadline_starts_before_a_slow_flag_lookup(monkeypatch):
+    monkeypatch.setattr("tenancy.is_flag_enabled", lambda *_args, **_kwargs: (time.sleep(0.01), True)[1])
+    frozen = {"run_id": "drun_shadow", "manifest_fingerprint": "0" * 64, "scope": _scope()}
+    projected, metrics = [], []
+    result = observe(frozen, tenant_id="tenant-a", deadline=time.monotonic() - 0.001,
+                     projection=lambda *_args, **_kwargs: projected.append(True),
+                     metric=lambda **item: metrics.append(item))
+    assert result == {"outcome": "error", "reason": "timeout"}
+    assert projected == [] and metrics[0]["reason"] == "timeout"
+
+
+def test_d06_cadence_shadow_schedule_does_not_read_flags_or_block(monkeypatch):
+    monkeypatch.setattr("tenancy.is_flag_enabled", lambda *_args, **_kwargs: pytest.fail("scheduler must not read flags"))
+    started = []
+    class Thread:
+        def __init__(self, **_kwargs):
+            pass
+        def start(self):
+            started.append(True)
+    class Timer:
+        daemon = True
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def start(self):
+            pass
+        def cancel(self):
+            pass
+    monkeypatch.setattr("domains.test_lab.diagnostics.t2_d06_row_completeness.dsc_cadence_shadow.threading.Thread", Thread)
+    monkeypatch.setattr("domains.test_lab.diagnostics.t2_d06_row_completeness.dsc_cadence_shadow.threading.Timer", Timer)
+    schedule({"run_id": "drun_shadow", "manifest_fingerprint": "0" * 64, "scope": _scope()}, tenant_id="tenant-a")
+    assert started == [True]
+
+
+def test_d06_cadence_shadow_thread_start_failure_releases_single_flight_slot(monkeypatch):
+    from domains.test_lab.diagnostics.t2_d06_row_completeness import dsc_cadence_shadow
+    class Timer:
+        daemon = True
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def start(self):
+            pass
+        def cancel(self):
+            pass
+    class BrokenThread:
+        def __init__(self, **_kwargs):
+            pass
+        def start(self):
+            raise RuntimeError("thread unavailable")
+    monkeypatch.setattr(dsc_cadence_shadow.threading, "Timer", Timer)
+    monkeypatch.setattr(dsc_cadence_shadow.threading, "Thread", BrokenThread)
+    frozen = {"run_id": "drun_shadow_start_failure", "manifest_fingerprint": "0" * 64, "scope": _scope()}
+    assert dsc_cadence_shadow.schedule(frozen, tenant_id="tenant-a") is None
+    # The failed launch must not poison its keyed single-flight marker.
+    assert ("tenant-a", "drun_shadow_start_failure", "v1") not in dsc_cadence_shadow._IN_FLIGHT
+
+
+def test_d06_cadence_shadow_schedules_distinct_run_keys_without_global_suppression(monkeypatch):
+    from domains.test_lab.diagnostics.t2_d06_row_completeness import dsc_cadence_shadow
+    started = []
+    class Timer:
+        daemon = True
+        def __init__(self, *_args, **_kwargs):
+            pass
+        def start(self):
+            pass
+        def cancel(self):
+            pass
+    class Thread:
+        def __init__(self, **_kwargs):
+            pass
+        def start(self):
+            started.append(True)
+    monkeypatch.setattr(dsc_cadence_shadow.threading, "Timer", Timer)
+    monkeypatch.setattr(dsc_cadence_shadow.threading, "Thread", Thread)
+    with dsc_cadence_shadow._IN_FLIGHT_LOCK:
+        dsc_cadence_shadow._IN_FLIGHT.clear()
+    for run_id in ("drun_shadow_a", "drun_shadow_b"):
+        schedule({"run_id": run_id, "manifest_fingerprint": "0" * 64, "scope": _scope()}, tenant_id="tenant-a")
+    assert started == [True, True]
+    with dsc_cadence_shadow._IN_FLIGHT_LOCK:
+        dsc_cadence_shadow._IN_FLIGHT.clear()
+
+
+def test_d06_cadence_shadow_locked_flag_consumes_shared_db_budget(monkeypatch):
+    seen, called = [], []
+    def locked_flag(_tenant, _key, *, timeout):
+        seen.append(timeout)
+        time.sleep(0.11)
+        return True
+    monkeypatch.setattr("tenancy.is_flag_enabled", locked_flag)
+    frozen = {"run_id": "drun_shadow_locked_flag", "manifest_fingerprint": "0" * 64,
+              "scope": _scope()}
+    assert observe(
+        frozen, tenant_id="tenant-a",
+        projection=lambda *_args, **_kwargs: called.append("projection"),
+        audit=lambda *_args, **_kwargs: called.append("audit"),
+    ) is None
+    assert seen and 0 < seen[0] <= 0.1
+    assert called == []
+
+
+def test_d06_cadence_shadow_slow_telemetry_is_deadline_bounded(monkeypatch):
+    monkeypatch.setattr("tenancy.is_flag_enabled", lambda *_args, **_kwargs: True)
+    frozen = {"run_id": "drun_shadow_telemetry", "manifest_fingerprint": "0" * 64, "scope": _scope()}
+    request = {"asset_id": "asset_1", "snapshot_id": "snapshot_1", "table": "portfolio",
+        "predicate": "table.temporal/observed_cadence", "axis_id": "column:period",
+        "axis_column": {"table": "portfolio", "column": "period"},
+        "grouping": [{"table": "portfolio", "column": "facility_id"}],
+        "consumer_id": "diagnostic:6:dsc-cadence-shadow-v1"}
+    response = {"projection_version": 1, "request_identity": request_fingerprint(request),
+        "outcome": "fulfilled", "reason": None,
+        "resolved_as_of": {"timestamp": "2026-01-01T00:00:00+00:00", "read_boundary_fingerprint": "c" * 64},
+        "cadence": {"resolution_state": "observed", "value": {"state": "regular",
+                    "observed_interval_class": {"unit": "month", "step": 1}},
+                    "assertion_pin": {"artifact_id": "art_shadow", "payload_hash": "a" * 64,
+                    "dependency_fingerprint": "b" * 64}}}
+    audits = []
+    metric_timeout = observe(frozen, tenant_id="tenant-a", projection=lambda *_a, **_k: response,
+        metric=lambda **_item: time.sleep(0.06), audit=lambda *_item, **_kwargs: audits.append(True),
+        deadline=time.monotonic() + 0.05)
+    assert metric_timeout == {"outcome": "error", "reason": "timeout"} and audits == []
+    audit_timeout = observe(frozen, tenant_id="tenant-a", projection=lambda *_a, **_k: response,
+        metric=lambda **_item: None, audit=lambda *_item, **_kwargs: time.sleep(0.06),
+        deadline=time.monotonic() + 0.05)
+    assert audit_timeout == {"outcome": "error", "reason": "timeout"}
+
+
+@pytest.mark.parametrize("outcome, reason", [
+    ("selected_pair_absent", None), ("unavailable", "source_missing"),
+    ("ambiguous", None), ("error", "deadline_exceeded"),
+])
+def test_d06_cadence_shadow_projection_response_is_closed(outcome, reason):
+    request = {"asset_id": "asset", "snapshot_id": "snap", "table": "t", "predicate": "table.temporal/observed_cadence",
+        "axis_id": "column:p", "axis_column": {"table": "t", "column": "p"},
+        "grouping": [{"table": "t", "column": "f"}], "consumer_id": "diagnostic:6:dsc-cadence-shadow-v1"}
+    response = {"projection_version": 1, "request_identity": request_fingerprint(request),
+        "outcome": outcome, "reason": reason,
+        "resolved_as_of": {"timestamp": "read", "read_boundary_fingerprint": "a" * 64}}
+    assert _validate_projection(response, request)
+    response["untrusted"] = "nope"
+    assert not _validate_projection(response, request)
+
+
+def test_d06_shadow_projector_honours_near_expired_db_budget(monkeypatch):
+    """A 90 ms-established budget never starts a fresh 100 ms DB wait."""
+    captured = []
+    class SlowConnection:
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def execute(self, *_args, **_kwargs):
+            time.sleep(0.05)
+            return self
+        def set_progress_handler(self, *_args, **_kwargs): pass
+    def get_conn(**kwargs):
+        captured.append(kwargs["timeout"])
+        return SlowConnection()
+    monkeypatch.setattr(db, "get_conn", get_conn)
+    request = {"asset_id": "asset", "snapshot_id": "snap", "table": "table",
+        "predicate": "table.temporal/observed_cadence", "axis_id": "column:period",
+        "axis_column": {"table": "table", "column": "period"},
+        "grouping": [{"table": "table", "column": "facility"}],
+        "consumer_id": "diagnostic:6:dsc-cadence-shadow-v1"}
+    repository = type("Repository", (), {"root": "."})()
+    result = project_materialized_dataset_structure(request, repository=repository, deadline=time.monotonic() + 0.04)
+    assert captured and 0 < captured[0] < 0.1
+    assert (result["outcome"], result["reason"]) == ("error", "deadline_exceeded")
 
 
 def _scope(*, grain="monthly", floor=0.95, segment=None):

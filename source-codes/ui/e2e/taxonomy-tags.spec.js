@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test-fixture";
 import { E2E_API_BASE } from "./support/endpoints";
 
 // This is a taxonomy-seed acceptance test. The former version exercised a

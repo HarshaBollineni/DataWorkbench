@@ -135,6 +135,26 @@ function AdvisoryRoleReview({ manifest, frozen, busy, onPatch }) {
   </Section>;
 }
 
+function DatasetStructureAssist({ manifest, frozen, busy, onPatch }) {
+  const assist = manifest.dsc_assist || {};
+  if (assist.state !== "available") return null;
+  const cadence = assist.expected_cadence;
+  return <Section title="Dataset Structure suggestions"
+    description="Confirmed Dataset Structure selections are editable starting points. D06 keeps ownership of its scope and reporting-grain interpretation." icon={ShieldCheck}>
+    <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
+      <p className="font-semibold">Review these suggested facility and period fields before execution.</p>
+      <p className="mt-1">They are not an execution decision and do not change completed runs, D06 calculations, or reporting grain.</p>
+      {cadence && <p className="mt-2">Dataset Structure expected cadence: <strong>{cadence.step} {cadence.unit}{cadence.step === 1 ? "" : "s"}</strong>. It is advisory; the selected D06 reporting grain remains unchanged unless you choose a different grain below.</p>}
+    </div>
+    {!frozen && <label className="mt-3 flex items-start gap-2 rounded-md border border-slate-200 p-3 text-xs text-slate-700">
+      <input type="checkbox" checked={Boolean(assist.scope_confirmed)} disabled={busy}
+        onChange={(event) => event.target.checked && onPatch({ kind: "dsc_assist_confirmation", confirmed: true })} />
+      <span>I reviewed the D06 scope. I accept these suggestions or the manual values currently selected.</span>
+    </label>}
+    {assist.scope_confirmed && <Badge className="mt-3" variant="success">D06 scope confirmation recorded</Badge>}
+  </Section>;
+}
+
 export default function RowCompletenessScopeGate({ run, manifest, busy, patch, runNow }) {
   const [floorDirty, setFloorDirty] = useState(false);
   const frozen = run.status !== "draft";
@@ -191,6 +211,8 @@ export default function RowCompletenessScopeGate({ run, manifest, busy, patch, r
           onChange={(column) => safePatch({ kind: "role_override", role, column })} />)}
       </div>
     </Section>
+
+    <DatasetStructureAssist manifest={manifest} frozen={frozen} busy={busy} onPatch={safePatch} />
 
     <AdvisoryRoleReview manifest={manifest} frozen={frozen} busy={busy} onPatch={safePatch} />
 

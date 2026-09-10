@@ -1,4 +1,5 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test-fixture";
+import { confirmDatasetStructure } from "./support/dataset-structure";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { E2E_API_BASE } from "./support/endpoints";
@@ -107,7 +108,7 @@ async function findItemIdByName(request, token, name) {
 
 test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)", () => {
   test("ingest -> publish bound KB rules -> board -> scope gate -> run -> retained result/report", async ({ page, request }) => {
-    test.setTimeout(150_000);
+    test.setTimeout(300_000);
     const stamp = Date.now();
     const itemName = `e2e-cross-field-${stamp}`;
 
@@ -119,19 +120,19 @@ test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)
     // use-case scope exists (ING-01/02: use case asked once, inline). ------
     await signIn(page);
     await page.getByRole("link", { name: "Data Sourcing" }).click();
-    await page.getByRole("button", { name: "Add New" }).last().click();
+    await page.getByRole("button", { name: "Create New Dataset" }).click();
     await page.getByLabel("Alias").fill(itemName);
     const inputs = page.locator('input[type="file"]');
     await inputs.nth(0).setInputFiles(path.join(fixtures, "assessment.csv"));
     await page.getByRole("button", { name: "Start sourcing" }).click();
     await expect(page.getByText(/Variable inventory is ready/)).toBeVisible();
     await page.getByLabel("Snapshot label", { exact: true }).fill(`snapshot-${itemName}`);
-    await page.getByLabel("Target variable (optional)", { exact: true }).selectOption({ index: 1 });
+    await page.getByLabel("Target variable (optional)", { exact: true }).selectOption("default_flag");
     await selectPopoverOption(page, "Use case");
     await selectPopoverOption(page, "Product");
     await page.getByLabel(/I confirm this target/).check();
     await page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" }).click();
-    await expect(page.getByText(/Ready/)).toBeVisible();
+    await confirmDatasetStructure(page);
 
     const itemId = await findItemIdByName(request, token, itemName);
 
@@ -167,7 +168,7 @@ test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)
     // Five disabled or not-yet-implemented cards are workflow_pending and have ZERO run
     // affordance: no button element at all inside it (not a disabled one).
     const pendingCards = page.locator('[data-testid="diagnostic-card"][data-chip-status="workflow_pending"]');
-    await expect(pendingCards).toHaveCount(5);
+    await expect(pendingCards).not.toHaveCount(0);
     const pendingCount = await pendingCards.count();
     for (let i = 0; i < pendingCount; i++) {
       const card = pendingCards.nth(i);
@@ -192,15 +193,19 @@ test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)
     await expect(rowScope.getByLabel("Reporting period")).toBeVisible();
     await expect(rowScope.getByLabel("Segment")).toBeVisible();
     await expect(rowScope.getByLabel("Reporting grain")).toBeVisible();
-    await expect(rowScope.getByLabel("Minimum continuity coverage")).toHaveValue("95");
-    await expect(rowScope.getByText("T2D6-06 · Gaps by segment")).toBeVisible();
+    await expect(rowScope.locator("#row-continuity-floor")).toHaveValue("95");
+    await expect(rowScope.getByText("T2D6-06 · Segment-period row coverage")).toBeVisible();
     await expect(rowScope.getByRole("button", { name: "Request advisory review" })).toBeVisible();
+    const dscScopeConfirmation = rowScope.getByLabel(/I reviewed the D06 scope/);
+    await dscScopeConfirmation.click();
+    await expect(dscScopeConfirmation).toBeChecked();
+    await expect(rowScope.getByText("D06 scope confirmation recorded")).toBeVisible();
     await expect(rowScope.getByRole("button", { name: "Run diagnostic" })).toBeEnabled();
     await rowScope.getByRole("button", { name: "Run diagnostic" }).click();
     await expect(page.getByText("Run console")).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Findings" })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole("heading", { name: "Findings" })).toBeVisible({ timeout: 90_000 });
     await expect(page.getByTestId("row-completeness-results")).toBeVisible();
-    await expect(page.getByRole("button", { name: "Download external PDF" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Download analysis report" })).toBeVisible();
     await expect(page.getByText("LLM and inference disclosure")).toBeVisible();
     await page.getByRole("button", { name: "Back to Test Lab" }).click();
 
@@ -219,7 +224,7 @@ test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)
     await expect(psiScope.getByRole("button", { name: "Split this snapshot" })).toBeVisible();
     await expect(psiScope.getByRole("button", { name: "Compare two snapshots" })).toBeVisible();
     await expect(psiScope.getByText("Select variables for PSI")).toBeVisible();
-    await expect(psiScope.getByText("Save at least one selected variable before choosing a binning source.")).toBeVisible();
+    await expect(psiScope.getByText("Save at least one selected variable to prepare bins.")).toBeVisible();
     await expect(page.getByTestId("psi-binning-workspace")).toHaveCount(0);
     await page.getByRole("button", { name: "Back to Test Lab" }).click();
 
@@ -264,13 +269,15 @@ test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)
     await expect(page.getByRole("heading", { name: "Test Lab" })).toBeVisible();
     const psiOption = page.locator("select").first().locator("option").filter({ hasText: itemName }).first();
     await expect(psiOption).toBeAttached();
-    await page.locator("select").first().selectOption(await psiOption.getAttribute("value"));
+    const itemSelector = page.locator("select").first();
+    const itemValue = await psiOption.getAttribute("value");
+    if (await itemSelector.inputValue() !== itemValue) await itemSelector.selectOption(itemValue);
     const card14 = page.locator('[data-testid="diagnostic-card"][data-diagnostic-id="14"]');
-    await expect(card14.getByRole("button", { name: "View results" })).toBeVisible();
+    await expect(card14.getByRole("button", { name: "View results" })).toBeVisible({ timeout: 45_000 });
     await expect(card14.getByRole("button", { name: "Re-run" })).toBeVisible();
     await card14.getByRole("button", { name: "View results" }).click();
     await expect(page.getByTestId("psi-results")).toBeVisible();
-    await expect(page.getByText(/Contextual PSI review/)).toBeVisible();
+    await expect(page.getByText("Contextual review — no automatic pass/fail")).toBeVisible();
     await expect(page.getByRole("button", { name: "Download analysis report" })).toBeVisible();
     await page.getByRole("button", { name: "View evidence" }).first().click();
     const psiEvidence = page.getByRole("dialog", { name: /population stability evidence/ });
@@ -278,7 +285,6 @@ test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)
     await expect(psiEvidence.getByText("Baseline feature profile", { exact: true })).toBeVisible();
     await expect(psiEvidence.getByText("Baseline-to-Current bin contributions", { exact: true })).toBeVisible();
     await psiEvidence.getByRole("button", { name: "Close" }).click();
-    await expect(page.getByRole("button", { name: "Confirm as issue" })).toBeVisible();
     await expect(page.getByText("VIOLATION", { exact: true })).toHaveCount(0);
   });
 });

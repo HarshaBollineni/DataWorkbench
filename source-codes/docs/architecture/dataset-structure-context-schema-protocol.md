@@ -6,6 +6,11 @@
 
 The machine-readable Draft 2020-12 contracts are [`common.schema.json`](schemas/dsc-v1/common.schema.json), [`assertion.schema.json`](schemas/dsc-v1/assertion.schema.json), [`context.schema.json`](schemas/dsc-v1/context.schema.json), [`request.schema.json`](schemas/dsc-v1/request.schema.json), and [`response.schema.json`](schemas/dsc-v1/response.schema.json). They use stable `https://dataworkbench.invalid/` identifiers and locally resolvable references; this does not claim a live endpoint.
 
+The Slice-3 authority extension is separately negotiated as DSC v2. Its
+machine-readable contracts are in [`schemas/dsc-v2`](schemas/dsc-v2): version
+2 authority assertions and version-2 context/request/response negotiation.
+They are additive: v1 assertion and context payloads remain valid and readable.
+
 ## AAR boundary and artifact model
 
 The AAR, not a DSC payload, assigns `art_…` artifact IDs, computes the SHA-256 `payload_hash` over canonical payload bytes, records identity/lineage, and owns lifecycle `active|superseded`. Therefore assertion and context payload schemas contain neither `artifact_id`, `payload_hash`, nor lifecycle, and no payload self-hashes. References, context pins, source references, and response `context_ref` use the AAR metadata pair `art_…` plus payload hash.
@@ -160,6 +165,6 @@ It intentionally adds no endpoint, consumer adapter, D06/D08 integration, readin
 | Required unavailable / optional unmaterialized | Overall unfulfilled only for required; optional returns `DSC_R_OPTIONAL_NOT_MATERIALIZED`. |
 | Sensitive, missing, or tampered source | Fail closed with the applicable `DSC_R_*` code and no existence disclosure. |
 
-v1 excludes inferred joins, arbitrary composite search, raw/bounded values, expected frequency, reporting meaning/grain, business ontology/roles/KB, consumer readiness/findings/UI, and cross-snapshot compatibility/carry-forward. D06 is only a later shadow adopter. D08 remains unchanged and advisory.
+v1 excludes inferred joins, arbitrary composite search, raw/bounded values, reporting meaning/grain, business ontology/roles/KB, and cross-snapshot compatibility/carry-forward. Its prior exclusion of expected frequency, consumer readiness/findings/UI, and endpoint work is superseded only by the separately versioned [integrated Data Sourcing review contract](dataset-structure-context-data-sourcing-review.md). That adoption uses DSC context version 2, preserves immutable observations, and leaves diagnostics unchanged until a consumer-specific adapter is approved. D06 is only a later shadow adopter in v1; D08 remains unchanged and advisory.
 
 The next implementation phase is Phase C2: make the documented `period` representation valid in runtime and JSON Schema, then add the profile-backed `table.temporal/temporal_binding` producer. It must satisfy the Phase C1 acceptance gate before cadence or a consumer shadow adapter begins. D06/D08 and UI work remain later.

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test-fixture";
 
 async function signIn(page) {
   await page.addInitScript(() => localStorage.setItem("tourEnabled", "false"));
@@ -25,7 +25,7 @@ test("artifact repository tabs retain schema, details, lineage, and run behavior
     } else if (path.endsWith("/analysis-artifacts") && url.searchParams.get("artifact_type") === "column_profile") {
       body = { total: 1, artifacts: [{ artifact_id: "profile-1", feature: "income", summary: { fields: { data_type: "float", role: "feature", classification: "continuous", description: "Annual income", special_values: [] }, metrics: [{ metric_key: "distinct_count", value: 25 }] } }] };
     } else if (path.endsWith("/analysis-artifacts")) {
-      body = { total: 1, artifacts: [{ artifact_id: "artifact-1", artifact_type: "feature_profile", feature: "income", scope: "local", snapshot_id: "snapshot-1", status: "active", summary: { metrics: [{ label: "IV", value: 0.42 }] } }] };
+      body = { total: 1, artifacts: [{ artifact_id: "artifact-1", artifact_type: "feature_profile", feature: "income", scope: "local", snapshot_id: "snapshot-1", status: "active", payload_media_type: "application/json", summary: { metrics: [{ label: "IV", value: 0.42 }] } }] };
     } else {
       return route.fallback();
     }

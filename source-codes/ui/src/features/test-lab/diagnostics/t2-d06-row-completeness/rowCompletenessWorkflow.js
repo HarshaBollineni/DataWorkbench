@@ -35,6 +35,9 @@ export function rowCompletenessValidation(manifest) {
   if (!Number.isFinite(floor) || floor < 0 || floor > 1) {
     issues.push("Continuity floor must be between 0% and 100%.");
   }
+  if (manifest?.dsc_assist?.state === "available" && !manifest.dsc_assist.scope_confirmed) {
+    issues.push("Confirm the Dataset Structure suggestions or the manual scope values.");
+  }
   return issues;
 }
 
@@ -43,6 +46,7 @@ export function roleSourceLabel(binding) {
   return {
     governed_metadata: "Governed metadata",
     deterministic: "Deterministic suggestion",
+    dsc_assist: "Confirmed Dataset Structure suggestion",
     manual: "Manual selection",
     llm_reviewed: "LLM-reviewed selection",
   }[binding.source] || binding.source || "Unknown source";

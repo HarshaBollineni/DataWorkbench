@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test-fixture";
 
 // WSP-08 / D-19 (plan Phase 2.9) — Admin "Danger zone" browser coverage:
 // server-enforced type-to-confirm gating, and one real surgical reset that
@@ -44,7 +44,7 @@ test("admin danger zone: surgical reset is gated by exact type-to-confirm text, 
   // report, not only the all-zero case (that's covered separately below).
   const name = `e2e-reset-language-dataset-${Date.now()}`;
   await page.getByRole("link", { name: "Data Sourcing" }).click();
-  await page.getByRole("button", { name: "Add New" }).last().click();
+  await page.getByRole("button", { name: "Create New Dataset" }).click();
   await page.getByLabel("Alias").fill(name);
   await page.locator('input[type="file"]').nth(0).setInputFiles(path.join(fixtures, "assessment.csv"));
   await page.getByRole("button", { name: "Start sourcing" }).click();

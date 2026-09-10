@@ -313,6 +313,10 @@ class ArtifactTypeDescriptor:
     description: str
     owner: str
     payload_schema_version: int = 1
+    # Most artifact families have one schema.  DSC v2 must retain readable and
+    # writable v1 candidate assertions while admitting separately validated
+    # v2 authority assertions.
+    payload_schema_versions: tuple[int, ...] = ()
     supported_scopes: tuple[str, ...] = ("universal", "diagnostic_local", "workflow_local")
     granularity: str = "feature"
     target_applicability: str = "optional"
@@ -372,7 +376,8 @@ def list_artifact_types() -> list[dict[str, Any]]:
 def validate_payload(artifact_type: str, payload: Any, schema_version: int) -> None:
     descriptor = get_artifact_type(artifact_type)
     if descriptor is not None:
-        if schema_version != descriptor.payload_schema_version:
+        accepted = descriptor.payload_schema_versions or (descriptor.payload_schema_version,)
+        if schema_version not in accepted:
             raise ValueError(f"unsupported {artifact_type!r} payload schema version: {schema_version}")
         descriptor.payload_validator(payload)
 
@@ -417,6 +422,7 @@ def _register_defaults() -> None:
     definitions = (
         ("snapshot_profile", "Snapshot profile", "Data Sourcing", "snapshot"),
         ("table_profile", "Table profile", "Data Sourcing", "table"),
+        ("table_inventory_profile", "Table inventory profile", "Data Sourcing", "table"),
         ("schema_profile", "Schema profile", "Data Sourcing", "table"),
         ("column_profile", "Column profile", "Data Sourcing", "feature"),
         ("value_distribution", "Value distribution", "Data Sourcing", "feature"),
@@ -464,6 +470,7 @@ def _register_defaults() -> None:
         display_name="Dataset structure assertion",
         description="Immutable, evidence-backed assertion about one dataset snapshot.",
         owner="Dataset Structure Context",
+        payload_schema_versions=(1, 2),
         supported_scopes=("universal", "diagnostic_local"),
         granularity="assertion",
         target_applicability="not_applicable",
@@ -471,7 +478,7 @@ def _register_defaults() -> None:
         payload_validator=validate_assertion_payload,
         summary_adapter=safe_assertion_summary,
         allowed_source_types=(
-            "snapshot_profile", "table_profile", "schema_profile", "column_profile",
+            "snapshot_profile", "table_profile", "table_inventory_profile", "schema_profile", "column_profile",
             "governance_reference", "dataset_structure_assertion",
         ),
         sensitivity="confidential",
@@ -484,6 +491,7 @@ def _register_defaults() -> None:
         display_name="Dataset structure context",
         description="Consumer-local, consistently resolved context pinned to DSC assertions.",
         owner="Dataset Structure Context",
+        payload_schema_versions=(1, 2),
         supported_scopes=("diagnostic_local",),
         granularity="snapshot_context",
         target_applicability="not_applicable",

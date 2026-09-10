@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+import logging
 from collections.abc import Generator
 from typing import Any
 
@@ -22,9 +23,11 @@ from .models import (
     build_external_report_payload,
 )
 from dq_diagnostics.inference_audit import inference_disclosure
-from domains.test_lab.shared.run_state import DONE, DRAFT
+from domains.test_lab.shared.run_state import DONE, DRAFT, clear_trusted_execution_tenant
 from dq_diagnostics.result import DiagnosticResult
+from .dsc_cadence_shadow import schedule as schedule_dsc_cadence_shadow
 
+_LOGGER = logging.getLogger(__name__)
 
 DIAGNOSTIC_ID = 6
 RECONCILIATION_TYPE = "row_completeness_reconciliation"
@@ -169,7 +172,7 @@ def _persist(manifest: dict[str, Any], payload: ReconciliationPayload,
             "findings": len(payload.rules), "artifact": artifact_ref}
 
 
-def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, None]:
+def run(run_id: str, actor: str = "system", *, tenant_id: str | None = None) -> Generator[dict[str, Any], None, None]:
     run_row = manifest_mod.get_run(run_id)
     if run_row["status"] == DONE:
         results = db.query("diag_results", run_id=run_id)
@@ -199,6 +202,21 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
                "thought": f"[{done}/{len(payload.rules)}] {rule.rule_id} -> {rule.outcome}"}
     summary = _persist(manifest, payload, artifact, reused)
     db.update("diag_runs", {"run_id": run_id}, {"status": DONE, "finished_at": db.now_ist()})
+    # Strictly post-authoritative best effort: no shadow DB/flag work can
+    # contend with reconciliation, result, finding, or AAR persistence.
+    if tenant_id:
+        # `tenant_id` is now a runner-local copy and schedule copies the
+        # immutable payload before returning.  Only then is the private
+        # launch-to-SSE context consumable/clearable.
+        try:
+            schedule_dsc_cadence_shadow(manifest, tenant_id=tenant_id)
+        finally:
+            try:
+                clear_trusted_execution_tenant(run_id, tenant_id)
+            except Exception:
+                # Context cleanup is advisory and occurs after all D06 state
+                # is committed; never turn a completed run into an error.
+                _LOGGER.warning("diagnostic_execution_context_clear_unavailable")
     review_required = summary["rollup"].get("VIOLATION", 0)
     yield {"phase": "done", "agent": "row_completeness_engine", "run_id": run_id,
            "result_id": summary["result_id"], "verdict": summary["verdict"],
@@ -210,9 +228,9 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
                        + f"{review_required} failed rule finding(s) await user review; no issue was created automatically.")}
 
 
-def execute_now(run_id: str, actor: str = "system") -> dict[str, Any]:
+def execute_now(run_id: str, actor: str = "system", *, tenant_id: str | None = None) -> dict[str, Any]:
     last: dict[str, Any] = {}
-    for event in run(run_id, actor):
+    for event in run(run_id, actor, tenant_id=tenant_id):
         last = event
     return last
 

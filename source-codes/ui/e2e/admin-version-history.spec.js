@@ -1,6 +1,8 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test-fixture";
+import { confirmDatasetStructure } from "./support/dataset-structure";
+import { selectPopoverOption } from "./support/select";
 
 // 0.5.0 ADM-06/07 (plan Step 3c) — Admin's asset version-history view:
 // pick any asset, see its version/snapshot timeline rendered in human
@@ -37,6 +39,7 @@ async function signIn(page) {
 const RAW_TOKEN_RE = /^(superseded|active|fresh|add_period|full_replacement|current)$/;
 
 test("admin version history: pick an asset, see its version/snapshot timeline in human language", async ({ page }) => {
+  test.setTimeout(90_000);
   await signIn(page);
 
   // The typed name is sanitised into an alias on the way to a `display_name`
@@ -47,11 +50,18 @@ test("admin version history: pick an asset, see its version/snapshot timeline in
   const stamp = String(Date.now());
   const name = `e2e-history-dataset-${stamp}`;
   await page.getByRole("link", { name: "Data Sourcing" }).click();
-  await page.getByRole("button", { name: "Add New" }).last().click();
+  await page.getByRole("button", { name: "Create New Dataset" }).click();
   await page.getByLabel("Alias").fill(name);
   await page.locator('input[type="file"]').nth(0).setInputFiles(path.join(fixtures, "assessment.csv"));
   await page.getByRole("button", { name: "Start sourcing" }).click();
   await expect(page.getByText(/Variable inventory is ready/)).toBeVisible();
+  await page.getByLabel("Snapshot label", { exact: true }).fill(`snapshot-${stamp}`);
+  await page.getByLabel("Target variable (optional)", { exact: true }).selectOption({ index: 1 });
+  await selectPopoverOption(page, "Use case");
+  await selectPopoverOption(page, "Product");
+  await page.getByLabel(/I confirm this target/).check();
+  await page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" }).click();
+  await confirmDatasetStructure(page);
 
   await page.getByRole("link", { name: "Admin" }).click();
   await expect(page.getByRole("heading", { name: "Asset version history" })).toBeVisible();

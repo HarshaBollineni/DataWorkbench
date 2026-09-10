@@ -33,6 +33,7 @@
     "dq_item_mappings": { "label": "variables and their profiles", "group": "yourWork" },
     "dq_item_warnings": { "label": "variables and their profiles", "group": "yourWork" },
     "dq_snapshot_fingerprints": { "label": "variables and their profiles", "group": "yourWork" },
+    "technical_row_id_transforms": { "label": "variables and their profiles", "group": "yourWork" },
 
     "tag_assignments": { "label": "tags", "group": "yourWork" },
 
@@ -56,6 +57,7 @@
     "diag_findings": { "label": "test results and findings", "group": "yourWork" },
     "diag_dispositions": { "label": "test results and findings", "group": "yourWork" },
     "diag_inference_events": { "label": "test results and findings", "group": "yourWork" },
+    "d06_dsc_cadence_shadow_audit": { "label": "test results and findings", "group": "yourWork" },
     "analysis_artifacts": { "label": "test results and findings", "group": "yourWork" },
     "analysis_artifact_events": { "label": "test results and findings", "group": "yourWork" },
     "analysis_artifact_sources": { "label": "test results and findings", "group": "yourWork" },
@@ -74,11 +76,20 @@
     "context_links": { "label": "saved workflow context", "group": "yourWork" },
     "app_fsm": { "label": "saved workflow context", "group": "yourWork" },
     "context_memory": { "label": "saved workflow context", "group": "yourWork" },
+    "diagnostic_execution_context": { "label": "saved workflow context", "group": "yourWork" },
+    "dataset_structure_review_idempotency": { "label": "saved workflow context", "group": "yourWork" },
+    "dataset_structure_review_drafts": { "label": "saved workflow context", "group": "yourWork" },
+    "dataset_structure_review_states": { "label": "saved workflow context", "group": "yourWork" },
 
     "schedules": { "label": "scheduled tasks and alerts", "group": "yourWork" },
     "notifications": { "label": "scheduled tasks and alerts", "group": "yourWork" },
 
     "monitoring": { "label": "background activity records", "group": "yourWork" },
+    "dataset_structure_materialization_jobs": { "label": "background activity records", "group": "yourWork" },
+    "dataset_structure_materialization_reconcile_cursor": { "label": "background activity records", "group": "yourWork" },
+    "dataset_structure_profile_publications": { "label": "background activity records", "group": "yourWork" },
+    "dataset_structure_profile_publication_completions": { "label": "background activity records", "group": "yourWork" },
+    "dataset_structure_backfill_runs": { "label": "background activity records", "group": "yourWork" },
 
     "tickets": { "label": "support requests", "group": "yourWork" },
 

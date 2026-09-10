@@ -36,6 +36,11 @@ if _diagnostic_recovery["recovered"]:
         f"[test-lab] recovered {_diagnostic_recovery['recovered']} interrupted diagnostic run(s)",
         flush=True,
     )
+# DSC Foundation recovery is durable queue maintenance only; it neither scans
+# source tables nor changes snapshot readiness during application bootstrap.
+from domains.aar.materialization_jobs import process_one as process_dsc_materialization, reconcile as reconcile_dsc_materializations, revoke_owned as revoke_dsc_materializations  # noqa: E402
+
+_dsc_recovery = reconcile_dsc_materializations()
 # Plan 6 — sync the agent topology on every boot (idempotent): backfills `seq`
 # and the Lovelace->Newton rename even when users already exist (cold-start
 # below would otherwise skip seeding on a pre-existing system_state.db).
@@ -115,6 +120,8 @@ _DIAGNOSTIC_RUN_SWEEP_INTERVAL = max(
     10, int(os.environ.get("DIAGNOSTIC_RUN_SWEEP_INTERVAL", "30"))
 )
 _diagnostic_run_stop = threading.Event()
+_DSC_MATERIALIZATION_SWEEP_INTERVAL = max(1, int(os.environ.get("DSC_MATERIALIZATION_SWEEP_INTERVAL", "5")))
+_dsc_materialization_stop = threading.Event()
 
 
 def _time_box_sweep_loop() -> None:
@@ -141,11 +148,22 @@ def _diagnostic_run_sweep_loop() -> None:
             print(f"[test-lab] diagnostic run recovery failed: {exc}", flush=True)
 
 
+def _dsc_materialization_sweep_loop() -> None:
+    """Run durable DSC v1 jobs outside HTTP/profile-finalization threads."""
+    while not _dsc_materialization_stop.wait(_DSC_MATERIALIZATION_SWEEP_INTERVAL):
+        try:
+            reconcile_dsc_materializations()
+            process_dsc_materialization()
+        except Exception as exc:  # a job failure is persisted by the worker
+            print(f"[dsc] materialization sweep failed: {exc}", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     thread = None
     time_box_thread = None
     diagnostic_run_thread = None
+    dsc_materialization_thread = None
     if system_db.SYS_DB_BACKUP_PATH:
         thread = threading.Thread(target=_backup_loop, name="db-backup", daemon=True)
         thread.start()
@@ -157,12 +175,25 @@ async def lifespan(app: FastAPI):
         daemon=True,
     )
     diagnostic_run_thread.start()
+    dsc_materialization_thread = threading.Thread(
+        target=_dsc_materialization_sweep_loop,
+        name="dsc-materialization-worker",
+        daemon=True,
+    )
+    dsc_materialization_thread.start()
     try:
         yield
     finally:
         _backup_stop.set()
         _time_box_stop.set()
         _diagnostic_run_stop.set()
+        _dsc_materialization_stop.set()
+        revoke_dsc_materializations()
+        if dsc_materialization_thread is not None:
+            # Do not snapshot while a producer could still hold staged writes.
+            # Revocation makes its fenced guard fail; join proves that before
+            # the final backup is allowed to run.
+            dsc_materialization_thread.join()
         if system_db.SYS_DB_BACKUP_PATH:
             try:
                 system_db.backup_to_volume()  # final snapshot on graceful shutdown

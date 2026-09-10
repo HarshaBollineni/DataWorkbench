@@ -36,7 +36,7 @@ class StrictModel(BaseModel):
 class RoleBinding(StrictModel):
     table: str = Field(min_length=1)
     column: str = Field(min_length=1)
-    source: Literal["governed_metadata", "deterministic", "manual", "llm_reviewed"]
+    source: Literal["governed_metadata", "deterministic", "dsc_assist", "manual", "llm_reviewed"]
     score: float | None = Field(default=None, ge=0.0, le=1.0)
     reason: str = Field(min_length=1)
 

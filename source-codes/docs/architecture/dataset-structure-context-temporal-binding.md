@@ -110,6 +110,6 @@ Phase C2 is complete only when tests prove:
 
 ## Explicit exclusions
 
-Phase C1 and the proposed Phase C2 producer do not include cadence or frequency, expected frequency, reporting meaning or reporting grain, panel/dataset-form classification, entity-time grouping selection, relationship/join inference, cross-snapshot carry-forward, D06/D08 adapters, manifests, findings, readiness gates, UI changes, or KB changes.
+Phase C1 and the proposed Phase C2 producer do not itself include cadence or frequency, reporting meaning or reporting grain, panel/dataset-form classification, entity-time grouping selection, relationship/join inference, cross-snapshot carry-forward, D06/D08 adapters, manifests, findings, or KB changes. The prior expected-frequency/readiness/UI exclusion is superseded only by the later [integrated Data Sourcing review contract](dataset-structure-context-data-sourcing-review.md), which consumes this producer's immutable candidates without changing its eligibility or evidence rules.
 
 After Phase C2 passes this gate, the next bounded design increment is observed cadence, followed later by a consumer-owned D06 shadow adapter.

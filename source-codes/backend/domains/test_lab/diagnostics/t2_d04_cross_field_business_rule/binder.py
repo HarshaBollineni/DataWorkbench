@@ -365,7 +365,11 @@ def propose_binding(rule_row: dict[str, Any]) -> dict[str, Any]:
                 "identity rule text is not in 'target == a <op> b [* factor] (+/- tol)' form")
         matched = "identity:formula"
     else:  # inequality | domain
-        expression = _parse_expression(body, aliases)
+        # Generic domain/inequality rules commonly carry a trailing prose
+        # note after an otherwise executable comparison.  Normalize only the
+        # whole non-conditional expression here: conditional clauses retain
+        # their own IF/THEN parsing and meaningful parenthesized syntax.
+        expression = _parse_expression(_strip_note(body), aliases)
         if expression is None:
             raise BinderRefusal(
                 f"{rule_type} rule text matched no generic pattern "

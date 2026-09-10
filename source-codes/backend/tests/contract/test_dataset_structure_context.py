@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator, RefResolver
 
 from analysis_runtime.dataset_structure_context import (
     DSCContractError,
@@ -17,6 +20,7 @@ from analysis_runtime.dataset_structure_context import (
     assemble_response,
     assertion_identity_key,
     canonical_payload_bytes,
+    expected_cadence_instance_key,
     payload_hash,
     safe_assertion_summary,
     safe_context_summary,
@@ -94,6 +98,11 @@ def test_temporal_and_relationship_boundaries():
     with pytest.raises(DSCContractError): validate_assertion_payload(value)
     value["claims"][0]["value"].pop("timezone")
     validate_assertion_payload(value)
+    value["claims"][0]["value"]["temporal_type"] = "period"
+    validate_assertion_payload(value)
+    value["claims"][0]["value"]["timezone"] = "UTC"
+    with pytest.raises(DSCContractError): validate_assertion_payload(value)
+    value["claims"][0]["value"].pop("timezone")
     value["claims"][0]["value"]["temporal_type"] = "interval"
     with pytest.raises(DSCContractError): validate_assertion_payload(value)
     relationship = assertion(); relationship.update(
@@ -105,6 +114,65 @@ def test_temporal_and_relationship_boundaries():
     relationship["claims"][0]["algorithm"] = {"name": "x", "version": "1"}
     relationship["claims"][0]["confidence"] = 1.0
     with pytest.raises(DSCContractError): validate_assertion_payload(relationship)
+
+
+def test_temporal_json_schema_matches_runtime_cardinality_and_timezone_rules():
+    schema_root = Path(__file__).resolve().parents[3] / "docs" / "architecture" / "schemas" / "dsc-v1"
+    assertion_schema = json.loads((schema_root / "assertion.schema.json").read_text(encoding="utf-8"))
+    common_schema = json.loads((schema_root / "common.schema.json").read_text(encoding="utf-8"))
+    temporal_schema = assertion_schema["$defs"]["value"]["oneOf"][4]
+    validator = Draft202012Validator(temporal_schema, resolver=RefResolver(
+        base_uri=assertion_schema["$id"], referrer=assertion_schema,
+        store={common_schema["$id"]: common_schema}))
+
+    def candidate(temporal_type, count, timezone=None):
+        value = {"kind": "temporal_binding", "axis_id": "column:ordered_on",
+                 "temporal_type": temporal_type,
+                 "columns": [{"table": "orders", "column": name}
+                             for name in ("ordered_on", "received_on")[:count]],
+                 "precision": "unknown", "calendar": "unknown"}
+        if timezone is not None:
+            value["timezone"] = timezone
+        return value
+
+    for temporal_type, count, timezone, accepted in (
+        ("date", 1, None, True), ("date", 2, None, False), ("date", 1, "UTC", False),
+        ("period", 1, None, True), ("period", 2, None, False), ("period", 1, "UTC", False),
+        ("instant", 1, None, True), ("instant", 1, "UTC", True),
+        ("interval", 2, None, True), ("interval", 1, None, False),
+    ):
+        value = candidate(temporal_type, count, timezone)
+        assert validator.is_valid(value) is accepted
+        payload = assertion(); payload.update(predicate="table.temporal/temporal_binding", multiplicity="keyed_set")
+        payload["claims"][0]["value"] = value
+        if accepted:
+            validate_assertion_payload(payload)
+        else:
+            with pytest.raises(DSCContractError): validate_assertion_payload(payload)
+
+
+def test_observed_cadence_interval_class_is_closed_and_matches_schema():
+    schema_root = Path(__file__).resolve().parents[3] / "docs" / "architecture" / "schemas" / "dsc-v1"
+    assertion_schema = json.loads((schema_root / "assertion.schema.json").read_text(encoding="utf-8"))
+    common_schema = json.loads((schema_root / "common.schema.json").read_text(encoding="utf-8"))
+    cadence_schema = assertion_schema["$defs"]["value"]["oneOf"][5]
+    validator = Draft202012Validator(cadence_schema, resolver=RefResolver(
+        base_uri=assertion_schema["$id"], referrer=assertion_schema,
+        store={common_schema["$id"]: common_schema}))
+    regular = {"kind": "observed_cadence", "axis_id": "column:ordered_on",
+               "grouping": [{"table": "orders", "column": "customer_id"}], "cadence": "regular",
+               "observed_interval_class": {"unit": "month", "step": 1}}
+    for candidate, accepted in ((regular, True),
+                                ({**regular, "observed_interval_class": "month"}, False),
+                                ({**regular, "cadence": "mixed"}, False),
+                                ({k: v for k, v in regular.items() if k != "observed_interval_class"}, False)):
+        assert validator.is_valid(candidate) is accepted
+        payload = assertion(); payload.update(predicate="table.temporal/observed_cadence", multiplicity="keyed_set")
+        payload["claims"][0]["value"] = candidate
+        if accepted:
+            validate_assertion_payload(payload)
+        else:
+            with pytest.raises(DSCContractError): validate_assertion_payload(payload)
 
 
 @pytest.mark.parametrize(("mutate", "code"), [
@@ -231,3 +299,111 @@ def test_entity_binding_requires_columns_and_unknown_facets_are_unsupported():
     assert context["overall_result"] == "unfulfilled"
     with pytest.raises(DSCContractError):
         assemble_context(unknown_request, results(), resolved_as_of="2026-01-02T03:04:05Z", sensitivity="internal")
+
+
+def _v2_assertion(predicate="table.structure/default_entity_binding") -> dict:
+    value = assertion()
+    value.update(schema_version=2, context_version="2", predicate=predicate,
+                 instance_key="default" if predicate != "table.temporal/expected_cadence" else "column:ordered_on:" + "0" * 64,
+                 multiplicity="single")
+    claim = value["claims"][0]
+    claim["authority"] = "source_confirmed_structural"
+    claim["decision"] = {"decision_id": "decision_v2", "action": "confirm",
+                         "scope": "source_confirmed_structural"}
+    pin = {"artifact_id": "art_candidate", "assertion_id": "dsca_candidate",
+           "payload_hash": HASH, "dependency_fingerprint": HASH}
+    evidence = value["evidence"][0]
+    evidence["kind"] = "structural_decision"
+    evidence["source_refs"] = [{"artifact_id": "art_candidate", "role": "decision", "payload_hash": HASH}]
+    if predicate == "table.structure/default_entity_binding":
+        claim["value"] = {"kind": "default_entity_binding",
+                          "candidate_locator": {"predicate": "table.structure/entity_binding", "instance_key": "column:customer_id"},
+                          "candidate_pin": pin}
+    elif predicate == "table.temporal/default_temporal_binding":
+        claim["value"] = {"kind": "default_temporal_binding",
+                          "candidate_locator": {"predicate": "table.temporal/temporal_binding", "instance_key": "column:ordered_on"},
+                          "candidate_pin": pin}
+    else:
+        axis_locator = {"predicate": "table.temporal/temporal_binding", "instance_key": "column:ordered_on"}
+        claim["value"] = {"kind": "expected_cadence", "unit": "month", "step": 1,
+                          "axis": {"axis_id": "column:ordered_on", "locator": axis_locator, "pin": pin}, "grouping": None}
+        value["instance_key"] = expected_cadence_instance_key("column:ordered_on", None)
+    return value
+
+
+def test_v2_authority_payloads_are_closed_pinned_and_no_raw_values():
+    for predicate in ("table.structure/default_entity_binding", "table.temporal/default_temporal_binding",
+                      "table.temporal/expected_cadence"):
+        validate_assertion_payload(_v2_assertion(predicate))
+    invalid = _v2_assertion()
+    invalid["claims"][0]["value"]["candidate_locator"]["column"] = "customer_id"
+    with pytest.raises(DSCContractError):
+        validate_assertion_payload(invalid)
+    invalid = _v2_assertion("table.temporal/expected_cadence")
+    invalid["instance_key"] = "column:ordered_on:" + "A" * 64
+    with pytest.raises(DSCContractError):
+        validate_assertion_payload(invalid)
+
+
+def test_v2_authority_actions_and_negotiation_preserve_v1_unsupported_facet():
+    cleared = _v2_assertion()
+    claim = cleared["claims"][0]
+    claim["decision"]["action"] = "clear"
+    claim["value"] = {"kind": "default_entity_binding", "selection": "none"}
+    cleared["resolution"] = {"status": "unknown", "effective_claim_ids": [],
+                             "reason_codes": ["DSC_R_DECISION_CLEARED"], "conflict_ids": []}
+    validate_assertion_payload(cleared)
+    replaced = deepcopy(cleared)
+    replaced["claims"][0]["decision"]["action"] = "replace"
+    with pytest.raises(DSCContractError): validate_assertion_payload(replaced)
+
+    v2_request = request()
+    v2_request["supported_context_versions"] = ["2", "1"]
+    v2_request["selectors"][0]["predicate"] = "table.structure/default_entity_binding"
+    context = assemble_context(v2_request, results(), resolved_as_of="2026-01-02T03:04:05Z", sensitivity="internal")
+    assert context["schema_version"] == 2 and context["context_version"] == "2"
+
+    v1_request = request()
+    v1_request["selectors"][0]["predicate"] = "table.structure/default_entity_binding"
+    context = assemble_context(v1_request, [{"selector_id": "form", "result": "unsupported",
+                                              "reason_codes": ["DSC_R_UNSUPPORTED_FACET"]}],
+                               resolved_as_of="2026-01-02T03:04:05Z", sensitivity="internal")
+    assert context["context_version"] == "1"
+
+
+def test_v2_json_schema_accepts_the_runtime_authority_shape():
+    schema_root = Path(__file__).resolve().parents[3] / "docs" / "architecture" / "schemas"
+    schema = json.loads((schema_root / "dsc-v2" / "assertion.schema.json").read_text(encoding="utf-8"))
+    common = json.loads((schema_root / "dsc-v1" / "common.schema.json").read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema, resolver=RefResolver(
+        base_uri=schema["$id"], referrer=schema, store={common["$id"]: common}))
+    assert validator.is_valid(_v2_assertion("table.temporal/expected_cadence"))
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda value: value["claims"][0]["value"].update(kind="default_temporal_binding"),
+    lambda value: (value["claims"][0]["decision"].update(action="clear"), value["resolution"].update(
+        status="unknown", effective_claim_ids=[], reason_codes=["DSC_R_DECISION_CLEARED"])),
+    lambda value: (value["claims"][0].update(value={"kind": "default_entity_binding", "selection": "none"}),
+                   value["resolution"].update(status="confirmed", effective_claim_ids=["dscc_form"], reason_codes=[])),
+    lambda value: (value.update(evidence=[]), value["claims"][0].update(evidence_ids=[])),
+])
+def test_v2_schema_and_runtime_reject_the_same_structural_authority_malformed_shapes(mutate):
+    schema_root = Path(__file__).resolve().parents[3] / "docs" / "architecture" / "schemas"
+    schema = json.loads((schema_root / "dsc-v2" / "assertion.schema.json").read_text(encoding="utf-8"))
+    common = json.loads((schema_root / "dsc-v1" / "common.schema.json").read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema, resolver=RefResolver(
+        base_uri=schema["$id"], referrer=schema, store={common["$id"]: common}))
+    value = _v2_assertion()
+    mutate(value)
+    assert not validator.is_valid(value)
+    with pytest.raises(DSCContractError): validate_assertion_payload(value)
+
+
+def test_v2_runtime_rejects_non_schema_expressible_digest_and_pin_linkage_boundaries():
+    value = _v2_assertion("table.temporal/expected_cadence")
+    value["instance_key"] = "column:ordered_on:" + "A" * 64
+    with pytest.raises(DSCContractError): validate_assertion_payload(value)
+    value = _v2_assertion()
+    value["evidence"][0]["source_refs"][0]["artifact_id"] = "art_other"
+    with pytest.raises(DSCContractError): validate_assertion_payload(value)

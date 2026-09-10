@@ -115,6 +115,15 @@ _JSON_COLS: dict[str, set[str]] = {
     "analysis_manifests": {"manifest_json", "readiness_json", "result_json", "artifact_ids_json"},
     "analysis_observations": {"payload_json"},
     "analysis_artifact_events": {"detail_json"},
+    # D06's shadow adapter has a separate access-controlled reproducibility
+    # channel.  It is not a diagnostic result, finding, or application log.
+    "d06_dsc_cadence_shadow_audit": {"payload_json"},
+    # Dataset Structure review is a Data Sourcing-owned, mutable workflow.
+    # It is intentionally separate from both AAR assertions and the generic
+    # source-upload draft state on dq_items.
+    "dataset_structure_review_drafts": {"selections_json"},
+    "dataset_structure_review_idempotency": {"response_json"},
+    "dataset_structure_review_decision_batches": {"decision_assertion_refs_json"},
 }
 
 # ---- DDL (F1 table list) ----------------------------------------------------
@@ -578,7 +587,8 @@ CREATE TABLE IF NOT EXISTS diag_runs (
 CREATE TABLE IF NOT EXISTS diag_run_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT,
     kind TEXT CHECK(kind IN ('role_override','threshold_tune','scope_exclusion',
-                             'default_applied','role_verification_change')),
+                             'default_applied','role_verification_change',
+                             'dsc_assist_confirmation')),
     payload_json TEXT, actor TEXT, ts TEXT
 );
 -- Diagnostic AI/deterministic-inference provenance. This is append-only at the
@@ -757,6 +767,194 @@ CREATE TABLE IF NOT EXISTS analysis_artifact_events (
     detail_json TEXT,
     created_at TEXT NOT NULL
 );
+-- Consumer-owned, append-only access-controlled D06/DSC shadow audit.  No
+-- router/API projects this table; it intentionally cannot affect D06 state.
+CREATE TABLE IF NOT EXISTS d06_dsc_cadence_shadow_audit (
+    event_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    adapter_version TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(run_id, adapter_version)
+);
+-- Private, short-lived D06 launch-to-SSE handoff.  This intentionally has no
+-- FK: cleanup must also work against historical databases with orphaned runs.
+-- It is never part of a diagnostic manifest, result, or public query shape.
+CREATE TABLE IF NOT EXISTS diagnostic_execution_context (
+    run_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    bound_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+-- Data Sourcing-owned durable DSC v1 materialization control.  This is a
+-- queue record, not an AAR artifact and deliberately has no diagnostic owner.
+CREATE TABLE IF NOT EXISTS dataset_structure_materialization_jobs (
+    job_id TEXT PRIMARY KEY,
+    snapshot_id TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    reason TEXT NOT NULL CHECK(reason IN ('post_ready','retry','backfill')),
+    dsc_context_version TEXT NOT NULL DEFAULT '1',
+    publication_generation INTEGER NOT NULL DEFAULT 1,
+    publication_fingerprint TEXT NOT NULL DEFAULT '',
+    publication_completion_token TEXT NOT NULL DEFAULT '',
+    publication_attempt_token TEXT NOT NULL DEFAULT '',
+    fencing_token INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','retry_wait','failed','revoked')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    available_at TEXT NOT NULL,
+    lease_owner TEXT,
+    lease_expires_at TEXT,
+    heartbeat_at TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    closed_error_code TEXT,
+    progress_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+-- Marker is written only after the complete expected governed profile set is
+-- active and each payload hash has been verified.  It is the queue's input
+-- fence, not mutable review state (which remains a later Slice).
+CREATE TABLE IF NOT EXISTS dataset_structure_profile_publications (
+    snapshot_id TEXT PRIMARY KEY,
+    asset_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    UNIQUE(snapshot_id, generation),
+    UNIQUE(snapshot_id, fingerprint)
+);
+-- Completion proof is written by the successful profile-publication path,
+-- before scheduling. Reconciliation may repair only from this proof; it must
+-- never infer completion from artifacts it merely happens to observe.
+CREATE TABLE IF NOT EXISTS dataset_structure_profile_publication_completions (
+    snapshot_id TEXT PRIMARY KEY,
+    asset_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    completion_token TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    proof_source TEXT NOT NULL DEFAULT 'publication',
+    proof_migration_version TEXT,
+    state TEXT NOT NULL CHECK(state IN ('completed')),
+    completed_at TEXT NOT NULL,
+    UNIQUE(snapshot_id, generation),
+    UNIQUE(snapshot_id, completion_token)
+);
+-- Slice 4's explicit, operator-authorized migration audit. This is not an
+-- AAR artifact and does not itself represent a user decision.
+CREATE TABLE IF NOT EXISTS dataset_structure_backfill_runs (
+    run_id TEXT PRIMARY KEY,
+    migration_version TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('scheduled','materialized','failed')),
+    publication_generation INTEGER,
+    job_id TEXT,
+    source_fingerprint TEXT NOT NULL,
+    proof_source TEXT NOT NULL,
+    closed_error_code TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(migration_version, tenant_id, snapshot_id)
+);
+-- Pre-finalization, source-preserving technical row-ID transformation.  This
+-- is Data Sourcing workflow state, never a business-entity assertion.
+CREATE TABLE IF NOT EXISTS technical_row_id_transforms (
+    transform_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    table_name TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    source_revision TEXT NOT NULL,
+    parser_options_json TEXT NOT NULL,
+    source_files_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('writing','complete','failed')),
+    -- ``status`` remains compatible with the initial rollout.  This narrower
+    -- lifecycle distinguishes durable publication from cache/inventory
+    -- activation, so a crash after canonical ownership changes is recoverable.
+    publication_state TEXT NOT NULL DEFAULT 'preparing',
+    ordinal_provenance TEXT NOT NULL DEFAULT 'tri-cache-ordinal-v1',
+    derived_path TEXT,
+    derived_hash TEXT,
+    row_count INTEGER,
+    closed_error_code TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(tenant_id, idempotency_key),
+    UNIQUE(snapshot_id, table_name)
+);
+CREATE TABLE IF NOT EXISTS dataset_structure_materialization_reconcile_cursor (
+    cursor_name TEXT PRIMARY KEY,
+    last_snapshot_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+-- Slice 2's resumable review state.  These records never make an AAR
+-- assertion or decision: they contain only opaque candidate selections.
+CREATE TABLE IF NOT EXISTS dataset_structure_review_states (
+    snapshot_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    asset_id TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN ('not_started','materializing','review_required','metadata_review','limited','refreshing','needs_reconfirmation','confirmed','failed')),
+    current_generation INTEGER,
+    current_evidence_fingerprint TEXT,
+    current_draft_id TEXT,
+    review_contract_version TEXT NOT NULL DEFAULT '1',
+    updated_at TEXT NOT NULL,
+    UNIQUE(tenant_id, snapshot_id)
+);
+CREATE TABLE IF NOT EXISTS dataset_structure_review_drafts (
+    draft_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    base_evidence_fingerprint TEXT,
+    selections_json TEXT NOT NULL DEFAULT '{"tables":[]}',
+    state TEXT NOT NULL CHECK(state IN ('active','superseded')) DEFAULT 'active',
+    superseded_by TEXT,
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(snapshot_id, revision)
+);
+-- PATCH draft is independently idempotent.  It is not the Slice-3 decision
+-- batch table and cannot be used as one.
+CREATE TABLE IF NOT EXISTS dataset_structure_review_idempotency (
+    tenant_id TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    method TEXT NOT NULL,
+    path TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    status_code INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY(tenant_id, idempotency_key)
+);
+-- Slice 3 immutable-confirmation envelope.  The assertions themselves live
+-- in AAR; this table is only the tenant-scoped workflow audit/replay record.
+CREATE TABLE IF NOT EXISTS dataset_structure_review_decision_batches (
+    batch_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    draft_id TEXT NOT NULL,
+    draft_revision INTEGER NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK(outcome IN ('confirmed','needs_reconfirmation')),
+    decision_assertion_refs_json TEXT NOT NULL DEFAULT '[]',
+    actor TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(tenant_id, idempotency_key),
+    UNIQUE(snapshot_id, batch_id)
+);
 -- Normalized dependency edges make impact traversal index-backed. JSON source
 -- fields remain on analysis_artifacts for API and historical compatibility.
 CREATE TABLE IF NOT EXISTS analysis_artifact_sources (
@@ -856,13 +1054,19 @@ _WORKPRODUCT_TABLES = [
     "test_plan", "test_db_links", "test_dossiers", "test_versions", "design_workbench",
     "schedules", "notifications", "run_results", "health_scores", "hitl_decisions",
     "monitoring", "tickets",
+    # DSC materialization belongs to the source snapshot, so it leaves only
+    # with a full Data Sourcing reset/item cleanup (never diagnostic cleanup).
+    "dataset_structure_materialization_jobs",
+    "dataset_structure_profile_publications",
+    "dataset_structure_profile_publication_completions",
+    "dataset_structure_materialization_reconcile_cursor",
     "dq_items", "dq_item_files", "dq_item_tables", "variable_inventory",
     "plan_v2", "results_v2", "scores_v2", "issues_v2", "tracked_issues_v2",
     # Phase 4 — ingestion redesign persisted substrate (ING-08).
     "dq_item_mappings", "dq_item_warnings",
     # Phase 6 — Test Lab diagnostic runs and everything derived from them.
     "diag_runs", "diag_run_decisions", "diag_inference_events", "diag_results", "diag_findings",
-    "diag_dispositions",
+    "diag_dispositions", "d06_dsc_cadence_shadow_audit", "diagnostic_execution_context",
     "analysis_artifacts",
     "analysis_artifact_events",
     "analysis_artifact_sources",
@@ -874,16 +1078,21 @@ _WORKPRODUCT_TABLES = [
 _FSM_RESET_ENTITY_TYPES = ["ingestion", "rca", "test_generation", "test_plan"]
 
 
-def get_conn() -> sqlite3.Connection:
+def get_conn(*, timeout: float = 30.0, configure_journal: bool = True) -> sqlite3.Connection:
     # timeout/busy_timeout: on a network filesystem (Azure Files SMB) lock
     # acquisition can momentarily contend; without a busy timeout SQLite fails
     # instantly with "database is locked". Waiting-and-retrying serialises the
     # single writer cleanly. journal_mode is pinned to the rollback journal:
     # WAL is unsupported over SMB, so we must never let it flip to WAL.
-    conn = sqlite3.connect(str(SYS_DB_PATH), timeout=30.0)
+    if timeout <= 0:
+        raise ValueError("database timeout must be positive")
+    conn = sqlite3.connect(str(SYS_DB_PATH), timeout=timeout)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout = 30000")
-    conn.execute("PRAGMA journal_mode = DELETE")
+    conn.execute(f"PRAGMA busy_timeout = {round(timeout * 1000)}")
+    # journal_mode may need a lock. Advisory deadline-bounded callers must
+    # never spend their whole budget reasserting the process-wide setting.
+    if configure_journal:
+        conn.execute("PRAGMA journal_mode = DELETE")
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
@@ -983,9 +1192,254 @@ def _rename_legacy_rca_tables(conn: sqlite3.Connection) -> None:
             conn.execute(f'ALTER TABLE {table} RENAME TO {table}_legacy_v1')
 
 
+_D06_SHADOW_AUDIT_TABLE = "d06_dsc_cadence_shadow_audit"
+_D06_SHADOW_AUDIT_COLUMNS = (
+    "event_id", "tenant_id", "run_id", "adapter_version", "event_type",
+    "payload_json", "created_at",
+)
+_D06_SHADOW_AUDIT_DDL = """CREATE TABLE d06_dsc_cadence_shadow_audit (
+    event_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    adapter_version TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(run_id, adapter_version)
+)"""
+
+
+def _shadow_audit_has_unique_run_version(conn: sqlite3.Connection) -> bool:
+    """Whether the table already has the consumer's idempotency key."""
+    for index in conn.execute(f'PRAGMA index_list("{_D06_SHADOW_AUDIT_TABLE}")'):
+        # PRAGMA index_list: seq, name, unique, origin, partial
+        if not index[2]:
+            continue
+        names = tuple(row[2] for row in conn.execute(f'PRAGMA index_info("{index[1]}")'))
+        if names == ("run_id", "adapter_version"):
+            return True
+    return False
+
+
+def _shadow_audit_is_canonical(conn: sqlite3.Connection) -> bool:
+    """Check the on-disk shape, rather than trusting a historical CREATE SQL.
+
+    SQLite's ``CREATE TABLE IF NOT EXISTS`` deliberately leaves a pre-existing
+    table untouched.  Earlier D06 migrations therefore left behind possible
+    hybrid shapes (including tenant/version but no run_id), for which a SQL
+    text substring is not a reliable discriminator.
+    """
+    columns = list(conn.execute(f'PRAGMA table_info("{_D06_SHADOW_AUDIT_TABLE}")'))
+    if {row[1] for row in columns} != set(_D06_SHADOW_AUDIT_COLUMNS):
+        return False
+    by_name = {row[1]: row for row in columns}
+    if by_name["event_id"][5] != 1:
+        return False
+    if any(not by_name[name][3] for name in _D06_SHADOW_AUDIT_COLUMNS[1:]):
+        return False
+    return _shadow_audit_has_unique_run_version(conn)
+
+
+def _shadow_audit_legacy_name(conn: sqlite3.Connection) -> str:
+    """Return an unused, fixed-prefix quarantine name for an old shape."""
+    prefix = f"{_D06_SHADOW_AUDIT_TABLE}_legacy_v2"
+    candidate, suffix = prefix, 2
+    while conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (candidate,)).fetchone():
+        candidate = f"{prefix}_{suffix}"
+        suffix += 1
+    return candidate
+
+
+def _nonblank_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = value.decode("utf-8", "replace") if isinstance(value, bytes) else str(value)
+    return text if text.strip() else None
+
+
+def _recover_d06_shadow_row(row: sqlite3.Row, ordinal: int) -> tuple[str, ...] | None:
+    """Map one legacy row to the canonical audit row, or quarantine it.
+
+    ``run_id`` is the only value that cannot receive a safe default: it is the
+    foreign-facing diagnostic identity and the canonical uniqueness key.  It
+    may be recovered from the historical payload when an interrupted additive
+    migration omitted the column.  A malformed payload or an absent run ID is
+    not safe to publish through the JSON-decoding audit channel.
+    """
+    source = dict(row)
+    payload_text = _nonblank_text(source.get("payload_json"))
+    if payload_text is None:
+        return None
+    try:
+        payload = json.loads(payload_text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    run_id = _nonblank_text(source.get("run_id")) or _nonblank_text(payload.get("run_id"))
+    if run_id is None:
+        return None
+    event_id = _nonblank_text(source.get("event_id")) or f"d06shadow_legacy_{ordinal:016x}"
+    tenant_id = _nonblank_text(source.get("tenant_id")) or "bootstrap"
+    adapter_version = _nonblank_text(source.get("adapter_version")) or "v1"
+    event_type = (_nonblank_text(source.get("event_type"))
+                  or "d06_dsc_cadence_shadow_audit_v1")
+    created_at = _nonblank_text(source.get("created_at")) or now_ist()
+    return (event_id, tenant_id, run_id, adapter_version, event_type, payload_text, created_at)
+
+
+def _migrate_d06_shadow_audit(conn: sqlite3.Connection) -> None:
+    """Repair every historical D06 shadow-audit shape before index creation.
+
+    This audit is an advisory, consumer-owned reproducibility channel.  Rows
+    with a valid JSON payload and a recoverable ``run_id`` are copied with the
+    established bootstrap/v1 defaults.  Rows that cannot name a diagnostic run
+    are retained in a quarantined legacy table instead of being silently made
+    into ambiguous canonical audit events.  Empty broken tables are simply
+    rebuilt.  The resulting table is always the canonical
+    ``tenant_id/run_id/adapter_version`` schema with uniqueness on
+    ``(run_id, adapter_version)``.
+    """
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (_D06_SHADOW_AUDIT_TABLE,),
+    ).fetchone()
+    if not exists or _shadow_audit_is_canonical(conn):
+        return
+
+    legacy_name = _shadow_audit_legacy_name(conn)
+    conn.execute(f'ALTER TABLE "{_D06_SHADOW_AUDIT_TABLE}" RENAME TO "{legacy_name}"')
+    conn.execute(_D06_SHADOW_AUDIT_DDL)
+    legacy_rows = conn.execute(f'SELECT * FROM "{legacy_name}"').fetchall()
+    recovered = [
+        values for ordinal, row in enumerate(legacy_rows, start=1)
+        if (values := _recover_d06_shadow_row(row, ordinal)) is not None
+    ]
+    inserted = 0
+    for values in recovered:
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO d06_dsc_cadence_shadow_audit "
+            "(event_id, tenant_id, run_id, adapter_version, event_type, payload_json, created_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            values,
+        )
+        inserted += cursor.rowcount
+    # A nonempty table with rows that cannot safely be assigned to a run stays
+    # available for manual recovery.  Otherwise the temporary empty/fully
+    # migrated table is dropped, keeping repeat startup a true no-op.
+    if not legacy_rows or (len(recovered) == len(legacy_rows) == inserted):
+        conn.execute(f'DROP TABLE "{legacy_name}"')
+
+
+def _migrate_dsc_job_status(conn: sqlite3.Connection) -> None:
+    """Upgrade Foundation's closed job reasons/statuses without losing fences."""
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='dataset_structure_materialization_jobs'").fetchone()
+    ddl = row[0] or "" if row else ""
+    if not row or ("'revoked'" in ddl and "'backfill'" in ddl):
+        return
+    conn.execute("ALTER TABLE dataset_structure_materialization_jobs RENAME TO dataset_structure_materialization_jobs_legacy_v1")
+    conn.execute("""CREATE TABLE dataset_structure_materialization_jobs (
+        job_id TEXT PRIMARY KEY,snapshot_id TEXT NOT NULL,asset_id TEXT NOT NULL,tenant_id TEXT NOT NULL,
+        reason TEXT NOT NULL CHECK(reason IN ('post_ready','retry','backfill')),dsc_context_version TEXT NOT NULL DEFAULT '1',publication_generation INTEGER NOT NULL DEFAULT 1,
+        publication_fingerprint TEXT NOT NULL DEFAULT '',publication_completion_token TEXT NOT NULL DEFAULT '',publication_attempt_token TEXT NOT NULL DEFAULT '',fencing_token INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','retry_wait','failed','revoked')),
+        attempt_count INTEGER NOT NULL DEFAULT 0,max_attempts INTEGER NOT NULL DEFAULT 3,available_at TEXT NOT NULL,
+        lease_owner TEXT,lease_expires_at TEXT,heartbeat_at TEXT,started_at TEXT,finished_at TEXT,closed_error_code TEXT,
+        progress_json TEXT NOT NULL DEFAULT '{}',created_at TEXT NOT NULL,updated_at TEXT NOT NULL)""")
+    old = {r[1] for r in conn.execute("PRAGMA table_info(dataset_structure_materialization_jobs_legacy_v1)")}
+    target = ["job_id","snapshot_id","asset_id","tenant_id","reason","dsc_context_version","publication_generation","publication_fingerprint","publication_completion_token","publication_attempt_token","fencing_token","status","attempt_count","max_attempts","available_at","lease_owner","lease_expires_at","heartbeat_at","started_at","finished_at","closed_error_code","progress_json","created_at","updated_at"]
+    defaults = {"publication_generation": "1", "publication_fingerprint": "''", "publication_completion_token": "''", "publication_attempt_token": "''", "fencing_token": "0"}
+    select = [column if column in old else defaults.get(column, "NULL") for column in target]
+    conn.execute(f"INSERT INTO dataset_structure_materialization_jobs ({','.join(target)}) SELECT {','.join(select)} FROM dataset_structure_materialization_jobs_legacy_v1")
+    conn.execute("DROP TABLE dataset_structure_materialization_jobs_legacy_v1")
+
+
+def _migrate_dsc_review_confirmed_state(conn: sqlite3.Connection) -> None:
+    """Add the Slice-3 ``confirmed`` lifecycle state to an existing CHECK.
+
+    SQLite cannot alter a CHECK in place.  This is an additive, lossless table
+    rebuild of the small Data-Sourcing workflow table; drafts and AAR records
+    keep their original keys and are not touched.
+    """
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='dataset_structure_review_states'").fetchone()
+    if not row or ("'confirmed'" in (row[0] or "") and "'metadata_review'" in (row[0] or "")):
+        return
+    conn.execute("ALTER TABLE dataset_structure_review_states RENAME TO dataset_structure_review_states_legacy_v1")
+    conn.execute("""CREATE TABLE dataset_structure_review_states (
+        snapshot_id TEXT PRIMARY KEY,tenant_id TEXT NOT NULL,asset_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('not_started','materializing','review_required','metadata_review','limited','refreshing','needs_reconfirmation','confirmed','failed')),
+        current_generation INTEGER,current_evidence_fingerprint TEXT,current_draft_id TEXT,
+        review_contract_version TEXT NOT NULL DEFAULT '1',updated_at TEXT NOT NULL,
+        UNIQUE(tenant_id,snapshot_id))""")
+    conn.execute("INSERT INTO dataset_structure_review_states (snapshot_id,tenant_id,asset_id,state,current_generation,current_evidence_fingerprint,current_draft_id,review_contract_version,updated_at) SELECT snapshot_id,tenant_id,asset_id,state,current_generation,current_evidence_fingerprint,current_draft_id,review_contract_version,updated_at FROM dataset_structure_review_states_legacy_v1")
+    conn.execute("DROP TABLE dataset_structure_review_states_legacy_v1")
+
+
+def _migrate_diag_run_decision_kinds(conn: sqlite3.Connection) -> None:
+    """Add the DSC acknowledgement decision without losing run provenance.
+
+    SQLite cannot extend a CHECK in place.  Rebuild this small append-only
+    audit table only when its historical closed vocabulary lacks the new
+    D06 decision kind; all existing decision rows retain their ids and data.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='diag_run_decisions'"
+    ).fetchone()
+    if not row or "'dsc_assist_confirmation'" in (row[0] or ""):
+        return
+    conn.execute("ALTER TABLE diag_run_decisions RENAME TO diag_run_decisions_legacy_v1")
+    conn.execute("""CREATE TABLE diag_run_decisions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT,
+        kind TEXT CHECK(kind IN ('role_override','threshold_tune','scope_exclusion',
+                                 'default_applied','role_verification_change',
+                                 'dsc_assist_confirmation')),
+        payload_json TEXT, actor TEXT, ts TEXT
+    )""")
+    conn.execute("""INSERT INTO diag_run_decisions (id,run_id,kind,payload_json,actor,ts)
+                    SELECT id,run_id,kind,payload_json,actor,ts
+                    FROM diag_run_decisions_legacy_v1""")
+    conn.execute("DROP TABLE diag_run_decisions_legacy_v1")
+
+
+def _migrate_technical_row_id_publication_state(conn: sqlite3.Connection) -> None:
+    """Map legacy transform status explicitly; never promote unfinished work."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(technical_row_id_transforms)")}
+    if not {"status", "publication_state", "ordinal_provenance"} <= columns:
+        return
+    # Only rows which acquired the additive legacy marker received the old
+    # DEFAULT 'active'.  Historical writing/failed rows were never published.
+    conn.execute("""UPDATE technical_row_id_transforms
+                    SET publication_state=CASE
+                        WHEN status='complete' THEN 'active'
+                        WHEN status='writing' THEN 'preparing'
+                        WHEN status='failed' THEN 'preparing'
+                        ELSE 'preparing' END
+                    WHERE ordinal_provenance='legacy-unpinned'""")
+
+
 # Lightweight additive migrations for existing DB files (ALTER is idempotent-
 # guarded by an introspection check). Keyed table -> {column: DDL type}.
 _MIGRATIONS: dict[str, dict[str, str]] = {
+    "technical_row_id_transforms": {
+        # Existing complete rows predate the split lifecycle and are already
+        # active; never strand them behind a newly-added publication state.
+        "publication_state": "TEXT NOT NULL DEFAULT 'active'",
+        "ordinal_provenance": "TEXT NOT NULL DEFAULT 'legacy-unpinned'",
+    },
+    "dataset_structure_materialization_jobs": {
+        "publication_generation": "INTEGER NOT NULL DEFAULT 1",
+        "publication_fingerprint": "TEXT NOT NULL DEFAULT ''",
+        "publication_completion_token": "TEXT NOT NULL DEFAULT ''",
+        "publication_attempt_token": "TEXT NOT NULL DEFAULT ''",
+        "fencing_token": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "dataset_structure_profile_publication_completions": {
+        "proof_source": "TEXT NOT NULL DEFAULT 'publication'",
+        "proof_migration_version": "TEXT",
+    },
+    "d06_dsc_cadence_shadow_audit": {"tenant_id": "TEXT NOT NULL DEFAULT 'bootstrap'",
+                                      "adapter_version": "TEXT NOT NULL DEFAULT 'v1'"},
     "users": {"authz_roles": "TEXT",
              # RCA Stage 0/1 — bootstrap tenant model (contracts.md §1).
              # Existing rows backfill to the single bootstrap tenant; IDs unchanged.
@@ -1087,7 +1541,7 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
                 # is the single current draft; ``recovery`` preserves older
                 # pre-migration drafts until a user explicitly discards them.
                 "sourcing_draft_state": "TEXT", "sourcing_owner": "TEXT",
-                "sourcing_tenant_id": "TEXT"},
+                "sourcing_tenant_id": "TEXT", "profile_publication_attempt_token": "TEXT"},
     # Data_Sourcing_11 — "product" joins target_variable/use_case as a
     # denormalised asset-level decision (same mirror pattern, P-05).
     "dq_assets": {"product": "TEXT",
@@ -1489,11 +1943,16 @@ def init_schema() -> None:
     with get_conn() as conn:
         _rename_legacy_rca_tables(conn)
         conn.executescript(_SCHEMA)
+        _migrate_d06_shadow_audit(conn)
+        _migrate_dsc_job_status(conn)
+        _migrate_dsc_review_confirmed_state(conn)
+        _migrate_diag_run_decision_kinds(conn)
         for table, cols in _MIGRATIONS.items():
             existing = {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
             for col, ddl in cols.items():
                 if col not in existing:
                     conn.execute(f'ALTER TABLE {table} ADD COLUMN "{col}" {ddl}')
+        _migrate_technical_row_id_publication_state(conn)
         _backfill_plan_instance_keys(conn)
         _backfill_delivery_defaults(conn)
         _backfill_ingest_defaults(conn)
@@ -1644,6 +2103,46 @@ def init_schema() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_diag_runs_item "
             "ON diag_runs(item_id, diagnostic_id, created_at)"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_d06_dsc_shadow_audit_run_version "
+            "ON d06_dsc_cadence_shadow_audit(run_id, adapter_version)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_diagnostic_execution_context_expiry "
+            "ON diagnostic_execution_context(expires_at)"
+        )
+        # DSC Foundation: one live (queued/running/retryable) source-owned
+        # work item per snapshot.  Terminal history is retained for audit.
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_dsc_materialization_live_snapshot "
+            "ON dataset_structure_materialization_jobs(snapshot_id) "
+            "WHERE status IN ('queued','running','retry_wait')"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_dsc_materialization_ready "
+            "ON dataset_structure_materialization_jobs(status, available_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_dsc_materialization_snapshot "
+            "ON dataset_structure_materialization_jobs(tenant_id, snapshot_id, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_dsc_review_drafts_snapshot "
+            "ON dataset_structure_review_drafts(tenant_id, snapshot_id, revision DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_dsc_backfill_runs_tenant_snapshot "
+            "ON dataset_structure_backfill_runs(tenant_id, snapshot_id, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_technical_row_id_transform_snapshot "
+            "ON technical_row_id_transforms(snapshot_id, status, updated_at)"
+        )
+        # Crash-only D06 launch handoffs are disposable; prune them during
+        # every idempotent startup migration as well as on bind/read.
+        conn.execute(
+            "DELETE FROM diagnostic_execution_context WHERE expires_at <= ?", (now_ist(),)
         )
         conn.execute("CREATE INDEX IF NOT EXISTS ix_diag_run_decisions_run ON diag_run_decisions(run_id, ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_diag_inference_events_run ON diag_inference_events(run_id, ts)")
@@ -1798,31 +2297,49 @@ def _with_root_provenance(table: str, row: dict) -> dict:
     return {**row, "artifact_origin": current_artifact_origin()}
 
 
-def insert(table: str, row: dict, *, conn: sqlite3.Connection | None = None) -> int | str:
+def insert(_table_name: str, row: dict, *, conn: sqlite3.Connection | None = None) -> int | str:
     """Insert a row, optionally joining a caller-owned transaction.
 
     JSON columns are encoded automatically.  A supplied connection is never
     committed or closed here; the caller owns that transaction boundary.
     """
-    data = _encode(table, _with_root_provenance(table, row))
+    data = _encode(_table_name, _with_root_provenance(_table_name, row))
     cols = ", ".join(f'"{c}"' for c in data)
     ph = ", ".join("?" for _ in data)
     if conn is not None:
-        cur = conn.execute(f'INSERT INTO {table} ({cols}) VALUES ({ph})',
+        cur = conn.execute(f'INSERT INTO {_table_name} ({cols}) VALUES ({ph})',
                            list(data.values()))
         return cur.lastrowid
     with get_conn() as conn:
-        cur = conn.execute(f'INSERT INTO {table} ({cols}) VALUES ({ph})',
+        cur = conn.execute(f'INSERT INTO {_table_name} ({cols}) VALUES ({ph})',
                            list(data.values()))
         conn.commit()
         return cur.lastrowid
 
 
-def insert_analysis_artifact(row: dict, refs: list[dict[str, str]]) -> None:
-    """Atomically insert artifact metadata and its normalized dependency edges."""
+def insert_analysis_artifact(row: dict, refs: list[dict[str, str]], *,
+                             conn: sqlite3.Connection | None = None) -> None:
+    """Insert artifact metadata and normalized dependency edges.
+
+    Supplying ``conn`` joins the caller's transaction; this helper neither
+    commits nor closes that connection.  The default retains the historic
+    one-artifact atomic write behaviour.
+    """
     data = _encode("analysis_artifacts", row)
     cols = ", ".join(f'"{column}"' for column in data)
     placeholders = ", ".join("?" for _ in data)
+    if conn is not None:
+        conn.execute(
+            f'INSERT INTO analysis_artifacts ({cols}) VALUES ({placeholders})',
+            list(data.values()),
+        )
+        conn.executemany(
+            "INSERT INTO analysis_artifact_sources "
+            "(artifact_id, source_artifact_id, role) VALUES (?,?,?)",
+            [(row["artifact_id"], ref["artifact_id"], ref["role"])
+             for ref in refs],
+        )
+        return
     with get_conn() as conn:
         conn.execute(
             f'INSERT INTO analysis_artifacts ({cols}) VALUES ({placeholders})',
@@ -1836,29 +2353,33 @@ def insert_analysis_artifact(row: dict, refs: list[dict[str, str]]) -> None:
         conn.commit()
 
 
-def upsert(table: str, row: dict) -> None:
+def upsert(table: str, row: dict, *, conn: sqlite3.Connection | None = None) -> None:
     """INSERT OR REPLACE — for PK-keyed tables (test_library, monitoring, ...)."""
     data = _encode(table, _with_root_provenance(table, row))
     cols = ", ".join(f'"{c}"' for c in data)
     ph = ", ".join("?" for _ in data)
-    with get_conn() as conn:
+    if conn is not None:
         conn.execute(f'INSERT OR REPLACE INTO {table} ({cols}) VALUES ({ph})',
                      list(data.values()))
-        conn.commit()
+        return
+    with get_conn() as connection:
+        connection.execute(f'INSERT OR REPLACE INTO {table} ({cols}) VALUES ({ph})',
+                           list(data.values()))
+        connection.commit()
 
 
-def update(table: str, where: dict, changes: dict, *,
+def update(_table_name: str, where: dict, changes: dict, *,
            conn: sqlite3.Connection | None = None) -> int:
     """Update matching rows, optionally joining a caller-owned transaction."""
-    data = _encode(table, changes)
+    data = _encode(_table_name, changes)
     set_clause = ", ".join(f'"{c}" = ?' for c in data)
     wc, wv = _where(where)
     if conn is not None:
-        cur = conn.execute(f'UPDATE {table} SET {set_clause}{wc}',
+        cur = conn.execute(f'UPDATE {_table_name} SET {set_clause}{wc}',
                            list(data.values()) + wv)
         return cur.rowcount
     with get_conn() as conn:
-        cur = conn.execute(f'UPDATE {table} SET {set_clause}{wc}',
+        cur = conn.execute(f'UPDATE {_table_name} SET {set_clause}{wc}',
                            list(data.values()) + wv)
         conn.commit()
         return cur.rowcount
@@ -1871,16 +2392,16 @@ def _where(filters: dict) -> tuple[str, list]:
     return clause, list(filters.values())
 
 
-def query(table_name: str, order_by: str | None = None, *,
+def query(_table_name: str, order_by: str | None = None, *,
           conn: sqlite3.Connection | None = None, **filters) -> list[dict]:
     wc, wv = _where(filters)
     ob = f" ORDER BY {order_by}" if order_by else ""
     if conn is not None:
-        rows = conn.execute(f"SELECT * FROM {table_name}{wc}{ob}", wv).fetchall()
-        return [_decode(table_name, row) for row in rows]
+        rows = conn.execute(f"SELECT * FROM {_table_name}{wc}{ob}", wv).fetchall()
+        return [_decode(_table_name, row) for row in rows]
     with get_conn() as conn:
-        rows = conn.execute(f"SELECT * FROM {table_name}{wc}{ob}", wv).fetchall()
-    return [_decode(table_name, r) for r in rows]
+        rows = conn.execute(f"SELECT * FROM {_table_name}{wc}{ob}", wv).fetchall()
+    return [_decode(_table_name, r) for r in rows]
 
 
 _SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1916,9 +2437,9 @@ def query_page(table_name: str, *, limit: int, offset: int,
     return [_decode(table_name, row) for row in rows], total
 
 
-def query_one(table_name: str, *, conn: sqlite3.Connection | None = None,
+def query_one(_table_name: str, *, conn: sqlite3.Connection | None = None,
               **filters) -> dict | None:
-    rows = query(table_name, conn=conn, **filters)
+    rows = query(_table_name, conn=conn, **filters)
     return rows[0] if rows else None
 
 
@@ -2162,6 +2683,8 @@ def wipe_development_artifacts() -> dict:
             ("diag_results", {"result_id": diag_result_ids, "run_id": run_ids}),
             ("diag_inference_events", {"run_id": run_ids}),
             ("diag_run_decisions", {"run_id": run_ids}),
+            ("d06_dsc_cadence_shadow_audit", {"run_id": run_ids}),
+            ("diagnostic_execution_context", {"run_id": run_ids}),
             ("analysis_manifests", {"run_id": run_ids, "snapshot_id": item_ids}),
             ("diag_runs", {"run_id": run_ids, "item_id": item_ids}),
             ("rca_attached_failures", {"group_id": group_ids, "run_id": run_ids}),
@@ -2199,6 +2722,30 @@ def wipe_development_artifacts() -> dict:
         )
         counts["dq_snapshot_fingerprints"] = _delete_ids_any(
             conn, "dq_snapshot_fingerprints", {"snapshot_id": item_ids}
+        )
+        counts["dataset_structure_materialization_jobs"] = _delete_ids_any(
+            conn, "dataset_structure_materialization_jobs", {"snapshot_id": item_ids}
+        )
+        counts["dataset_structure_profile_publications"] = _delete_ids_any(
+            conn, "dataset_structure_profile_publications", {"snapshot_id": item_ids}
+        )
+        counts["dataset_structure_profile_publication_completions"] = _delete_ids_any(
+            conn, "dataset_structure_profile_publication_completions", {"snapshot_id": item_ids}
+        )
+        counts["dataset_structure_backfill_runs"] = _delete_ids_any(
+            conn, "dataset_structure_backfill_runs", {"snapshot_id": item_ids}
+        )
+        counts["technical_row_id_transforms"] = _delete_ids_any(
+            conn, "technical_row_id_transforms", {"snapshot_id": item_ids}
+        )
+        counts["dataset_structure_review_idempotency"] = _delete_ids_any(
+            conn, "dataset_structure_review_idempotency", {"snapshot_id": item_ids}
+        )
+        counts["dataset_structure_review_drafts"] = _delete_ids_any(
+            conn, "dataset_structure_review_drafts", {"snapshot_id": item_ids}
+        )
+        counts["dataset_structure_review_states"] = _delete_ids_any(
+            conn, "dataset_structure_review_states", {"snapshot_id": item_ids}
         )
         for table in ("dq_item_warnings", "dq_item_mappings", "variable_inventory",
                       "dq_item_tables", "dq_item_files"):
@@ -2251,7 +2798,9 @@ def wipe_diagnostics(selected_run_ids: set[str] | None = None) -> dict:
     from domains.aar.types import list_artifact_types  # noqa: PLC0415
     diagnostic_types = {
         row["artifact_type"] for row in list_artifact_types()
-        if row.get("owner") != "Data Sourcing"
+        # DSC assertions/contexts are source-owned reusable evidence even
+        # where the registry labels their specialist producer separately.
+        if row.get("owner") not in {"Data Sourcing", "Dataset Structure Context"}
     }
     with get_conn() as conn:
         available_run_ids: set[str] = set()
@@ -2331,6 +2880,8 @@ def wipe_diagnostics(selected_run_ids: set[str] | None = None) -> dict:
             ("diag_results", {"result_id": diag_result_ids, "run_id": run_ids}),
             ("diag_inference_events", {"run_id": run_ids}),
             ("diag_run_decisions", {"run_id": run_ids}),
+            ("d06_dsc_cadence_shadow_audit", {"run_id": run_ids}),
+            ("diagnostic_execution_context", {"run_id": run_ids}),
             ("analysis_manifests", {"run_id": run_ids}),
             ("rca_attached_failures", {"group_id": group_ids, "run_id": run_ids}),
             ("rca_judge_decisions", {"check_id": check_ids}),

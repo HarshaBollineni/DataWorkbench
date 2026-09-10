@@ -81,6 +81,13 @@ def _real_reset_keys() -> set[str]:
     with s.get_conn() as conn:
         keys.update(s._rca_tables(conn))  # live off sqlite_master, deliberately not hardcoded
     keys.add("tag_assignments")
+    # Targeted item reset additionally returns these DSC/technical-review
+    # lifecycle counts; they need the same public-label completeness gate.
+    keys.update({
+        "dq_snapshot_fingerprints", "dataset_structure_backfill_runs", "technical_row_id_transforms",
+        "dataset_structure_review_idempotency", "dataset_structure_review_drafts",
+        "dataset_structure_review_states",
+    })
 
     # reset_demo() — surgical grade's own keys (system_db.py:1256-1288).
     keys.update({"ingested_databases", "table_metadata", "object_contexts",

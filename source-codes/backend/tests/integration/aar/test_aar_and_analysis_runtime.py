@@ -64,7 +64,10 @@ def _asset_and_snapshot(*, ingest_status: str = "ready",
         "status": "sourcing", "created_at": now, "updated_at": now,
         "dataset_family_id": asset_id, "delivery_seq": 1, "version_no": 1,
         "snapshot_status": snapshot_status, "snapshot_label": snapshot_id,
-        "intent": "fresh", "ingest_status": ingest_status,
+        # Governed profile publication is tenant-scoped.  Shared AAR fixtures
+        # model a normal ready Data Sourcing snapshot rather than the legacy
+        # tenantless compatibility path.
+        "intent": "fresh", "ingest_status": ingest_status, "sourcing_tenant_id": "tenant-a",
     })
     s.insert("dq_item_tables", {
         "item_id": snapshot_id, "table_name": "portfolio", "row_count": 2,
@@ -302,12 +305,13 @@ class ArtifactRepositoryTests(unittest.TestCase):
             }, "role_reviewed": 1, "provisional": 0, "updated_at": now,
         })
         ids = persist_snapshot_profile_artifacts(self.snapshot_id)
-        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(ids), 3)
         rows = self.repo.list(snapshot_id=self.snapshot_id)
-        self.assertEqual({row.artifact_type for row in rows}, {"column_profile", "table_profile"})
+        self.assertEqual({row.artifact_type for row in rows},
+                         {"column_profile", "table_profile", "table_inventory_profile"})
         self.assertEqual(ids, persist_snapshot_profile_artifacts(self.snapshot_id))
         overview = analysis_artifact_overview(asset_id=self.asset_id, snapshot_id=self.snapshot_id)
-        self.assertEqual(overview["active_artifacts"], 2)
+        self.assertEqual(overview["active_artifacts"], 3)
         self.assertEqual(overview["represented_features"], 1)
 
     def test_confirmed_exact_core_profile_is_fully_retained_in_aar(self):
@@ -321,12 +325,17 @@ class ArtifactRepositoryTests(unittest.TestCase):
             "profile_json": profile, "role_reviewed": 1, "provisional": 0, "updated_at": s.now_ist(),
         })
 
+        # Publication completion re-verifies payloads through the governed
+        # default repository root. Use that same root in this profile test;
+        # a per-test repository is appropriate for repository-only cases but
+        # cannot represent a publishable Data Sourcing snapshot.
+        governed_repo = AnalysisArtifactRepository()
         persist_snapshot_profile_artifacts(
-            self.snapshot_id, actor="test", artifact_repository=self.repo)
-        artifact = self.repo.list(
+            self.snapshot_id, actor="test", artifact_repository=governed_repo)
+        artifact = governed_repo.list(
             snapshot_id=self.snapshot_id, artifact_type="column_profile", feature="amount",
             status="active")[0]
-        _, payload = self.repo.get(artifact.artifact_id)
+        _, payload = governed_repo.get(artifact.artifact_id)
 
         self.assertEqual(payload["profile_basis"], "confirmed_regular_values")
         self.assertEqual(payload["calculation_method"], "exact")

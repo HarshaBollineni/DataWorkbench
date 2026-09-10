@@ -13,6 +13,7 @@ Current user and technical entry points remain at
 - [`architecture/phase1b-missingness.md`](architecture/phase1b-missingness.md) — missingness investigation design.
 - [`architecture/governed-analytics-artifact-repository.md`](architecture/governed-analytics-artifact-repository.md) — reusable analysis-artifact design.
 - [`architecture/data-sourcing-profiling-aar.md`](architecture/data-sourcing-profiling-aar.md) — end-to-end sourcing, confirmed-special-value profiling, Mermaid flows, and hybrid AAR storage.
+- [`architecture/dataset-structure-context-data-sourcing-review.md`](architecture/dataset-structure-context-data-sourcing-review.md) — planned integrated DSC materialization and resumable Data Sourcing structure review.
 - [`architecture/dataset-structure-context.md`](architecture/dataset-structure-context.md) — shared, evidence-backed dataset structure context and reuse contract.
 - [`architecture/dataset-structure-context-readiness.md`](architecture/dataset-structure-context-readiness.md) — Step 1-b implementation-readiness, reuse assessment, and pre-schema decision gate for DSC.
 - [`architecture/dataset-structure-context-schema-protocol.md`](architecture/dataset-structure-context-schema-protocol.md) — Step 1-c normative DSC v1 assertion, context-envelope, and resolution-protocol schemas.

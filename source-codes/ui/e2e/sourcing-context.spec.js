@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./support/test-fixture";
 
 const ready = {
   asset_id: "asset_ready", kind: "dataset", display_name: "DS0001-ready_asset",
@@ -33,23 +33,21 @@ async function mockAssetData(page) {
   });
 }
 
-test("View Existing is a URL-stable searchable picker and context survives refresh/clear", async ({ page }) => {
+test("View Existing opens the selected dataset in Test Lab and preserves it across refresh", async ({ page }) => {
   await signIn(page);
   await mockAssetData(page);
   await page.getByRole("link", { name: "Data Sourcing" }).click();
-  const before = page.url();
   await page.getByRole("button", { name: "View Existing" }).last().click();
-  expect(page.url()).toBe(before);
+  await expect(page).toHaveURL(/\/data-sourcing\?browse=dataset$/);
   await expect(page.getByText(ready.display_name)).toBeVisible();
   await expect(page.getByText(requires.display_name)).toHaveCount(0);
   await expect(page.getByText(complete.display_name)).toHaveCount(0);
   await page.getByRole("button", { name: ready.display_name }).click();
-  await expect(page.getByTestId("workflow-context-bar")).toContainText("v1");
-  await expect(page.getByTestId("workflow-context-bar")).toContainText("1 active snapshots");
+  await expect(page).toHaveURL(/\/test-lab\?item=snapshot_ready$/);
+  await expect(page.locator("select").first()).toHaveValue("snapshot_ready");
   await page.reload();
-  await expect(page.getByTestId("workflow-context-bar")).toContainText(ready.display_name);
-  await page.getByRole("button", { name: "Clear" }).click();
-  await expect(page.getByTestId("workflow-context-bar")).toHaveCount(0);
+  await expect(page).toHaveURL(/\/test-lab\?item=snapshot_ready$/);
+  await expect(page.locator("select").first()).toHaveValue("snapshot_ready");
 });
 
 test("sidebar navigation returns to the last Test Lab workspace", async ({ page }) => {
@@ -91,12 +89,15 @@ test("sidebar navigation remembers the active Data Sourcing screen", async ({ pa
   await expect(page.getByText("STEP 1 — Sourcing data")).toBeVisible();
 });
 
-test("the same picker includes requires-reupload only in upload STEP 1(b)", async ({ page }) => {
+test("uploading a new snapshot to an existing dataset is visibly unavailable", async ({ page }) => {
   await signIn(page);
   await mockAssetData(page);
   await page.getByRole("link", { name: "Data Sourcing" }).click();
-  await page.getByRole("button", { name: "Add New" }).last().click();
-  await page.getByRole("button", { name: "Existing" }).click();
-  await expect(page.getByText(requires.display_name)).toBeVisible();
-  await expect(page.getByText("Needs re-upload")).toBeVisible();
+  const uploadExisting = page.getByRole("button", { name: "Upload New Snapshot to Existing Dataset" });
+  await expect(uploadExisting).toBeDisabled();
+  await expect(uploadExisting.locator("..").getByText("Coming soon", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "View Existing Datasets" }).click();
+  await expect(page).toHaveURL(/\/data-sourcing\?browse=dataset$/);
+  await expect(page.getByText(ready.display_name)).toBeVisible();
+  await expect(page.getByText(requires.display_name)).toHaveCount(0);
 });

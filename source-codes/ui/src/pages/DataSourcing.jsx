@@ -16,6 +16,8 @@ import {
 } from "@/pages/sourcing/SourcingPresentation";
 import { DICTIONARY_HEADER_FIELDS, SOURCING_STAGES } from "@/pages/sourcing/constants";
 import { highConfidenceHeaderMapping, inferTaxonomyValue, periodDate } from "@/pages/sourcing/workflowHelpers";
+import DatasetStructureReview from "@/pages/sourcing/DatasetStructureReview.jsx";
+import { metadataCorrectionParams, metadataCorrectionTarget, structureReviewParams } from "@/pages/sourcing/metadataCorrectionReturn.js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -27,6 +29,7 @@ import {
   getSourcingDraftsV2,
   getItemTablesV2, getSupersedePreviewV2, getTaxonomyDimensionsV3, processSnapshotV2,
   profileStreamUrlV2, restoreAssetVersionV2, inspectSourceV2, uploadSourceBundleV2WithProgress,
+  getTechnicalRowIdSourceRevisionV2, createTechnicalRowIdV2,
 } from "@/api/client";
 
 const KIND_CARDS = [
@@ -35,7 +38,31 @@ const KIND_CARDS = [
 ];
 const SOURCING_INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
 
-function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, onDraftIdentified, initialAsset = null }) {
+function MetadataCorrectionReturn({ itemId, table, column, onReturnToStructure }) {
+  const inventoryRef = useRef(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const saveAndReturn = async () => {
+    setSaving(true); setError("");
+    try {
+      const saved = await inventoryRef.current?.save();
+      if (saved) onReturnToStructure();
+    } catch (failure) {
+      setError(failure.message || "Column definitions could not be saved.");
+    } finally { setSaving(false); }
+  };
+  return <main className="min-h-screen bg-slate-50 p-5 md:p-6">
+    <div className="mb-4"><h1 className="text-2xl font-bold text-slate-950">Data Sourcing</h1><p className="mt-1 text-sm text-slate-500">Correct the highlighted column definition, then continue the retained Dataset Structure review.</p></div>
+    <StepCard step="3" title="Normalize column definitions" subtitle="Dataset Structure found an incompatible source-metadata interpretation. This edit is the only metadata authority.">
+      <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950" role="alert"><strong>Dataset Structure review is paused, not restarted.</strong> Your entity, temporal, row-grain, expected-cadence, and other draft choices are retained. After this confirmed save, structural evidence is refreshed and any changed or missing selection will need reconfirmation.</div>
+      <UploadReviewInventory ref={inventoryRef} item={{ item_id: itemId, kind: "dataset" }} deferSave initialTable={table} focusColumn={column} />
+      <div className="mt-4 flex flex-wrap items-center gap-3"><Button type="button" disabled={saving} onClick={saveAndReturn}>{saving && <Loader2 className="h-4 w-4 animate-spin" />}{saving ? "Saving column definitions…" : "Save definitions and return to Dataset Structure"}</Button><Button type="button" variant="outline" onClick={onReturnToStructure}>Return to Dataset Structure</Button></div>
+      {error && <p className="mt-3 text-sm text-red-700" role="alert">{error}</p>}
+    </StepCard>
+  </main>;
+}
+
+function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, onDraftIdentified, onOpenStructureReview, onReturnToColumns, initialAsset = null }) {
   const resumeSnapshotId = initialAsset?.resumable ? initialAsset.resume_snapshot_id : "";
   const [targetMode] = useState(!initialAsset || initialAsset.resume_intent === "fresh" ? "fresh" : "existing");
   const [alias, setAlias] = useState(initialAsset?.alias || "");
@@ -85,6 +112,10 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
   const [sourceOpen, setSourceOpen] = useState(!resumeSnapshotId);
   const [inventoryRows, setInventoryRows] = useState([]);
   const [metadataConfirmed, setMetadataConfirmed] = useState(false);
+  const [technicalTable, setTechnicalTable] = useState("");
+  const [technicalNonBusinessAcknowledged, setTechnicalNonBusinessAcknowledged] = useState(false);
+  const [technicalTransformAcknowledged, setTechnicalTransformAcknowledged] = useState(false);
+  const [technicalBusy, setTechnicalBusy] = useState(false);
   const inventoryRef = useRef(null);
   const stream = useAgentStream();
 
@@ -389,6 +420,7 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
       setCommittedAssetId(result.dataset_family_id || null);
       setCompletion(ingestSummary.completion_summary || null);
       setIngest((previous) => ({ ...(previous || {}), ...result, ...ingestSummary, status: "ready" }));
+      onOpenStructureReview?.(itemId);
     } catch (err) {
       setError(typeof err.detail === "string" ? err.detail : err.message);
     } finally {
@@ -427,6 +459,21 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
     const quarterLike = /quarter|\bq[1-4]\b/i.test(`${row.column_name} ${row.description || ""} ${(profile.sample_values || []).join(" ")}`);
     setStartDate(profile.period_bounds?.start_date || periodDate(profile.min ?? profile.sample_values?.[0], false, quarterLike));
     setEndDate(profile.period_bounds?.end_date || periodDate(profile.max ?? profile.sample_values?.at(-1), true, quarterLike));
+  };
+
+  const createTechnicalRowId = async () => {
+    if (!itemId || !technicalTable || !technicalNonBusinessAcknowledged || !technicalTransformAcknowledged) return;
+    setTechnicalBusy(true); setError("");
+    try {
+      const revision = await getTechnicalRowIdSourceRevisionV2(itemId);
+      await createTechnicalRowIdV2(itemId, {
+        table: technicalTable, source_revision: revision.source_revision,
+        acknowledge_non_business_identifier: true, acknowledge_snapshot_transformation: true,
+      }, crypto.randomUUID());
+      setIngest(await getIngestV2(itemId));
+      setSummaries(await getItemTablesV2(itemId).then((rows) => rows.map((row) => ({ tab: row.table_name, rows: row.row_count, columns: row.col_count }))));
+    } catch (err) { setError(typeof err.detail === "string" ? err.detail : err.message); }
+    finally { setTechnicalBusy(false); }
   };
   return (
     <section>
@@ -501,6 +548,8 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
 
       {sourceComplete && <StepCard step="3" title="Normalize column definitions" subtitle="Review types, roles, valid values and special-value handling."><UploadReviewInventory ref={inventoryRef} item={{ item_id: itemId, kind }} mapping={ingest?.mapping || []} deferSave onRowsLoaded={receiveInventoryRows} onSaved={async () => setIngest(await getIngestV2(itemId))} /></StepCard>}
 
+      {sourceComplete && !completion && <StepCard step="3a" title="Optional technical row identifier" subtitle="Use only when the dataset has no credible business identifier. This creates a deterministic technical column before the snapshot is finalized."><div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950"><strong>Not a business identifier.</strong> `technical_row_id` is retained as an Ignore column. It cannot support entity continuity, joins, relationships, cadence, or entity-based diagnostics.</div><div className="mt-3 max-w-md"><Label htmlFor="technical-row-table">Table</Label><select id="technical-row-table" className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={technicalTable} onChange={(event) => setTechnicalTable(event.target.value)}><option value="">Select a table</option>{summaries.map((summary) => <option key={summary.tab} value={summary.tab}>{summary.tab}</option>)}</select></div><label className="mt-3 flex items-start gap-2 text-sm"><input type="checkbox" checked={technicalNonBusinessAcknowledged} onChange={(event) => setTechnicalNonBusinessAcknowledged(event.target.checked)} />I understand this is not a business entity or identifier.</label><label className="mt-2 flex items-start gap-2 text-sm"><input type="checkbox" checked={technicalTransformAcknowledged} onChange={(event) => setTechnicalTransformAcknowledged(event.target.checked)} />I approve this staged snapshot transformation before finalization.</label><Button type="button" className="mt-3" variant="outline" disabled={technicalBusy || !technicalTable || !technicalNonBusinessAcknowledged || !technicalTransformAcknowledged} onClick={createTechnicalRowId}>{technicalBusy && <Loader2 className="h-4 w-4 animate-spin" />}{technicalBusy ? "Creating technical row identifier…" : "Create technical row identifier"}</Button></StepCard>}
+
       {sourceComplete && <StepCard step="4" title="Confirm dataset information" subtitle="Dictionary and profiling evidence preloads the target, period and business context." testId="upl-step-4">
         {kind === "dataset" && <section className="rounded-lg border border-teal-200 bg-emerald-50/40 p-4"><h4 className="font-semibold text-teal-950">Dictionary and profile intelligence</h4><div className="mt-3 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4"><div><span className="block text-xs uppercase text-slate-500">Target candidates</span><strong>{targetCandidates.length ? targetCandidates.map((row) => `${row.column_name} (${Number(row.distinct_count || 0).toLocaleString()} levels)`).join(", ") : "None identified"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Observed period</span><strong>{periodColumn ? `${periodColumn} · ${startDate || "?"} → ${endDate || "?"}` : "None identified"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Business context</span><strong>{[useCase, product].filter(Boolean).join(" · ") || "No taxonomy match"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Constant features</span><strong>{constantRows.length ? `${constantRows.length} recommended Ignore` : "None"}</strong></div></div><p className="mt-3 text-xs text-teal-800">Suggestions combine dictionary roles and descriptions, retained file context, observed n-levels, unique values, and profiled date bounds. Review every selection below before confirming.</p></section>}
         {targetMode === "existing" && !resumingFresh && <div className="mt-3"><Label>Intent</Label><div className="mt-1 flex flex-wrap gap-4 text-sm"><label><input type="radio" name="intent" checked={intent === "add_period"} onChange={() => setIntent("add_period")} /> Add period</label><label><input type="radio" name="intent" checked={intent === "full_replacement"} onChange={() => setIntent("full_replacement")} /> Full replacement</label></div></div>}
@@ -515,6 +564,7 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
         {intent === "full_replacement" && supersedePreview?.snapshot_count > 0 && <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm"><p className="font-semibold text-amber-900">This will supersede {supersedePreview.description}.</p><label className="mt-2 flex items-start gap-2"><input type="checkbox" checked={replacementConfirmed} onChange={(e) => setReplacementConfirmed(e.target.checked)} /> <span>I understand this distinct full-replacement action.</span></label></div>}
       </StepCard>}
       {sourceComplete && <StepCard step="5" title="Save and proceed" subtitle="Save normalized definitions and promote the snapshot to Test Lab." testId="upl-step-5"><p className="text-sm text-slate-500">This saves the normalized column definitions and storage decisions together, then makes the snapshot available in Test Lab.</p><div className="mt-4 flex flex-wrap items-center gap-3"><Button disabled={Boolean(completion) || Boolean(processDisabledReasons.length) || processing} onClick={process}>{processing && <Loader2 className="h-4 w-4 animate-spin" />}{processing ? "Saving and proceeding…" : completion ? "Saved and ready" : "Save and Proceed"}</Button>{completion && committedAssetId && <Link to={`/test-lab?asset=${encodeURIComponent(committedAssetId)}`} className="inline-flex h-10 items-center rounded-md bg-dq-purple px-4 text-sm font-medium text-white hover:bg-dq-purple/90">Go to Test Lab</Link>}</div>{!completion && !processing && processDisabledReasons.length > 0 && <p className="mt-2 text-xs text-slate-500">Before you can proceed: {processDisabledReasons.join("; ")}.</p>}{ingest.overlap_warnings?.map((warning) => <p key={warning} className="mt-2 text-sm text-amber-700">{warning}</p>)}</StepCard>}
+      {(completion || ingest?.status === "ready") && itemId && <DatasetStructureReview itemId={itemId} onReturnToColumns={(metadata) => onReturnToColumns?.(itemId, metadata)} />}
       {completion && <details data-testid="completion-summary" className="mt-5 overflow-hidden rounded-md border border-emerald-200 bg-emerald-50"><summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4"><h3 className="font-semibold text-emerald-950">Completion summary</h3><span className="text-xs font-medium text-emerald-800">Stored successfully · View details</span></summary><pre className="border-t border-emerald-200 p-4 whitespace-pre-wrap text-xs text-emerald-900">{JSON.stringify(completion, null, 2)}</pre></details>}
       {selectedAsset?.superseded_snapshot_count > 0 && <div className="mt-4 text-sm"><span>View / restore previous version:</span>{(selectedAsset.superseded_versions || []).map((version) => <span key={version} className="ml-2"><button type="button" className="text-dq-purple underline" onClick={() => restore(version)}>Restore v{version}</button><button type="button" className="ml-2 text-dq-purple underline" onClick={() => setRestoreCompareVersion(restoreCompareVersion === version ? null : version)}>Compare</button></span>)}{restoreCompareVersion && <VersionDiff assetId={selectedAsset.asset_id} versionA={restoreCompareVersion} versionB={selectedAsset.current_version_no} />}</div>}
       {error && <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
@@ -538,6 +588,8 @@ function SourcingScreen() {
   const [drafts, setDrafts] = useState([]);
   const [draftsLoading, setDraftsLoading] = useState(true);
   const [draftsError, setDraftsError] = useState("");
+  const structureItemId = searchParams.get("structure");
+  const correction = metadataCorrectionTarget(searchParams);
   const updateLocation = useCallback((updates) => setSearchParams((current) => {
     const next = new URLSearchParams(current);
     Object.entries(updates).forEach(([key, value]) => value ? next.set(key, value) : next.delete(key));
@@ -647,6 +699,16 @@ function SourcingScreen() {
     setKind("");
     setStartAsset(null);
   };
+  const openStructureReview = (snapshotId) => updateLocation({ structure: snapshotId });
+  const returnToColumnDefinitions = (snapshotId, metadata = {}) => updateLocation(metadataCorrectionParams(snapshotId, metadata));
+  const returnToStructureReview = () => updateLocation(structureReviewParams(correction.itemId));
+  if (correction) return <MetadataCorrectionReturn itemId={correction.itemId} table={correction.table} column={correction.column} onReturnToStructure={returnToStructureReview} />;
+  if (structureItemId) return (
+    <main className="min-h-screen bg-slate-50 p-5 md:p-6">
+      <div className="mb-4"><h1 className="text-2xl font-bold text-slate-950">Data Sourcing</h1><p className="mt-1 text-sm text-slate-500">Continue the governed snapshot review.</p></div>
+      <DatasetStructureReview itemId={structureItemId} onReturnToColumns={(metadata) => returnToColumnDefinitions(structureItemId, metadata)} />
+    </main>
+  );
   return (
     <main className="min-h-screen bg-slate-50 p-5 md:p-6">
       <div className="mb-4">
@@ -685,7 +747,7 @@ function SourcingScreen() {
         </div>
       ) : (
         <UploadFlow key={`${kind}:${startAsset?.resume_snapshot_id || startAsset?.asset_id || "new"}`} kind={kind} initialAsset={startAsset} onBack={backToKinds} onTimeout={handleTimeout} onStartFresh={startFresh} onDraftConflict={handleDraftConflict}
-          onDraftIdentified={(snapshotId) => updateLocation({ resume: snapshotId, new: null, browse: null })} />
+          onDraftIdentified={(snapshotId) => updateLocation({ resume: snapshotId, new: null, browse: null })} onOpenStructureReview={openStructureReview} onReturnToColumns={returnToColumnDefinitions} />
       )}
     </main>
   );
