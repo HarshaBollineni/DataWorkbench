@@ -20,8 +20,11 @@ from rapidfuzz import fuzz
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+from domains.test_lab.shared.knowledge_provenance import validate_dsc_execution_context
+
 
 KB_REQUIRED_FIELDS = (
+    "rule_id",
     "feature",
     "feature_family",
     "definition",
@@ -31,6 +34,7 @@ KB_REQUIRED_FIELDS = (
     "knowledge_strength",
     "rationale",
 )
+EXPECTED_RULE_IDS = tuple(f"T2D11-{index:02d}" for index in range(1, 50))
 KB_OPTIONAL_FIELDS = ("inverse_representations", "transformation", "notes")
 
 TERMINOLOGY_MAPPING_SECTIONS = (
@@ -62,6 +66,12 @@ _DURATION_UNITS = {
     "q": ("quarter", "quarters"),
     "y": ("year", "years"),
     "w": ("week", "weeks"),
+}
+
+DSC_SELECTORS = {
+    "default-entity": ("table.structure/default_entity_binding", "advisory", ("confirmed",), "exclusions.entity"),
+    "default-temporal": ("table.temporal/default_temporal_binding", "advisory", ("confirmed",), "exclusions.temporal"),
+    "row-grain": ("table.structure/row_grain", "optional", ("observed", "confirmed"), "execution.row_grain"),
 }
 
 
@@ -97,9 +107,22 @@ def _require_string_list(value: Any, location: str, *, allow_empty: bool = False
 def load_kb(path: str | Path) -> dict[str, Any]:
     """Load and lightly validate the PD directionality Knowledge Base YAML."""
     kb = _read_yaml(path, "PD directionality Knowledge Base")
+    if kb.get("schema_version") != 2 or not isinstance(kb.get("governance"), dict):
+        raise ValueError("PD directionality Knowledge Base requires the YAML schema v2 governance envelope")
+    validate_dsc_execution_context(
+        kb.get("execution_context"), consumer_id="diagnostic:11:execution-v1",
+        expected_selectors=DSC_SELECTORS,
+    )
     rules = kb.get("feature_rules")
     if not isinstance(rules, list) or not rules:
         raise ValueError("PD directionality Knowledge Base requires a non-empty 'feature_rules' list")
+
+    actual_rule_ids = tuple(rule.get("rule_id") for rule in rules if isinstance(rule, dict))
+    if actual_rule_ids != EXPECTED_RULE_IDS:
+        raise ValueError(
+            "PD directionality Knowledge Base rule IDs must be the stable sequence "
+            "T2D11-01 through T2D11-49"
+        )
 
     seen_features: set[str] = set()
     for index, rule in enumerate(rules):
@@ -349,6 +372,7 @@ def _exact_index_from_pieces(
                 continue
             index.setdefault(piece["processed"], []).append(
                 {
+                    "knowledge_rule_id": rule["rule_id"],
                     "canonical_feature": rule["feature"],
                     "feature_family": rule["feature_family"],
                     "match_source": piece["source"],
@@ -438,6 +462,7 @@ def _rank_candidates(
         source = best_piece["source"]
         candidates.append(
             {
+                "knowledge_rule_id": rule["rule_id"],
                 "canonical_feature": rule["feature"],
                 "feature_family": rule["feature_family"],
                 "combined_similarity_score": round(combined, 6),

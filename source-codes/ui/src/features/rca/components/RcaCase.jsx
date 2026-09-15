@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
-  ArrowLeft, ArrowRight, Check, CheckCircle2, ChevronDown, Circle,
+  AlertTriangle, ArrowLeft, ArrowRight, Brain, Check, CheckCircle2, ChevronDown, Circle,
   BookOpen, ClipboardCheck, FileSearch, History, Lightbulb, Play, RotateCcw, Search, Ticket,
 } from "lucide-react";
 
@@ -9,15 +9,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import RcaSourceEvidence from "@/features/rca/components/RcaSourceEvidence";
 import {
-  approveRcaConclusion, composeRcaHypothesis, createRcaCase, getRcaCase,
+  approveRcaConclusion, composeRcaHypothesis, continueRcaFromInitialReview, createRcaCase, getRcaCase,
   proposeRcaReusableKnowledge,
   returnRcaToInvestigation, runRcaConfirmationCheck, runRcaCoveragePass1,
   runRcaCoveragePass2, runRcaLook, runRcaOpeningLook, runRcaPlannerLook,
-  runRcaReopenedKillAttempt, raiseIssueV2,
+  runRcaReopenedKillAttempt, raiseIssueV2, startRcaAfresh,
 } from "@/api/client";
 
 const RCA_PAGES = [
-  { id: "intake", label: "Intake & initial review" },
+  { id: "intake", label: "Intake" },
+  { id: "initial-review", label: "Initial Review" },
   { id: "investigate", label: "Investigate" },
   { id: "closure", label: "Closure" },
 ];
@@ -26,7 +27,7 @@ const CONCLUSION_STATES = new Set(["awaiting_fix_approval", "all_hypotheses_reje
 
 function stageFor(state) {
   if (INITIAL_STATES.has(state)) return "Intake";
-  if (state === "opening_looks") return "Initial checks";
+  if (["opening_looks", "initial_review_complete"].includes(state)) return "Initial Review";
   if (CONCLUSION_STATES.has(state)) return "Conclusion approval";
   return "Investigate";
 }
@@ -47,7 +48,7 @@ function ageLabel(createdAt) {
 
 function StagePath({ current, complete, onSelect }) {
   const active = RCA_PAGES.findIndex((page) => page.id === current);
-  return <ol className="grid gap-2 sm:grid-cols-3" aria-label="RCA pages">
+  return <ol className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4" aria-label="RCA pages">
     {RCA_PAGES.map((page, index) => {
       const done = complete || index < active;
       const selected = index === active;
@@ -73,6 +74,33 @@ function analysisTitle(look) {
   if (look.sql_or_helper_ref === "profile_column") return "Profile the affected feature";
   if (look.sql_or_helper_ref === "segment_breakdown") return "Compare the result across segments";
   return "Review supporting evidence";
+}
+
+function evidenceLabel(entry) {
+  const labels = {
+    case_context_created: "Intake context retained",
+    static_initial_review: "Static initial review",
+    llm_initial_review: "LLM initial review",
+    human_decision: "Human decision",
+    workflow_reset: "RCA started afresh",
+  };
+  return `${labels[entry.evidence_kind] || displayValue(entry.evidence_kind)} · ${displayValue(entry.status)}`;
+}
+
+function LlmInitialReviewCard({ event }) {
+  if (!event) return <article className="rounded-lg border border-dashed border-slate-300 bg-white p-5 text-sm text-slate-500">No LLM review has been recorded for this RCA generation.</article>;
+  if (event.status === "failed") return <article className="rounded-lg border border-amber-200 bg-amber-50 p-4"><div className="flex items-center gap-2 text-sm font-semibold text-amber-950"><AlertTriangle className="h-4 w-4" /> LLM review unavailable</div><p className="mt-1 text-xs text-amber-800">The deterministic evidence is preserved. Continue manually or start afresh after the model service is available.</p></article>;
+  const details = event.details || {};
+  const output = details.output || {};
+  const model = details.selected_model || {};
+  return <article className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-4" data-testid="rca-llm-initial-review">
+    <div className="flex flex-wrap items-start justify-between gap-2"><div className="flex items-center gap-2"><Brain className="h-4 w-4 text-indigo-700" /><div><h4 className="text-sm font-semibold text-slate-900">LLM evidence review</h4><p className="text-xs text-slate-500">Advisory interpretation; it does not establish the root cause.</p></div></div><Badge variant="outline">{model.model_name || "Configured model"}{model.model_version ? ` · ${model.model_version}` : ""}</Badge></div>
+    <p className="mt-3 text-sm text-slate-700">{output.summary}</p>
+    {output.observed_signals?.length > 0 && <div className="mt-3"><h5 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Observed signals</h5><ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-slate-700">{output.observed_signals.map((value) => <li key={value}>{value}</li>)}</ul></div>}
+    {output.candidate_hypotheses?.length > 0 && <div className="mt-3"><h5 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Candidate hypotheses</h5><div className="mt-1 grid gap-2">{output.candidate_hypotheses.map((hypothesis) => <div key={`${hypothesis.statement}:${hypothesis.testable_next_step}`} className="rounded bg-white p-3 text-xs text-slate-700"><strong className="text-slate-900">{hypothesis.statement}</strong><p className="mt-1">Basis: {hypothesis.evidence_basis}</p><p className="mt-1 text-indigo-800">Next test: {hypothesis.testable_next_step}</p></div>)}</div></div>}
+    {output.limitations?.length > 0 && <p className="mt-3 text-xs text-slate-500"><strong>Limitations:</strong> {output.limitations.join(" ")}</p>}
+    <p className="mt-3 text-[11px] text-slate-400">AAR {event.artifact_id} · {event.recorded_at}</p>
+  </article>;
 }
 
 function interpretation(summary = {}) {
@@ -109,7 +137,10 @@ function EvidenceCard({ look, execution }) {
 }
 
 function ConclusionForm({ c, issue, onApprove, onReturn, busy }) {
-  const evidenceIds = [issue?.source_evidence?.result_id, ...Object.values(c.executions || {}).map((entry) => entry.execution_id)].filter(Boolean);
+  const evidenceIds = [
+    issue?.source_evidence?.result_id,
+    ...(c.aar_evidence || []).map((entry) => entry.artifact_id),
+  ].filter(Boolean);
   const suggested = c.confirmed_hypothesis || c.hypotheses?.[0];
   const [form, setForm] = useState({
     conclusion_type: c.state === "all_hypotheses_rejected" ? "unresolved" : "root_cause_identified",
@@ -210,18 +241,23 @@ export default function RcaCase({ issueRowId, issue }) {
   useEffect(() => { createRcaCase(issueRowId).then(setCase).catch((requestError) => setError(requestError.message)); }, [issueRowId]);
   const act = async (fn) => { setBusy(true); setError(""); try { const result = await fn(); const next = result?.case_id ? result : result?.case || await getRcaCase(c.case_id); setCase(next); return next; } catch (requestError) { setError(requestError.message); return null; } finally { setBusy(false); } };
   const executions = useMemo(() => Object.values(c?.executions || {}), [c]);
+  const aarEvidence = c?.aar_evidence || [];
+  const llmInitialReview = [...aarEvidence].reverse().find((entry) => entry.evidence_kind === "llm_initial_review" && entry.status !== "started");
   const openLook = c?.looks?.find((look) => look.kind === "planned" && !executions.some((entry) => entry.look_id === look.look_id));
   const pendingCheck = c?.confirmation_checks?.find((check) => check.status === "pending");
   if (!c) return <div className="rounded-md border border-dashed border-slate-200 p-4 text-sm text-slate-500">{error || "Preparing the RCA case…"}</div>;
   const stage = stageFor(c.state);
   const complete = c.state === "closed" || Boolean(c.closure);
-  const defaultPage = complete || CONCLUSION_STATES.has(c.state) ? "closure" : stage === "Investigate" ? "investigate" : "intake";
+  const defaultPage = complete || CONCLUSION_STATES.has(c.state)
+    ? "closure"
+    : stage === "Investigate"
+      ? "investigate"
+      : stage === "Initial Review" ? "initial-review" : "intake";
   const requestedPage = searchParams.get("rca_view");
   const page = RCA_PAGES.some((entry) => entry.id === requestedPage) ? requestedPage : defaultPage;
   const goTo = (nextPage) => setSearchParams((current) => { const next = new URLSearchParams(current); next.set("rca_view", nextPage); return next; });
 
   const action = (() => {
-    if (c.state === "opening_looks") return ["Review initial evidence", () => runRcaOpeningLook(c.case_id), FileSearch];
     if (c.state === "investigation_loop" && openLook) return ["Run approved analysis", () => runRcaLook(openLook.look_id), Play];
     if (c.state === "investigation_loop") return ["Recommend next analysis", () => runRcaPlannerLook(c.case_id), Lightbulb];
     if (c.state === "coverage_challenge_blind") return ["Review alternative explanations", () => runRcaCoveragePass1(c.case_id), Search];
@@ -231,35 +267,58 @@ export default function RcaCase({ issueRowId, issue }) {
     if (c.state === "confirmation_checks" && pendingCheck) return ["Test the proposed explanation", () => runRcaConfirmationCheck(pendingCheck.check_id), Play];
     return null;
   })();
-  const goInvestigate = async () => {
-    if (c.state === "opening_looks") {
-      const next = await act(() => runRcaOpeningLook(c.case_id));
+  const startInitialReview = async () => {
+    const next = await act(() => runRcaOpeningLook(c.case_id));
+    if (next) goTo("initial-review");
+  };
+  const continueToInvestigation = async () => {
+    if (c.state === "initial_review_complete") {
+      const next = await act(() => continueRcaFromInitialReview(c.case_id));
       if (!next) return;
     }
     goTo("investigate");
   };
-  const selectPage = (nextPage) => nextPage === "investigate" ? goInvestigate() : goTo(nextPage);
+  const startAfresh = async () => {
+    const confirmed = window.confirm(
+      "Start this RCA afresh?\n\nAll current analysis, hypotheses, generated code, sandbox results, chat, and draft decisions will be permanently lost. The original issue and source evidence will remain."
+    );
+    if (!confirmed) return;
+    const next = await act(() => startRcaAfresh(c.case_id));
+    if (next) goTo("intake");
+  };
+  const selectPage = (nextPage) => {
+    if (nextPage === "investigate" && ["intake", "opening_looks", "initial_review_complete"].includes(c.state)) {
+      goTo("initial-review");
+      return;
+    }
+    goTo(nextPage);
+  };
 
   return <div className="space-y-4">
     <section className="rounded-lg border border-slate-200 bg-white p-4" data-testid="rca-workspace-header">
       <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold uppercase text-slate-400">Managed issue {issue?.issue_row_id || issueRowId} · RCA {c.case_id}</p><h2 className="mt-1 text-lg font-semibold text-slate-950">{issue?.test_name || c.case_file?.checklist_json?.test_name || "Diagnostic investigation"}</h2><p className="text-xs text-slate-500">{issue?.item_name || "Dataset"} · {issue?.table_name || c.table_name} · {(issue?.columns || []).join(", ") || "assessed scope"}</p></div><div className="flex flex-wrap gap-2"><Badge variant={complete ? "success" : "warning"}>{complete ? "Closed" : "RCA in progress"}</Badge><Badge variant="outline">{RCA_PAGES.find((entry) => entry.id === page)?.label}</Badge><Badge variant={issue?.criticality === "Critical" ? "destructive" : "secondary"}>{issue?.criticality || "Criticality not assigned"}</Badge></div></div>
-      <div className="mt-3 grid gap-2 border-t border-slate-100 pt-3 text-xs sm:grid-cols-3"><span><strong className="text-slate-700">Owner:</strong> {c.conclusion?.owner || "Not assigned"}</span><span><strong className="text-slate-700">Age:</strong> {ageLabel(c.created_at)}</span><span><strong className="text-slate-700">Next required action:</strong> {complete ? "RCA complete; optional handoffs are separate" : page === "closure" ? "Approve or return the conclusion" : page === "intake" ? "Conclude from intake or investigate further" : "Run, refine, or continue to closure"}</span></div>
+      <div className="mt-3 grid gap-2 border-t border-slate-100 pt-3 text-xs sm:grid-cols-3"><span><strong className="text-slate-700">Owner:</strong> {c.conclusion?.owner || "Not assigned"}</span><span><strong className="text-slate-700">Age:</strong> {ageLabel(c.created_at)}</span><span><strong className="text-slate-700">Next required action:</strong> {complete ? "RCA complete; optional handoffs are separate" : page === "closure" ? "Approve or return the conclusion" : page === "intake" ? "Conclude from intake or begin the initial review" : page === "initial-review" ? "Review static evidence before investigation" : "Run, refine, or continue to closure"}</span></div>
+      {!complete && c.state !== "intake" && <div className="mt-3 flex justify-end"><Button variant="outline" size="sm" disabled={busy} onClick={startAfresh}><RotateCcw className="h-4 w-4" /> Start afresh</Button></div>}
     </section>
     <StagePath current={page} complete={complete} onSelect={selectPage} />
     {error && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</div>}
     {page === "intake" && <>
       <RcaSourceEvidence issue={issue} />
-      <nav className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-teal-200 bg-[#f8faf6] p-4" aria-label="Intake decisions"><p className="text-xs text-slate-600">If the retained diagnostic evidence is sufficient, continue directly to closure. Otherwise open the investigation workspace.</p><div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy || complete} onClick={() => goTo("closure")}><CheckCircle2 className="h-4 w-4" /> Conclude from intake</Button><Button disabled={busy || complete} onClick={goInvestigate}>Investigate more <ArrowRight className="h-4 w-4" /></Button>{complete && <Button onClick={() => goTo("closure")}>View closure <ArrowRight className="h-4 w-4" /></Button>}</div></nav>
+      <nav className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-teal-200 bg-[#f8faf6] p-4" aria-label="Intake decisions"><p className="text-xs text-slate-600">If the retained diagnostic evidence is sufficient, continue directly to closure. Otherwise begin the deterministic and LLM-assisted initial review.</p><div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy || complete} onClick={() => goTo("closure")}><CheckCircle2 className="h-4 w-4" /> Conclude from intake</Button><Button disabled={busy || complete || c.state !== "intake"} onClick={startInitialReview}><FileSearch className="h-4 w-4" /> Start initial review <ArrowRight className="h-4 w-4" /></Button>{c.state !== "intake" && !complete && <Button onClick={() => goTo("initial-review")}>View initial review <ArrowRight className="h-4 w-4" /></Button>}{complete && <Button onClick={() => goTo("closure")}>View closure <ArrowRight className="h-4 w-4" /></Button>}</div></nav>
+    </>}
+    {page === "initial-review" && <>
+      <section><div className="mb-2 flex items-end justify-between"><div><h3 className="font-semibold text-slate-950">Initial review</h3><p className="text-xs text-slate-500">Deterministic opening evidence retained for the static RCA review, followed by a governed LLM interpretation.</p></div><Badge variant="secondary">{executions.filter((entry) => c.looks?.some((look) => look.look_id === entry.look_id && look.kind === "opening")).length} completed</Badge></div>{c.looks?.filter((look) => look.kind === "opening").length ? <div className="grid gap-3">{c.looks.filter((look) => look.kind === "opening").map((look) => <EvidenceCard key={look.look_id} look={look} execution={executions.find((entry) => entry.look_id === look.look_id)} />)}<LlmInitialReviewCard event={llmInitialReview} /></div> : <div className="rounded-lg border border-dashed border-slate-300 bg-white p-5 text-sm text-slate-500">The initial review has not run yet. Start it to create the first retained evidence.</div>}</section>
+      <nav className="flex flex-wrap items-center justify-between gap-3"><Button variant="outline" onClick={() => goTo("intake")}><ArrowLeft className="h-4 w-4" /> Intake</Button><div className="flex flex-wrap gap-2">{c.state === "intake" && <Button disabled={busy} onClick={startInitialReview}><FileSearch className="h-4 w-4" /> Start initial review</Button>}{c.state === "initial_review_complete" && <Button disabled={busy} onClick={continueToInvestigation}>Continue to investigation <ArrowRight className="h-4 w-4" /></Button>}{!["intake", "opening_looks", "initial_review_complete"].includes(c.state) && <Button onClick={() => goTo("investigate")}>View investigation <ArrowRight className="h-4 w-4" /></Button>}</div></nav>
     </>}
     {page === "investigate" && <>
       <section><div className="mb-2 flex items-end justify-between"><div><h3 className="font-semibold text-slate-950">Investigation record</h3><p className="text-xs text-slate-500">Questions, results, interpretations, and retained evidence.</p></div><Badge variant="secondary">{executions.length} completed</Badge></div>{c.looks?.length > 0 ? <div className="grid gap-3">{c.looks.map((look) => <EvidenceCard key={look.look_id} look={look} execution={executions.find((entry) => entry.look_id === look.look_id)} />)}</div> : <div className="rounded-lg border border-dashed border-slate-300 bg-white p-5 text-sm text-slate-500">No additional analysis has been requested. The intake evidence remains available on the previous page.</div>}</section>
       {!complete && <section className="rounded-lg border border-teal-200 bg-teal-50/40 p-4"><div className="flex flex-wrap items-center gap-3">{action && <Button disabled={busy} onClick={() => act(action[1])}>{(() => { const Icon = action[2]; return <Icon className="h-4 w-4" />; })()}{action[0]} <ArrowRight className="h-4 w-4" /></Button>}<p className="text-xs text-slate-500">Run another governed read-only analysis or continue to closure when the evidence is sufficient.</p></div></section>}
-      <nav className="flex items-center justify-between gap-3"><Button variant="outline" onClick={() => goTo("intake")}><ArrowLeft className="h-4 w-4" /> Intake & initial review</Button><Button onClick={() => goTo("closure")}>Continue to closure <ArrowRight className="h-4 w-4" /></Button></nav>
+      <nav className="flex items-center justify-between gap-3"><Button variant="outline" onClick={() => goTo("initial-review")}><ArrowLeft className="h-4 w-4" /> Initial Review</Button><Button onClick={() => goTo("closure")}>Continue to closure <ArrowRight className="h-4 w-4" /></Button></nav>
     </>}
     {page === "closure" && <>
       {complete ? <><section className="rounded-lg border border-emerald-200 bg-emerald-50 p-5"><div className="flex items-center gap-2 text-lg font-semibold text-emerald-950"><CheckCircle2 className="h-5 w-5" /> {outcomeLabel(c.closure)}</div><p className="mt-1 text-sm text-emerald-800">The investigation and issue workflow is closed. No Knowledge Base content or remediation task was created automatically.</p>{c.conclusion && <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2"><p><strong>Conclusion:</strong> {c.conclusion.root_cause || "No root cause could be established."}</p><p><strong>Confidence:</strong> {c.conclusion.confidence}</p><p><strong>Approved by:</strong> {c.conclusion.approved_by}</p><p><strong>Approved:</strong> {c.conclusion.approved_at}</p></div>}</section><KnowledgeProposal c={c} issue={issue} busy={busy} onPropose={(body) => act(() => proposeRcaReusableKnowledge(c.case_id, body))} /><RemediationHandoff issue={issue} conclusion={c.conclusion} /></> : <ConclusionForm c={c} issue={issue} busy={busy} onApprove={(body) => act(() => approveRcaConclusion(c.case_id, body))} onReturn={(reason) => act(() => returnRcaToInvestigation(c.case_id, reason).then((result) => { goTo("investigate"); return result; }))} />}
       <nav><Button variant="outline" onClick={() => goTo(executions.length ? "investigate" : "intake")}><ArrowLeft className="h-4 w-4" /> {executions.length ? "Back to investigate" : "Back to intake"}</Button></nav>
     </>}
-    <details className="rounded-lg border border-slate-200 bg-white p-4"><summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-900"><History className="h-4 w-4" /> Activity ({(c.transitions || []).length + executions.length}) <ChevronDown className="ml-auto h-4 w-4" /></summary><ol className="mt-3 border-l border-slate-200 pl-4 text-xs text-slate-600"><li className="mb-3"><strong>RCA started</strong><span className="block text-slate-400">{c.created_at} · {c.created_by}</span></li>{executions.map((entry) => <li key={entry.execution_id} className="mb-3"><strong>{analysisTitle(c.looks.find((look) => look.look_id === entry.look_id) || {})} completed</strong><span className="block text-slate-400">{entry.executed_at} · evidence {entry.execution_id}</span></li>)}{c.conclusion && <li><strong>Conclusion approved</strong><span className="block text-slate-400">{c.conclusion.approved_at} · {c.conclusion.approved_by}</span></li>}</ol></details>
+    <details className="rounded-lg border border-slate-200 bg-white p-4"><summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-900"><History className="h-4 w-4" /> Activity ({aarEvidence.length || ((c.transitions || []).length + executions.length)}) <ChevronDown className="ml-auto h-4 w-4" /></summary><ol className="mt-3 border-l border-slate-200 pl-4 text-xs text-slate-600">{aarEvidence.length ? aarEvidence.map((entry) => <li key={entry.artifact_id} className="mb-3"><strong>{evidenceLabel(entry)}</strong><span className="block text-slate-400">{entry.recorded_at} · {entry.created_by || entry.summary?.fields?.actor || "system"} · AAR {entry.artifact_id}</span></li>) : <><li className="mb-3"><strong>RCA started</strong><span className="block text-slate-400">{c.created_at} · {c.created_by}</span></li>{executions.map((entry) => <li key={entry.execution_id} className="mb-3"><strong>{analysisTitle(c.looks.find((look) => look.look_id === entry.look_id) || {})} completed</strong><span className="block text-slate-400">{entry.executed_at} · evidence {entry.execution_id}</span></li>)}{c.conclusion && <li><strong>Conclusion approved</strong><span className="block text-slate-400">{c.conclusion.approved_at} · {c.conclusion.approved_by}</span></li>}</>}</ol></details>
   </div>;
 }

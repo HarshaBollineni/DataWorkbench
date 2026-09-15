@@ -144,7 +144,8 @@ def _persist_feature(manifest: dict[str, Any], feature: dict[str, Any],
         finding_count = 1
         db.insert("diag_findings", {"finding_id": _id("dfind"), "result_id": result_id,
             "run_id": manifest["run_id"],
-            "rule_id": f"directionality:{feature['feature']}", "kb_rule_id": None,
+            "rule_id": f"directionality:{feature['feature']}",
+            "kb_rule_id": feature.get("knowledge_rule_id"),
             "severity": "MATERIAL", "outcome": "CONTEXTUAL", "violation_count": 0,
             "rate": evidence["spearman"].get("value"),
             "tolerance": manifest["thresholds"]["corr_floor"]["value"],
@@ -229,7 +230,7 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
                        "segment_definition": manifest.get("segment_definition"),
                        "segment_preview": manifest.get("segment_preview"),
                        "expected": {key: feature.get(key) for key in (
-                           "canonical_feature", "expected_direction", "representation_orientation",
+                           "knowledge_rule_id", "canonical_feature", "expected_direction", "representation_orientation",
                            "knowledge_strength", "classification_source", "rationale")},
                        "overall": evidence, "segments": segment_evidence,
                        "comparison": _comparison(feature, manifest, evidence),
@@ -296,6 +297,7 @@ def hydrate_result(result: dict[str, Any]) -> dict[str, Any]:
     expected = payload.get("expected") or {}
     hydrated = {
         **metrics,
+        "knowledge_rule_id": expected.get("knowledge_rule_id"),
         "canonical_feature": expected.get("canonical_feature"),
         "classification_source": expected.get("classification_source"),
         "representation_orientation": expected.get("representation_orientation"),
@@ -350,6 +352,7 @@ def report_payload(run_id: str) -> tuple[dict[str, Any], Any, bool]:
         configured = manifest_features.get(metrics["feature"]) or {}
         features.append({
             "feature": metrics["feature"],
+            "knowledge_rule_id": metrics.get("knowledge_rule_id"),
             "canonical_feature": metrics.get("canonical_feature"),
             "classification_source": metrics.get("classification_source"),
             "expected_rationale": (metrics.get("expected_rationale")
@@ -527,7 +530,9 @@ def _report_text(payload: dict[str, Any]) -> str:
              "| Variable | KB concept / basis | Expected | Observed | Strength | Outcome |",
              "|---|---|---|---|---|---|"]
     for feature in payload["features"]:
-        basis = feature.get("canonical_feature") or feature.get("classification_source") or "User decision"
+        concept = feature.get("canonical_feature") or feature.get("classification_source") or "User decision"
+        basis = (f"{feature['knowledge_rule_id']} — {concept}"
+                 if feature.get("knowledge_rule_id") else concept)
         lines.append(f"| {feature['feature']} | {basis} | "
                      f"{feature['expected_reference_direction']} | {feature['observed_direction']} | "
                      f"{feature['evidence_strength']} | {feature['conclusion']} |")
@@ -690,7 +695,9 @@ def _render_pdf(payload: dict[str, Any]) -> bytes:
     ]], [31, 31, 31, 31, 31, 31])
     section("3. Variable results")
     table(["Variable", "KB concept / basis", "Expected", "Observed", "Strength", "Outcome"], [[
-        row["feature"], row.get("canonical_feature") or row.get("classification_source"),
+        row["feature"],
+        (f"{row['knowledge_rule_id']} — {row.get('canonical_feature')}"
+         if row.get("knowledge_rule_id") else row.get("classification_source")),
         row["expected_reference_direction"], row["observed_direction"],
         row["evidence_strength"], row["conclusion"],
     ] for row in payload["features"]], [30, 40, 27, 27, 25, 37])

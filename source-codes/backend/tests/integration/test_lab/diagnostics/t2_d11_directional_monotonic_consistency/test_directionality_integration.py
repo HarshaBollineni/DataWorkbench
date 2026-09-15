@@ -71,6 +71,10 @@ def test_manifest_scope_segment_run_artifacts_and_results(snapshot):
         "engine_versions_json": {}, "created_at": now,
         "started_at": now, "finished_at": now})
     draft = manifest.build_manifest(snapshot)
+    assert {row["knowledge_base_id"] for row in draft["knowledge_references"]} == {
+        "kbdoc_t2d11_directionality", "kbdoc_credit_risk_terminology",
+    }
+    assert draft["dataset_structure_context"]["consumer_id"] == "diagnostic:11:execution-v1"
     assert draft["analysis_sequence"] == {
         "prior_completed_runs": 1, "segment_analysis_available": True,
     }
@@ -79,6 +83,7 @@ def test_manifest_scope_segment_run_artifacts_and_results(snapshot):
     assert segment_candidate["split_guidance"]["strategy"] == "category_groups"
     by_feature = {row["feature"]: row for row in draft["features"]}
     assert by_feature["CURRENT_LTV"]["canonical_feature"] == "loan_to_value"
+    assert by_feature["CURRENT_LTV"]["knowledge_rule_id"] == "T2D11-23"
     assert by_feature["CURRENT_LTV"]["selected"] is False
     assert by_feature["mystery_metric"]["canonical_feature"] is None
     assert next(row for row in draft["reference_candidates"]
@@ -119,6 +124,7 @@ def test_manifest_scope_segment_run_artifacts_and_results(snapshot):
     ltv_result = next(row for row in feature_results
                       if row["metrics_json"]["feature"] == "CURRENT_LTV")
     ltv = ltv_result["metrics_json"]
+    assert ltv["knowledge_rule_id"] == "T2D11-23"
     assert ltv["evidence"]["observed_direction"] == "INCREASING"
     assert len(ltv["segments"]) == 1
     assert ltv["segments"][0]["segment"] == "seg_segment"
@@ -128,6 +134,7 @@ def test_manifest_scope_segment_run_artifacts_and_results(snapshot):
     assert metadata.run_id == draft["run_id"]
     assert artifact_payload["overall"] == ltv["evidence"]
     assert artifact_payload["comparison"] == ltv["comparison"]
+    assert artifact_payload["expected"]["knowledge_rule_id"] == "T2D11-23"
     assert artifact_payload["methodology"] == ltv["methodology"]
     assert artifact_payload["analysis_view"]["mode"] == "segmented_rerun"
     assert artifact_payload["analysis_view"]["segmentation"]["choice"] == draft["segment_definition"]
@@ -138,6 +145,8 @@ def test_manifest_scope_segment_run_artifacts_and_results(snapshot):
     assert report_reused is False
     assert report_artifact.artifact_type == "directionality_report"
     assert report["summary"]["features_completed"] >= 2
+    assert next(row for row in report["features"]
+                if row["feature"] == "CURRENT_LTV")["knowledge_rule_id"] == "T2D11-23"
     assert report["inference_disclosure"]["llm_used"] is False
     assert report["inference_disclosure"]["llm_call_count"] == 0
     assert report["introduction"].startswith("This diagnostic compares")
@@ -233,8 +242,8 @@ def test_directionality_kb_is_visible_as_one_approved_system_document(snapshot):
     )
     assert version["review_state"] == "approved"
     assert version["converter_name"] == "system-reference-document"
-    assert version["conversion_report_json"]["kb_version"] == "0.3"
-    assert "## Credit quality score (`credit_quality_score`)" in version["converted_markdown"]
+    assert version["conversion_report_json"]["kb_version"] == "0.5"
+    assert "## T2D11-01 — Credit quality score (`credit_quality_score`)" in version["converted_markdown"]
     assert "Higher feature value → Lower risk" in version["converted_markdown"]
     assert "credit_risk_abbreviations" not in version["converted_markdown"]
     assert not db.query("kb_rules", document_id=knowledge.SYSTEM_DOCUMENT_ID)
@@ -332,7 +341,8 @@ def test_exact_kb_decision_is_persisted_and_an_unchanged_proposal_is_blocked(sna
     draft = manifest.build_manifest(snapshot)
     row = next(item for item in draft["features"] if item["feature"] == "CURRENT_LTV")
     assert row["governed_exact_decision"] == {
-        "kb_version": "0.3",
+        "kb_version": "0.5",
+        "knowledge_rule_id": "T2D11-23",
         "canonical_feature": "loan_to_value",
         "representation_orientation": "SAME",
         "expected_direction": "INCREASING",
@@ -340,7 +350,7 @@ def test_exact_kb_decision_is_persisted_and_an_unchanged_proposal_is_blocked(sna
 
     with pytest.raises(
         manifest.ManifestError,
-        match=r"already covered by KB v0\.3; no Knowledge Base proposal is needed",
+        match=r"already covered by KB v0\.5; no Knowledge Base proposal is needed",
     ):
         manifest.patch_manifest(draft["run_id"], {
             "kind": "feature_classification", "feature": "CURRENT_LTV",
@@ -353,7 +363,7 @@ def test_exact_kb_decision_is_persisted_and_an_unchanged_proposal_is_blocked(sna
     stored = db.query_one("diag_runs", run_id=draft["run_id"])["manifest_json"]
     stored_row = next(item for item in stored["features"]
                       if item["feature"] == "CURRENT_LTV")
-    assert stored_row["classification_source"] == "KB_V0_3_EXACT"
+    assert stored_row["classification_source"] == "KB_EXACT"
     assert stored_row["kb_proposal"] is None
     assert not db.query("kb_rules", proposal_kind="t2_d11_expected_direction")
 
@@ -378,7 +388,8 @@ def test_refresh_backfills_exact_decision_evidence_for_an_older_draft(snapshot):
     refreshed = manifest.refresh_draft_scope(draft["run_id"])
     row = next(item for item in refreshed["features"] if item["feature"] == "CURRENT_LTV")
     assert row["governed_exact_decision"] == {
-        "kb_version": "0.3",
+        "kb_version": "0.5",
+        "knowledge_rule_id": "T2D11-23",
         "canonical_feature": "loan_to_value",
         "representation_orientation": "SAME",
         "expected_direction": "INCREASING",
@@ -408,7 +419,7 @@ def test_freeze_suppresses_a_preexisting_unchanged_exact_kb_intent(snapshot):
         "lifecycle_state": "not_required",
         "proposal_action": "already_covered_by_governed_kb",
         "requested_by": "legacy-actor",
-        "reason": "The unchanged decision is already covered by KB v0.3; no proposal was created.",
+        "reason": "The unchanged decision is already covered by KB v0.5; no proposal was created.",
     }
     assert not db.query("kb_rules", proposal_kind="t2_d11_expected_direction")
     assert not db.query("kb_rule_proposal_evidence")

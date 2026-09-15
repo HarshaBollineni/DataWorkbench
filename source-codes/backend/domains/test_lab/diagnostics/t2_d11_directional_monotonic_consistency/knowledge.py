@@ -15,7 +15,7 @@ import system_db as db
 from .matching import load_kb, load_terminology, prepare_feature_matcher
 
 BACKEND_DIR = Path(__file__).resolve().parents[4]
-KB_PATH = BACKEND_DIR / "knowledge_base" / "pd_directionality_kb_v0_3.yaml"
+KB_PATH = BACKEND_DIR / "knowledge_base" / "pd_directionality_kb_v0_5.yaml"
 TERMINOLOGY_PATH = BACKEND_DIR / "knowledge_base" / "credit_risk_abbreviations_v0_3.yaml"
 PROMPT_PATH = BACKEND_DIR / "ai" / "agents" / "semantic_feature_adjudication_v0_2.txt"
 
@@ -23,7 +23,7 @@ PROPOSAL_KIND = "t2_d11_expected_direction"
 OPEN_PROPOSAL_STATES = {"draft", "pending_review"}
 INELIGIBLE_PROPOSAL_DIRECTIONS = {"NOT_APPLICABLE", "EXCLUDED"}
 SYSTEM_DOCUMENT_ID = "kbdoc_t2d11_directionality"
-SYSTEM_VERSION_ID = "kbver_t2d11_directionality_v0_3"
+SYSTEM_VERSION_ID = "kbver_t2d11_directionality_v0_5"
 
 _DIRECTION_LABELS = {
     "increasing": "Higher feature value → Higher risk",
@@ -80,7 +80,7 @@ def render_kb_markdown(kb: dict[str, Any]) -> str:
         inverse = ", ".join(rule.get("inverse_representations") or [])
         lines.extend([
             "",
-            f"## {_display_name(feature)} (`{feature}`)",
+            f"## {rule['rule_id']} — {_display_name(feature)} (`{feature}`)",
             "",
             f"**Feature family:** {_display_name(rule['feature_family'])}",
             f"**Expected relationship:** {_DIRECTION_LABELS[rule['expected_direction']]}",
@@ -100,7 +100,7 @@ def render_kb_markdown(kb: dict[str, Any]) -> str:
 
 
 def seed_document(tenant_id: str = "bootstrap") -> dict[str, Any]:
-    """Expose KB v0.3 as an approved read-only document in the KB UI."""
+    """Expose the active YAML KB as an approved read-only document in the KB UI."""
     import kb as kb_service
 
     source_bytes = KB_PATH.read_bytes()
@@ -108,7 +108,7 @@ def seed_document(tenant_id: str = "bootstrap") -> dict[str, Any]:
     version = str(document["metadata"]["version"])
     return kb_service.ensure_system_reference_document(
         tenant_id=tenant_id, document_id=SYSTEM_DOCUMENT_ID,
-        version_id=SYSTEM_VERSION_ID, version_seq=3,
+        version_id=SYSTEM_VERSION_ID, version_seq=5,
         title="Test 2, Diagnostic 11 — Expected Risk Direction Knowledge Base",
         source_filename=KB_PATH.name, source_media_type="application/x-yaml",
         source_bytes=source_bytes, converted_markdown=render_kb_markdown(document),

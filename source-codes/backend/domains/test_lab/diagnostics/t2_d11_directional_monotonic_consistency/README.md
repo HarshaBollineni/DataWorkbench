@@ -1,5 +1,13 @@
 # T2-D11 Directional / Monotonic Consistency
 
+**Status:** MVP production workflow
+
+**Framework location:** Test 2, Diagnostic 11
+
+**Knowledge Base:** Expected Risk Direction YAML v0.5; terminology YAML v0.3
+
+**Engine:** Directionality evidence schema v2
+
 Diagnostic 11 compares the expected economic relationship of each selected numeric variable with
 its observed empirical direction against a target or approved substitute. The first run analyses
 the overall portfolio. A later run can use the shared one-snapshot PSI split builder to define one
@@ -32,6 +40,40 @@ models are univariate directionality evidence only.
   routes enforce the frozen manifest's tenant. The person who requests a proposal and the person
   who freezes the run remain separately attributable.
 
+## Dataset Structure Context dependency
+
+The Expected Risk Direction KB v0.5 uses the common YAML schema-v2 envelope. Its
+`execution_context` declares the Dataset Structure Context (DSC) selectors consumed by D11.
+`matching.py` validates the declaration against a closed engine contract, so a source edit cannot
+introduce arbitrary predicates, mappings or executable behavior. The shared
+`domains/test_lab/shared/knowledge_provenance.py` helper projects the validated declaration into the
+table-bound request and constructs the immutable directionality and terminology references.
+
+Each governed direction concept has an immutable, zero-padded identifier from
+`T2D11-01` through `T2D11-49`. This is the downstream traceability key used in manifests,
+evidence, findings, reports, and the Knowledge Base Library. The semantic `feature` value
+remains the readable concept and matching key. Existing identifiers must not be renumbered;
+future concepts append the next available identifier.
+
+| Selector | DSC predicate | Requirement | Accepted state | Diagnostic use |
+| --- | --- | --- | --- | --- |
+| `default-entity` | `table.structure/default_entity_binding` | Advisory | `confirmed` | Excludes the entity identifier from analytical scope |
+| `default-temporal` | `table.temporal/default_temporal_binding` | Advisory | `confirmed` | Excludes the temporal axis from analytical scope |
+| `row-grain` | `table.structure/row_grain` | Optional | `observed`, `confirmed` | Records the structural basis of the analysis |
+
+When a manifest is created, D11 binds the declared selectors to the selected table, resolves the
+effective DSC assertions and persists their immutable artifact pins. Confirmed entity and temporal
+columns are removed from the initial feature list and segment candidates; DSC does not provide the
+risk target, expected direction or empirical result.
+
+Advisory or unavailable DSC does not invent structural exclusions. The unresolved state remains
+visible and the user retains the explicit run-level scope workflow. Such local decisions are frozen
+for that run and do not modify the DSC assertion or KB.
+
+The frozen manifest records the DSC context reference and selector outcomes together with exact
+directionality and terminology KB references: document ID, version ID, version label, source hash
+and consumer ID. Knowledge Base Library usage history is derived from those manifest pins.
+
 ## End-to-end workflow
 
 ```mermaid
@@ -52,7 +94,7 @@ flowchart TD
     HS --> I
     I["Select numeric columns for analysis; retained scope is preselected"] --> IR{"Confirmed decision retained from a compatible completed run?"}
     IR -- "Yes" --> KR["Reuse the confirmed direction with source-run provenance; do not call AI"]
-    IR -- "No: newly selected or previously excluded column" --> J{"Exact KB v0.3 match?"}
+    IR -- "No: newly selected or previously excluded column" --> J{"Exact active KB match?"}
     J -- "Yes" --> K["Apply the KB decision and preserve its immutable governed baseline"]
     J -- "No" --> L["Show cautious ranked KB candidates"]
     L --> M{"Ask AI?"}
@@ -177,7 +219,7 @@ The KB expectation itself remains increasing-to-risk in both cases.
 
 ## Knowledge matching
 
-`matching.py` loads the central KB v0.3 and active terminology v0.3 resources, normalizes column names and
+`matching.py` loads the central KB v0.5 and active terminology v0.3 resources, normalizes column names and
 descriptions, expands governed terminology, and performs two distinct operations:
 
 1. **Deterministic exact matching** against canonical names, representations, and inverse
@@ -403,9 +445,9 @@ all earlier evidence is reclassified against the latest candidate decision. A co
 against a `pending_review` proposal does not rewrite that candidate; it remains conflicting evidence
 for the reviewer to resolve.
 
-A proposal does not affect the current diagnostic run, silently edit the source-controlled KB v0.3
+A proposal does not affect the current diagnostic run, silently edit the source-controlled active KB
 YAML, or automatically participate in later D11 matching. Incorporating reviewed proposals into a
-future D11 knowledge release, such as KB v0.4, is a separate governed curation and versioning step.
+future D11 knowledge release, such as KB v0.5, is a separate governed curation and versioning step.
 
 ## Results, charts, and persistence
 
@@ -444,7 +486,7 @@ disposition, and confirms that AI did not alter the empirical verdict.
 
 | Store | D11 content |
 | --- | --- |
-| `diag_runs` | Resumable draft, frozen manifest, execution status, and fingerprint |
+| `diag_runs` | Resumable draft, frozen manifest, DSC/KB pins, execution status, and fingerprint |
 | `diag_run_decisions` | Actor-attributed setup changes, classifications, AI attempts, and proposal intent |
 | `diag_inference_events` | Zero-use disclosure, successful AI calls, and sanitized failures |
 | `diag_results` | Compact feature-to-artifact indexes plus the run summary |
@@ -470,8 +512,8 @@ The diagnostic implementation is owned by this package:
 
 | Module | Responsibility |
 | --- | --- |
-| `manifest.py` | Draft lifecycle, scope decisions, AI review, confirmation, proposal intent, and freeze |
-| `matching.py` | Resource validation, terminology processing, exact matching, and candidate ranking |
+| `manifest.py` | Draft lifecycle, DSC resolution, scope decisions, AI review, proposal intent and freeze |
+| `matching.py` | YAML/DSC contract validation, terminology processing, exact matching and candidate ranking |
 | `adjudication_contract.py` | Provider-independent structured input/output boundary |
 | `adjudication.py` | Responses API configuration, bounded request, validation, and fallback boundary |
 | `knowledge.py` | Central resource resolver and deduplicated KB proposal lifecycle |
@@ -485,7 +527,7 @@ package:
 ```text
 backend/
 |-- knowledge_base/
-|   |-- pd_directionality_kb_v0_3.yaml
+|   |-- pd_directionality_kb_v0_5.yaml
 |   `-- credit_risk_abbreviations_v0_3.yaml
 |-- ai/
 |   `-- agents/
@@ -498,16 +540,17 @@ The production package does not import experiment modules or experiment KB/promp
 
 ### Knowledge Base visibility
 
-At application startup, KB v0.3 is registered idempotently as the approved, read-only document
+At application startup, KB v0.5 is registered idempotently as the approved, read-only document
 **Test 2, Diagnostic 11 — Expected Risk Direction Knowledge Base**. It therefore appears in the
 existing Knowledge Base **Documents** view alongside other system diagnostic knowledge. The
 rendered document explains each governed concept, expected risk direction, knowledge strength,
 economic rationale, and common or inverse representations.
 
-The YAML file remains the sole runtime source of truth for D11 matching. Registration creates no
-duplicate executable `kb_rules`, and a source hash prevents an existing version from silently
-drifting from the checked-in content. The credit-risk abbreviation dictionary supports matching
-internally but is not published as a separate user-facing document.
+The YAML file remains the sole runtime source of truth for D11 matching and declares the DSC
+execution boundary used during manifest construction. Registration creates no duplicate executable
+`kb_rules`, and a source hash prevents an existing version from silently drifting from the
+checked-in content. The shared credit-risk terminology document is also visible in the Knowledge
+Base Library and is pinned separately when D11 creates a run.
 
 ## API surface
 
@@ -556,10 +599,8 @@ Draft patches are refused after freeze.
 
 ## AI configuration
 
-In the source workspace, D11 deliberately reads
-`experiments/test-lab/t2_d11_dir_consistency/.env` without modifying process-global AI settings.
-Deployments should either set `T2_D11_ENV_FILE` to a mounted secret file or provide the equivalent
-runtime variables:
+D11 uses the shared `backend/.env` configuration for Test Lab, RCA, and downstream AI activity.
+Deployed installations can override those values through process variables or secret mounts:
 
 - `AZURE_OPENAI_ENDPOINT`
 - `AZURE_OPENAI_API_KEY` or `OPENAI_API_KEY`
@@ -568,8 +609,8 @@ runtime variables:
 - `AI_REQUEST_TIMEOUT`
 - `AI_MAX_RETRIES`
 
-The adapter also recognizes `backend/.env` as a local fallback. A Foundry endpoint is normalized to
-the host-level `/openai/v1/` SDK base, including when the configured value contains the complete
+Process variables take precedence over values in `backend/.env`. A Foundry endpoint is normalized
+to the host-level `/openai/v1/` SDK base, including when the configured value contains the complete
 Responses resource path. Secrets are never copied into a manifest or inference event.
 
 ## Verification
@@ -602,5 +643,5 @@ regression suite.
 - Candidate ranking has no automatic semantic-acceptance threshold.
 - MVP evidence floors require recalibration against representative portfolios.
 - Regression is directional evidence only, not a final model specification.
-- Published proposals remain outside source-controlled KB v0.3 until a separately governed KB
+- Published proposals remain outside the source-controlled active KB until a separately governed KB
   release incorporates them.

@@ -3,12 +3,17 @@ from __future__ import annotations
 
 import uuid
 import time
+import hashlib
 from typing import Any
 
 import system_db as db
 from analysis_runtime.contracts import stable_fingerprint
 from analysis_runtime.population_guidance import exact_population_options, guidance_from_profile
 from analysis_runtime.snapshots import SnapshotLoader
+from domains.test_lab.shared.knowledge_provenance import (
+    default_binding_column, dsc_request_from_execution_context,
+    knowledge_reference, resolve_dsc,
+)
 from domains.test_lab.shared.run_state import DONE, DRAFT, RUNNING, ManifestError, list_decisions, record_decision
 from dq_diagnostics.readiness import readiness
 from dq_diagnostics.register import get_diagnostic, require_executable
@@ -20,6 +25,7 @@ from dq_diagnostics.inference_audit import (
 from . import knowledge
 from .adjudication import adjudicate, configuration_metadata
 from .matching import match_feature_to_kb
+from domains.test_lab.diagnostics.t2_d08_value_semantics import knowledge as shared_terminology
 
 DIAGNOSTIC_ID = 11
 MANIFEST_KIND = "directional_monotonic_consistency"
@@ -117,7 +123,7 @@ def _reuse_prior_scope(features: list[dict[str, Any]], prior_run: dict[str, Any]
         # source (including any prior AI audit) rather than treating it as a
         # fresh adjudication in this run.
         carried = {key: previous.get(key) for key in (
-            "canonical_feature", "representation_orientation", "expected_direction",
+            "knowledge_rule_id", "canonical_feature", "representation_orientation", "expected_direction",
             "knowledge_strength", "classification_source", "rationale", "confirmed_by",
             "adjudication",
         )}
@@ -187,6 +193,7 @@ def _profile_artifacts(item_id: str, table: str) -> dict[str, dict[str, Any]]:
 def _direction_mapping(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "feature": row["feature"],
+        "knowledge_rule_id": row.get("knowledge_rule_id"),
         "knowledge_base_concept": row.get("canonical_feature"),
         "representation_orientation": row.get("representation_orientation"),
         "expected_direction": row.get("expected_direction"),
@@ -242,6 +249,7 @@ def _exact_decision(match: dict[str, Any] | None, kb_version: str) -> dict[str, 
         direction = _flip(direction)
     return {
         "kb_version": str(kb_version),
+        "knowledge_rule_id": match["knowledge_rule_id"],
         "canonical_feature": match["canonical_feature"],
         "representation_orientation": orientation,
         "expected_direction": direction,
@@ -257,14 +265,25 @@ def _governed_exact_decision(row: dict[str, Any]) -> dict[str, Any] | None:
     )
     return _exact_decision(
         result.get("deterministic_match"),
-        (kb.get("metadata") or {}).get("version") or "0.3",
+        (kb.get("metadata") or {}).get("version") or "0.5",
     )
 
 
 def _backfill_governed_exact_decisions(manifest: dict[str, Any]) -> bool:
     """Upgrade pre-baseline drafts without changing a recorded baseline."""
     changed = False
+    rules = knowledge.rule_index()
     for row in manifest.get("features", []):
+        concept = row.get("canonical_feature")
+        rule = rules.get(concept)
+        if rule and row.get("knowledge_rule_id") != rule["rule_id"]:
+            row["knowledge_rule_id"] = rule["rule_id"]
+            changed = True
+        for candidate in row.get("candidates") or []:
+            candidate_rule = rules.get(candidate.get("canonical_feature"))
+            if candidate_rule and candidate.get("knowledge_rule_id") != candidate_rule["rule_id"]:
+                candidate["knowledge_rule_id"] = candidate_rule["rule_id"]
+                changed = True
         if "governed_exact_decision" not in row:
             row["governed_exact_decision"] = _governed_exact_decision(row)
             changed = True
@@ -299,7 +318,7 @@ def _feature_card(row: dict[str, Any]) -> dict[str, Any]:
             "profile_artifact_id": row.get("profile_artifact_id"),
             "match_status": result["match_status"], "match_method": result["match_method"],
             "candidates": result.get("top_candidates") or [], "candidate_display_limit": 3,
-            "canonical_feature": None, "representation_orientation": None,
+            "knowledge_rule_id": None, "canonical_feature": None, "representation_orientation": None,
             "expected_direction": None, "knowledge_strength": None,
             "governed_exact_decision": None,
             "classification_source": None, "rationale": None,
@@ -309,14 +328,15 @@ def _feature_card(row: dict[str, Any]) -> dict[str, Any]:
     exact = result.get("deterministic_match")
     if exact:
         governed_decision = _exact_decision(
-            exact, (kb.get("metadata") or {}).get("version") or "0.3",
+            exact, (kb.get("metadata") or {}).get("version") or "0.5",
         )
-        base.update({"canonical_feature": exact["canonical_feature"],
+        base.update({"knowledge_rule_id": exact["knowledge_rule_id"],
+                     "canonical_feature": exact["canonical_feature"],
                      "representation_orientation": governed_decision["representation_orientation"],
                      "expected_direction": governed_decision["expected_direction"],
                      "governed_exact_decision": governed_decision,
                      "knowledge_strength": str(exact["knowledge_strength"]).upper(),
-                     "classification_source": "KB_V0_3_EXACT",
+                     "classification_source": "KB_EXACT",
                      "rationale": exact["rationale"],
                      "review_required": False})
     elif not numeric:
@@ -378,7 +398,23 @@ def build_manifest(item_id: str, actor: str = "system", *,
     active_kb, active_terminology, _matcher = knowledge.resources()
     prior_completed_runs = _completed_run_count(item_id, tenant_id)
     target_row = next(row for row in rows if row["column_name"] == target)
-    features = [_feature_card(row) for row in rows if row["column_name"] != target]
+    consumer_id, selectors = dsc_request_from_execution_context(
+        active_kb["execution_context"], table,
+    )
+    dsc_context = resolve_dsc(
+        item=item, table=table, consumer_id=consumer_id, actor=actor,
+        selectors=selectors,
+    )
+    structural_columns = {
+        value for value in (
+            default_binding_column(dsc_context, "default-entity"),
+            default_binding_column(dsc_context, "default-temporal"),
+        ) if value
+    }
+    features = [
+        _feature_card(row) for row in rows
+        if row["column_name"] != target and row["column_name"] not in structural_columns
+    ]
     if not features:
         raise ManifestError("no independent variables are available")
     reusable_run = _latest_reusable_run(item_id, tenant_id, table, target)
@@ -397,6 +433,8 @@ def build_manifest(item_id: str, actor: str = "system", *,
             "name", "area", "mode", "stage", "decision_type", "metric", "kb_dependency")},
         "engine_version": ENGINE_VERSION, "status": DRAFT, "created_at": now,
         "created_by": actor, "table": table,
+        "dataset_structure_context": dsc_context,
+        "dsc_excluded_structural_columns": sorted(structural_columns),
         "source_artifact_references": source_artifact_references,
         "reference": {"column": target,
                       "type": (prior_reference.get("type") if prior_run_reuse else "auto"),
@@ -420,13 +458,31 @@ def build_manifest(item_id: str, actor: str = "system", *,
                               "segment_analysis_available": prior_completed_runs > 0},
         "prior_run_reuse": prior_run_reuse,
         "segment_column": None, "segment_definition": None, "segment_preview": None,
-        "segment_candidates": _segment_candidates(rows, target),
+        "segment_candidates": [
+            row for row in _segment_candidates(rows, target)
+            if row["column"] not in structural_columns
+        ],
         "features": features, "thresholds": thresholds,
         "parameters": {"requested_bins": 5, "chart_sample_limit": 400,
                        "bin_method": "equal_frequency_broad_shape"},
         "knowledge": {"version": str(active_kb["metadata"]["version"]),
                       "terminology_version": str(active_terminology["metadata"]["version"]),
-                      "prompt_version": "v0_2"}}
+                      "prompt_version": "v0_2"},
+        "knowledge_references": [
+            knowledge_reference(
+                knowledge_base_id=knowledge.SYSTEM_DOCUMENT_ID,
+                version_id=knowledge.SYSTEM_VERSION_ID, consumer_id="diagnostic:11",
+                version_label=str(active_kb["metadata"]["version"]),
+                content_hash=hashlib.sha256(knowledge.KB_PATH.read_bytes()).hexdigest(),
+            ),
+            knowledge_reference(
+                knowledge_base_id=shared_terminology.TERMINOLOGY_DOCUMENT_ID,
+                version_id=shared_terminology.TERMINOLOGY_VERSION_ID,
+                consumer_id="diagnostic:11",
+                version_label=str(active_terminology["metadata"]["version"]),
+                content_hash=hashlib.sha256(shared_terminology.TERMINOLOGY_PATH.read_bytes()).hexdigest(),
+            ),
+        ]}
     _refresh(manifest)
     db.insert("diag_runs", {"run_id": run_id, "item_id": item_id,
         "diagnostic_id": DIAGNOSTIC_ID, "manifest_json": manifest, "status": DRAFT,
@@ -440,7 +496,7 @@ def build_manifest(item_id: str, actor: str = "system", *,
     db.update("diag_runs", {"run_id": run_id}, {"manifest_json": manifest})
     record_decision(run_id, "default_applied", {
         "kb_version": str(active_kb["metadata"]["version"]), "requested_bins": 5,
-        "exact_matches_available": sum(row["classification_source"] == "KB_V0_3_EXACT" for row in features)}, actor)
+        "exact_matches_available": sum(row["classification_source"] == "KB_EXACT" for row in features)}, actor)
     if prior_run_reuse:
         record_decision(run_id, "scope_exclusion", {
             "event": "prior_run_details_reused", **prior_run_reuse,
@@ -809,7 +865,8 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
                              else str(candidate["expected_direction"]).upper())
                 if output["representation_orientation"] == "INVERSE":
                     direction = _flip(direction)
-                row.update({"canonical_feature": output["selected_candidate"],
+                row.update({"knowledge_rule_id": candidate["knowledge_rule_id"],
+                            "canonical_feature": output["selected_candidate"],
                             "representation_orientation": output["representation_orientation"],
                             "expected_direction": direction,
                             "knowledge_strength": str(candidate["knowledge_strength"]).upper(),
@@ -819,20 +876,23 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
                             "review_required": True,
                             "selected": False})
             elif output["decision"] == "NOT_DIRECTIONAL":
-                row.update({"canonical_feature": None, "representation_orientation": None,
+                row.update({"knowledge_rule_id": None,
+                            "canonical_feature": None, "representation_orientation": None,
                             "expected_direction": "NOT_APPLICABLE", "selected": False,
                             "knowledge_strength": None,
                             "classification_source": "LLM_ADJUDICATED_NOT_DIRECTIONAL",
                             "rationale": f"AI rationale: {output['reason']}",
                             "review_required": True})
             elif output["decision"] == "NO_CANDIDATE_MATCH":
-                row.update({"canonical_feature": None, "representation_orientation": None,
+                row.update({"knowledge_rule_id": None,
+                            "canonical_feature": None, "representation_orientation": None,
                             "expected_direction": None, "knowledge_strength": None,
                             "classification_source": "LLM_NO_KB_MATCH",
                             "rationale": f"AI rationale: {output['reason']}",
                             "review_required": True, "selected": False})
             elif output["decision"] == "INSUFFICIENT_CONTEXT":
-                row.update({"canonical_feature": None, "representation_orientation": None,
+                row.update({"knowledge_rule_id": None,
+                            "canonical_feature": None, "representation_orientation": None,
                             "expected_direction": None, "knowledge_strength": None,
                             "classification_source": "LLM_INSUFFICIENT_CONTEXT",
                             "rationale": f"AI rationale: {output['reason']}",
@@ -895,6 +955,8 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
         if not rationale:
             raise ManifestError("a rationale is required for manual classification")
         canonical = str(patch.get("canonical_feature") or "").strip() or None
+        canonical_rule = knowledge.rule_index().get(canonical)
+        knowledge_rule_id = canonical_rule["rule_id"] if canonical_rule else None
         orientation = patch.get("representation_orientation")
         if orientation not in {None, "SAME", "INVERSE", "UNDETERMINED"}:
             raise ManifestError("unsupported representation orientation")
@@ -913,7 +975,8 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
                 f"This decision is already covered by KB v{kb_version}; "
                 "no Knowledge Base proposal is needed."
             )
-        row.update({"expected_direction": direction, "canonical_feature": canonical,
+        row.update({"expected_direction": direction, "knowledge_rule_id": knowledge_rule_id,
+                    "canonical_feature": canonical,
                     "representation_orientation": orientation,
                     "classification_source": "USER_CONFIRMED",
                     "rationale": rationale, "review_required": False,
@@ -1043,7 +1106,7 @@ def freeze(run_id: str, actor: str = "system") -> dict[str, Any]:
             "reference": manifest["reference"],
             "segment_column": manifest["segment_column"],
             "features": [{key: row.get(key) for key in (
-                "feature", "selected", "canonical_feature", "expected_direction",
+                "feature", "selected", "knowledge_rule_id", "canonical_feature", "expected_direction",
                 "representation_orientation", "classification_source", "rationale")}
                 | {"kb_proposal_requested": bool(
                     (row.get("kb_proposal") or {}).get("requested"))}

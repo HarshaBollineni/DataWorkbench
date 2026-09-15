@@ -107,7 +107,7 @@ Former cross-field Python paths remain exact aliases; route-level UI files remai
 T2-D11 Directional and Monotonic Consistency is the fifth production slice. Its backend package is
 `backend/domains/test_lab/diagnostics/t2_d11_directional_monotonic_consistency`, and its UI package
 is `ui/src/features/test-lab/diagnostics/t2-d11-directional-monotonic-consistency`. The diagnostic
-owns its KB v0.3 resources, semantic/manual feature adjudication, empirical direction engine,
+owns its KB v0.4 resources, semantic/manual feature adjudication, empirical direction engine,
 manifest, runner, and chart evidence. Generic run state, AAR persistence, and issue promotion stay
 in their shared owners; route-level scope and result files remain diagnostic dispatchers.
 

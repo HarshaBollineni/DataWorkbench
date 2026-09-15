@@ -140,11 +140,11 @@ function DatasetStructureAssist({ manifest, frozen, busy, onPatch }) {
   if (assist.state !== "available") return null;
   const cadence = assist.expected_cadence;
   return <Section title="Dataset Structure suggestions"
-    description="Confirmed Dataset Structure selections are editable starting points. D06 keeps ownership of its scope and reporting-grain interpretation." icon={ShieldCheck}>
+    description="Confirmed Dataset Structure Context (DSC) supplies the structural starting point. D06 keeps ownership of its business rules and final run scope." icon={ShieldCheck}>
     <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
       <p className="font-semibold">Review these suggested facility and period fields before execution.</p>
       <p className="mt-1">They are not an execution decision and do not change completed runs, D06 calculations, or reporting grain.</p>
-      {cadence && <p className="mt-2">Dataset Structure expected cadence: <strong>{cadence.step} {cadence.unit}{cadence.step === 1 ? "" : "s"}</strong>. It is advisory; the selected D06 reporting grain remains unchanged unless you choose a different grain below.</p>}
+      {cadence && <p className="mt-2">DSC expected cadence: <strong>{cadence.step} {cadence.unit}{cadence.step === 1 ? "" : "s"}</strong>. When it maps to a supported D06 grain, that grain is proposed below and remains editable until the run is frozen.</p>}
     </div>
     {!frozen && <label className="mt-3 flex items-start gap-2 rounded-md border border-slate-200 p-3 text-xs text-slate-700">
       <input type="checkbox" checked={Boolean(assist.scope_confirmed)} disabled={busy}

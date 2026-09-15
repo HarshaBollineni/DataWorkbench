@@ -181,7 +181,7 @@ export function reviewSuggestionSummary(feature) {
       reason: output.reason,
     };
   }
-  if (feature?.classification_source === "KB_V0_3_EXACT") {
+  if (feature?.classification_source === "KB_EXACT") {
     const candidate = (feature.candidates || []).find(
       (item) => item.canonical_feature === feature.canonical_feature,
     );
@@ -190,7 +190,7 @@ export function reviewSuggestionSummary(feature) {
       concept: readableConceptName(feature.canonical_feature),
       conceptId: feature.canonical_feature,
       reasonLabel: "Knowledge Base rationale",
-      reason: candidate?.rationale || feature.rationale || "Exact name or saved representation match in KB v0.3.",
+      reason: candidate?.rationale || feature.rationale || `Exact name or saved representation match in KB v${feature.governed_exact_decision?.kb_version || "active"}.`,
     };
   }
   if (feature?.classification_source === "USER_CONFIRMED") {
@@ -291,7 +291,7 @@ export function bulkEligibleScope(features = [], referenceColumn = null, segment
 
 export function suggestedScope(features = [], referenceColumn = null, segmentColumn = null) {
   return bulkEligibleScope(features, referenceColumn, segmentColumn)
-    .filter((feature) => feature.classification_source === "KB_V0_3_EXACT")
+    .filter((feature) => feature.classification_source === "KB_EXACT")
     .map((feature) => feature.feature);
 }
 

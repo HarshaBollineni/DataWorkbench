@@ -28,8 +28,12 @@ os.environ.pop("SYSTEM_DB_BACKUP_PATH", None)
 
 import system_db as s  # noqa: E402
 import kb  # noqa: E402
+import knowledge_library  # noqa: E402
 from kb_convert import ConversionError, convert_to_markdown  # noqa: E402
-from seeds import backfill_kb_roles  # noqa: E402
+from seeds import (  # noqa: E402
+    backfill_kb_roles, seed_directionality_knowledge, seed_framework_register,
+    seed_row_completeness_knowledge, seed_value_semantics_knowledge,
+)
 from seeds.taxonomy_seed import BOOTSTRAP_TENANT, seed_platform, seed_taxonomy  # noqa: E402
 
 TENANT = BOOTSTRAP_TENANT
@@ -128,6 +132,65 @@ class KbLifecycleTests(unittest.TestCase):
                 "conversion_report_json": {**report, "source": source},
             })
         return rule
+
+    def test_library_lists_only_real_kbs_and_keeps_roadmap_separate(self):
+        seed_framework_register()
+        seed_row_completeness_knowledge()
+        seed_directionality_knowledge()
+        seed_value_semantics_knowledge()
+
+        library = knowledge_library.get_library(TENANT)
+        ids = {item["knowledge_base_id"] for item in library["knowledge_bases"]}
+        self.assertEqual(ids, {
+            "kbdoc_t2d6_row_completeness", "kbdoc_t2d11_directionality",
+            "kbdoc_t2d08_value_semantics", "kbdoc_credit_risk_terminology",
+        })
+        self.assertEqual(library["summary"]["knowledge_base_count"], 4)
+        upcoming_ids = {
+            item["enhancement_id"] for item in library["upcoming_enhancements"]
+        }
+        self.assertIn("additional-diagnostic-consumers", upcoming_ids)
+        self.assertIn("rca-reusable-knowledge", upcoming_ids)
+        self.assertIn("role-based-access-control", upcoming_ids)
+
+        detail = knowledge_library.get_knowledge_base(
+            TENANT, "kbdoc_t2d6_row_completeness",
+        )
+        self.assertEqual(detail["active_version"], "2")
+        self.assertEqual(detail["management_mode"], "library_managed")
+        self.assertTrue(detail["objective"])
+        self.assertEqual(len(detail["rules"]), 6)
+        self.assertTrue(detail["dsc_requirements"])
+
+        directionality = knowledge_library.get_knowledge_base(
+            TENANT, "kbdoc_t2d11_directionality",
+        )
+        self.assertEqual(directionality["active_version"], "0.5")
+        self.assertEqual(directionality["rules"][0]["id"], "T2D11-01")
+        self.assertEqual(directionality["rules"][0]["concept_key"], "credit_quality_score")
+
+        run_id = f"drun_library_{uuid.uuid4().hex[:8]}"
+        now = s.now_ist()
+        s.insert("diag_runs", {
+            "run_id": run_id, "item_id": "library-history-item", "diagnostic_id": 6,
+            "manifest_json": {
+                "tenant_id": TENANT, "item_name": "Library history fixture",
+                "knowledge_references": [{
+                    "knowledge_base_id": "kbdoc_t2d6_row_completeness",
+                    "version_id": detail["active_version_id"], "version_label": "2",
+                    "content_hash": "hash", "consumer_id": "diagnostic:6",
+                }],
+                "dataset_structure_context": {"state": "fulfilled", "context_version": "2"},
+            },
+            "status": "done", "engine_versions_json": {}, "created_at": now,
+            "started_at": now, "finished_at": now,
+        })
+        usage = knowledge_library.get_knowledge_base(
+            TENANT, "kbdoc_t2d6_row_completeness",
+        )["usage_history"]
+        recorded = next(row for row in usage if row["run_id"] == run_id)
+        self.assertEqual(recorded["reference_type"], "pinned")
+        self.assertEqual(recorded["dsc_state"], "fulfilled")
 
     def test_upload_preserves_original_bytes_and_hash(self):
         content = b"## Heading\nBody."

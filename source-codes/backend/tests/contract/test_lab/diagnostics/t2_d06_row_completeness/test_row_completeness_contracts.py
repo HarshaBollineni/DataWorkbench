@@ -7,6 +7,7 @@ import sqlite3
 import uuid
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 import system_db as db
@@ -34,6 +35,9 @@ from dq_diagnostics.row_completeness_knowledge import (
 
 def test_governed_knowledge_package_matches_the_closed_engine_contract():
     package = load_seed_package()
+    assert package["schema_version"] == 2
+    assert package["execution_context"]["dataset_structure_context"]["consumer_id"] == \
+        "diagnostic:6:execution-v1"
     assert tuple(rule["rule_id"] for rule in package["rules"]) == EXPECTED_RULE_IDS
     assert [rule["rule_id"] for rule in package["rules"] if rule["uses_continuity_floor"]] == [
         "T2D6-03", "T2D6-05", "T2D6-06"
@@ -50,11 +54,12 @@ def test_governed_knowledge_rejects_unsupported_primitive_changes():
 
 def test_latest_contract_valid_source_controlled_package_is_selected(tmp_path, monkeypatch):
     first = copy.deepcopy(load_seed_package())
+    first.update({"version_id": "kbver_t2d6_row_completeness_v1", "version_seq": 1})
     second = copy.deepcopy(first)
     second.update({"version_id": "kbver_t2d6_row_completeness_v2", "version_seq": 2})
     second["rules"][0]["title"] = "Facility and period key assignability"
-    (tmp_path / "row_completeness_v1.json").write_text(json.dumps(first), encoding="utf-8")
-    (tmp_path / "row_completeness_v2.json").write_text(json.dumps(second), encoding="utf-8")
+    (tmp_path / "row_completeness_v1.yaml").write_text(yaml.safe_dump(first), encoding="utf-8")
+    (tmp_path / "row_completeness_v2.yaml").write_text(yaml.safe_dump(second), encoding="utf-8")
     monkeypatch.setattr(row_completeness_knowledge, "PACKAGE_DIR", tmp_path)
     assert row_completeness_knowledge.load_seed_package()["version_seq"] == 2
 
@@ -63,8 +68,8 @@ def test_duplicate_package_versions_fail_closed(tmp_path, monkeypatch):
     first = copy.deepcopy(load_seed_package())
     duplicate = copy.deepcopy(first)
     duplicate["version_id"] = "kbver_t2d6_duplicate"
-    (tmp_path / "row_completeness_v1.json").write_text(json.dumps(first), encoding="utf-8")
-    (tmp_path / "row_completeness_v1_duplicate.json").write_text(json.dumps(duplicate), encoding="utf-8")
+    (tmp_path / "row_completeness_v2.yaml").write_text(yaml.safe_dump(first), encoding="utf-8")
+    (tmp_path / "row_completeness_v2_duplicate.yaml").write_text(yaml.safe_dump(duplicate), encoding="utf-8")
     monkeypatch.setattr(row_completeness_knowledge, "PACKAGE_DIR", tmp_path)
     with pytest.raises(RowCompletenessKnowledgeError, match="versions must be unique"):
         row_completeness_knowledge.load_seed_packages()

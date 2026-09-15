@@ -29,7 +29,7 @@ def _dictionary(columns: list[str]) -> pd.DataFrame:
 
 def test_active_resources_preserve_contract_and_enhanced_terminology():
     value_kb, terminology, _matcher = knowledge.resources()
-    assert str(value_kb["metadata"]["version"]) == "0.2"
+    assert str(value_kb["metadata"]["version"]) == "0.3"
     assert str(terminology["metadata"]["version"]) == "0.3"
     assert len(value_kb["semantic_roles"]) == 36
     assert {rule["tag_assigned"] for rule in value_kb["rules"]} == {

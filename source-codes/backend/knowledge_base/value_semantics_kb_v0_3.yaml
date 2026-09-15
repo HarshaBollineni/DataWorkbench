@@ -1,6 +1,8 @@
+schema_version: 2
+
 metadata:
   name: Value Semantics Knowledge Base
-  version: '0.2'
+  version: '0.3'
   diagnostic_id: t2_d08_valsim
   purpose: >
     Match incoming credit-risk variables to canonical semantic roles and select
@@ -11,9 +13,46 @@ metadata:
     are supplied at runtime and are not stored in this Knowledge Base.
   terminology_resource: credit_risk_abbreviations_v0_3.yaml
   change_note: >
-    Experimental v0.2 adds deterministic role implications, evidence-gated
-    candidate-margin expansion, richer optional dictionary context, and a
-    readiness-oriented routing status. PD/LGD/EAD hints remain non-enforcing.
+    MVP v0.3 standardises the YAML execution envelope and declares the Dataset
+    Structure Context dependencies. Existing deterministic role implications,
+    evidence gates, and non-enforcing PD/LGD/EAD hints remain unchanged.
+
+governance:
+  lifecycle_state_source: knowledge_library_registry
+  approval_and_activation_separate: true
+  change_summary: Add the common YAML execution envelope and DSC dependency contract.
+  supersedes: kbver_t2d08_value_semantics_v0_2
+
+execution_context:
+  dataset_structure_context:
+    contract_version: "2"
+    consumer_id: diagnostic:8:execution-v1
+    selectors:
+      - selector_id: default-entity
+        predicate: table.structure/default_entity_binding
+        requirement: required
+        accepted_resolution_states: [confirmed]
+        maps_to: roles.entity_id
+      - selector_id: default-temporal
+        predicate: table.temporal/default_temporal_binding
+        requirement: required
+        accepted_resolution_states: [confirmed]
+        maps_to: roles.period
+      - selector_id: expected-cadence
+        predicate: table.temporal/expected_cadence
+        requirement: advisory
+        accepted_resolution_states: [confirmed]
+        maps_to: execution.expected_cadence
+      - selector_id: row-grain
+        predicate: table.structure/row_grain
+        requirement: optional
+        accepted_resolution_states: [observed, confirmed]
+        maps_to: execution.row_grain
+    unavailable_behavior: require_visible_local_configuration
+    pin_resolved_context_in_run_manifest: true
+  local_changes:
+    scope: run_only
+    changes_knowledge_base: false
 
 conventions:
   matching_unit: variable
@@ -1159,4 +1198,3 @@ classification_output:
   - populated_where_not_applicable_counts
   - assessed_group_share_for_variance_entries
   - unscoped_entry_counts
-

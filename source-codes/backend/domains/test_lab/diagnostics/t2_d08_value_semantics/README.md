@@ -2,7 +2,8 @@
 
 **Status:** Production workflow  
 **Framework location:** Test 2, Diagnostic 8  
-**Methodology:** Value Semantics KB v0.2; terminology v0.3; engine v1.0.0  
+**Methodology:** Value Semantics KB v0.3; terminology v0.3; engine v1.0.0
+
 **Primary contract:** `docs/diagnostics/value-semantics/contract.md`
 
 This diagnostic explains when a populated or missing value should not be interpreted as an ordinary data-quality defect. It assigns three governed, non-destructive cell tags:
@@ -49,6 +50,36 @@ flowchart LR
     G --> I[Human finding disposition]
     I --> J[Issue and RCA when confirmed]
 ```
+
+## Dataset Structure Context dependency
+
+The active Value Semantics YAML uses the common schema-v2 envelope and declares its Dataset
+Structure Context (DSC) dependency under `execution_context`. `resources.py` validates that
+declaration against the supported D08 contract; YAML cannot introduce an arbitrary selector,
+mapping or executable behavior. The shared `domains/test_lab/shared/knowledge_provenance.py` helper
+projects the validated declaration into the table-bound request and constructs the immutable KB
+references.
+
+| Selector | DSC predicate | Requirement | Accepted state | Diagnostic use |
+| --- | --- | --- | --- | --- |
+| `default-entity` | `table.structure/default_entity_binding` | Required | `confirmed` | Adds the `entity_id` structural role |
+| `default-temporal` | `table.temporal/default_temporal_binding` | Required | `confirmed` | Adds the `period` structural role |
+| `expected-cadence` | `table.temporal/expected_cadence` | Advisory | `confirmed` | Records expected cadence in execution context |
+| `row-grain` | `table.structure/row_grain` | Optional | `observed`, `confirmed` | Records the grouped structural basis |
+
+Manifest creation resolves these selectors for the selected table and pins the effective DSC
+assertions. Confirmed entity and temporal defaults are applied to the matching physical fields as
+confirmed structural roles. Selecting another table resolves DSC again rather than carrying a
+binding across tables.
+
+Cadence and row grain are retained as governed context in the MVP. They do not independently turn
+Value Semantics rules on, invent a runtime declaration or synthesize a business semantic role.
+Rule applicability still comes from confirmed semantic roles and the explicit declarations named
+by each rule entry.
+
+If DSC is unavailable, the state and reason remain visible in the manifest and the user can complete
+the existing local role workflow. Local selections and declarations are run-only: they neither
+modify DSC nor update the Knowledge Base.
 
 ## Semantic role and rule model
 
@@ -133,7 +164,13 @@ The default declarations are visible and editable before freeze. A declaration i
 
 ## Execution and precedence
 
-Execution is deterministic and uses only the frozen snapshot, selected table/fields, confirmed bindings, declarations, KB versions, terminology version, and engine version. Source values are never mutated.
+Execution is deterministic and uses only the frozen snapshot, selected table/fields, confirmed
+bindings, declarations, pinned DSC context, KB versions, terminology version, and engine version.
+Source values are never mutated.
+
+The run manifest also pins exact Knowledge Base references: document ID, version ID, version label,
+source content hash and diagnostic consumer ID. Usage history in the Knowledge Base Library is built
+from these run-manifest references rather than inferred from the latest active version.
 
 The engine emits raw claims and then resolves at most one winning tag for a cell using the active KB's precedence. Suppressed claims remain traceable. If two different tags claim the same cell without a decisive precedence relationship, execution fails closed rather than relying on iteration order.
 
@@ -181,22 +218,29 @@ Production startup seeds two governed documents into the KB section:
 
 | Document | Active version | Retained history |
 |---|---|---|
-| Value Semantics rules | v0.2 | v0.1 |
+| Value Semantics rules | v0.3 | v0.1 baseline |
 | Shared credit-risk terminology and abbreviations | v0.3 | v0.2 |
 
-The terminology v0.3 package replaces v0.2 as active and includes the enhanced revolving-credit abbreviation coverage while preserving v0.2 for audit/history. The Value Semantics document likewise exposes both versions with v0.2 active. The packaged YAML is the execution source; the rendered KB document is the user-facing, versioned representation.
+The terminology v0.3 package replaces v0.2 as active and includes the enhanced revolving-credit
+abbreviation coverage while preserving v0.2 for audit/history. Value Semantics v0.3 introduces the
+common YAML governance and execution envelope and supersedes the earlier v0.2 source package. The
+packaged YAML is the execution source; the Knowledge Base Library provides the user-facing
+representation, structured rules, dependencies and manifest-derived usage history.
+
+The active sources are `backend/knowledge_base/value_semantics_kb_v0_3.yaml` and
+`backend/knowledge_base/credit_risk_abbreviations_v0_3.yaml`.
 
 ## Backend layout
 
 ```text
 t2_d08_value_semantics/
-  manifest.py                 draft, blockers, patches, freeze fingerprint
+  manifest.py                 draft, DSC resolution, blockers, patches, freeze fingerprint
   runner.py                   execution, results, findings, reports, AAR writes
   engine.py                   deterministic rule primitives and precedence
   matching.py                 deterministic semantic-role matching
   adjudication.py             optional governed AI orchestration
   adjudication_contract.py    structured AI response boundary
-  resources.py                KB/terminology loading and validation
+  resources.py                YAML schema, DSC-contract and KB/terminology validation
   summaries.py                coverage and result summaries
   actions.py                  user decision and RCA evidence grouping
   knowledge.py                KB rendering, versioning and startup seed
@@ -252,7 +296,11 @@ request; it does not use the shared test backend or production data.
 
 ## Promotion provenance
 
-This production package was promoted from `experiments/test-lab/t2_d08_Value_semantics`. The experiment's reusable assets were carried forward: the v0.1/v0.2 rule KBs, terminology evolution, exact-first matcher, role-adjudication prompt and structured contract, deterministic engine, summaries, action logic, fixture-backed methodology, and original design rationale.
+This production package was promoted from `experiments/test-lab/t2_d08_Value_semantics`. The
+experiment's reusable assets were carried forward: the v0.1/v0.2 rule design, terminology
+evolution, exact-first matcher, role-adjudication prompt and structured contract, deterministic
+engine, summaries, action logic, fixture-backed methodology and original design rationale. The
+production source is now the schema-v2 Value Semantics YAML v0.3 package.
 
 Production promotion added the mandatory information step, resumable/frozen manifest workflow, tenant-aware endpoints, partial-coverage semantics, authenticated reports, KB publication/version history, AAR JSON and Parquet storage, grouped human-controlled findings, issue/RCA integration, runtime recovery behavior, and frontend Test Lab components. Production-specific corrections also made review/update frequency declarations operational, require structured panel predicates, fail closed on unresolved precedence, and preserve sentinel-only execution when variance prerequisites are unavailable.
 

@@ -595,13 +595,15 @@ disclose both the source artifact's calculation journey and the current run's jo
 
 ## 14. Centralized knowledge package and change guardrails
 
-`backend/knowledge_base/row_completeness_v1.json` is the source-controlled bootstrap package.
+`backend/knowledge_base/row_completeness_v2.yaml` is the source-controlled bootstrap package.
 At startup it is installed through `backend/kb.py` as one approved immutable KB document
 version with six published, human-confirmed and bound rules. Runtime manifests resolve the
 published database records, not frontend constants or engine labels, and freeze the document,
 version, rule and retrieval-manifest identifiers plus their hashes.
 
-The package owns diagnostic wording, methodology guidance, configuration help, rule titles,
+The package also declares its Dataset Structure Context selectors, accepted authority states,
+diagnostic mappings, unavailable-context behavior and run-manifest pinning policy. The package
+owns diagnostic wording, methodology guidance, configuration help, rule titles,
 user help, severity, semantic-role requirements, optionality, floor applicability and next
 steps. Python owns the calculation primitives, result schema and verdict logic. A package is
 accepted only when it contains exactly `T2D6-01` through `T2D6-06` in order and each rule maps
@@ -609,7 +611,7 @@ to its registered primitive. Arbitrary expressions, changed IDs/order, unsupport
 additional optional rules and reassignment of the coverage floor are rejected.
 
 Published versions are never edited in place. A future approved change is supplied as a new
-`backend/knowledge_base/row_completeness_v*.json` file with a unique `version_id` and increasing
+`backend/knowledge_base/row_completeness_v*.yaml` file with a unique `version_id` and increasing
 `version_seq`. Startup validates and installs every source-controlled version and activates the
 highest contract-valid version. Calculation-affecting changes also require a supported engine/
 methodology version; otherwise manifest creation refuses the package.

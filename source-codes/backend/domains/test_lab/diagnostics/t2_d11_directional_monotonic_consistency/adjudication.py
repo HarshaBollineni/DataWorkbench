@@ -15,7 +15,6 @@ from .adjudication_contract import (
 )
 from .knowledge import prompt, rule_index
 
-ENV_PATH_VARIABLE = "T2_D11_ENV_FILE"
 PROMPT_VERSION = "semantic_feature_adjudication_v0_2"
 CONTRACT_VERSION = "semantic_feature_adjudication_contract_v0_1"
 
@@ -24,55 +23,29 @@ class StructuredAdjudicationResponseError(ValueError):
     """Raised when the provider does not return the governed output contract."""
 
 
-def _experiment_env_path() -> Path:
-    return (
-        Path(__file__).resolve().parents[6]
-        / "experiments"
-        / "test-lab"
-        / "t2_d11_dir_consistency"
-        / ".env"
-    )
-
-
 def _backend_env_path() -> Path:
     return Path(__file__).resolve().parents[4] / ".env"
 
 
 def _configuration() -> dict[str, Any]:
-    """Resolve D11 settings without changing process-global AI configuration.
+    """Resolve D11 from the shared backend environment configuration.
 
-    In the source workspace the experiment ``.env`` is deliberately authoritative
-    for D11. A deployed installation can point ``T2_D11_ENV_FILE`` at its secret
-    mount, or supply the same values through the process environment.
+    The backend ``.env`` is the sole local dotenv for Test Lab, RCA, and
+    downstream activities. Process variables remain authoritative so deployed
+    secret mounts and runtime overrides work without diagnostic-specific files.
     """
-    explicit = str(os.getenv(ENV_PATH_VARIABLE) or "").strip()
-    selected_path: Path | None = None
-    source = "runtime_environment"
-    file_overrides_runtime = False
-    if explicit:
-        selected_path = Path(explicit).expanduser()
-        if not selected_path.is_file():
-            raise RuntimeError(f"{ENV_PATH_VARIABLE} does not identify a readable file")
-        source = "configured_dotenv"
-        file_overrides_runtime = True
-    elif _experiment_env_path().is_file():
-        selected_path = _experiment_env_path()
-        source = "t2_d11_experiment_dotenv"
-        file_overrides_runtime = True
-    elif _backend_env_path().is_file():
-        selected_path = _backend_env_path()
-        source = "application_dotenv"
+    selected_path = _backend_env_path()
+    source = "application_dotenv" if selected_path.is_file() else "runtime_environment"
 
     runtime: dict[str, str] = {key: value for key, value in os.environ.items()}
     file_values: dict[str, str] = {}
-    if selected_path is not None:
+    if selected_path.is_file():
         file_values = {
             key: str(value)
             for key, value in dotenv_values(selected_path).items()
             if value is not None
         }
-    values = ({**runtime, **file_values} if file_overrides_runtime
-              else {**file_values, **runtime})
+    values = {**file_values, **runtime}
 
     endpoint = str(values.get("AZURE_OPENAI_ENDPOINT") or "").strip()
     api_key = str(values.get("AZURE_OPENAI_API_KEY")

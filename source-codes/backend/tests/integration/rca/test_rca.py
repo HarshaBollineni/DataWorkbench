@@ -13,26 +13,33 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
 _TMP_DB = Path(tempfile.gettempdir()) / "archimedes-test-rca.db"
 _TMP_KB_STORAGE = Path(tempfile.gettempdir()) / "archimedes-test-rca-storage"
 _TMP_UPLOAD_DIR = Path(tempfile.gettempdir()) / "archimedes-test-rca-uploads"
+_TMP_ANALYSIS_DIR = Path(tempfile.gettempdir()) / "archimedes-test-rca-analysis"
 if _TMP_DB.exists():
     _TMP_DB.unlink()
 if _TMP_KB_STORAGE.exists():
     shutil.rmtree(_TMP_KB_STORAGE)
 if _TMP_UPLOAD_DIR.exists():
     shutil.rmtree(_TMP_UPLOAD_DIR)
+if _TMP_ANALYSIS_DIR.exists():
+    shutil.rmtree(_TMP_ANALYSIS_DIR)
 os.environ["SYSTEM_DB_PATH"] = str(_TMP_DB)
 os.environ["KB_STORAGE_DIR"] = str(_TMP_KB_STORAGE)
 os.environ["UPLOAD_DIR"] = str(_TMP_UPLOAD_DIR)
+os.environ["ANALYSIS_ARTIFACT_DIR"] = str(_TMP_ANALYSIS_DIR)
 os.environ.pop("SYSTEM_DB_BACKUP_PATH", None)
+os.environ["AI_RCA_LLM_ENABLED"] = "false"
 
 import kb  # noqa: E402
 import system_db as s  # noqa: E402
 from domains.rca import service as rca  # noqa: E402
+from domains.aar.repository import AnalysisArtifactRepository  # noqa: E402
 from ai.v2 import issues as issues_svc  # noqa: E402
 from ai.v2 import service as v2_service  # noqa: E402
 from seeds.taxonomy_seed import BOOTSTRAP_TENANT, seed_platform, seed_taxonomy  # noqa: E402
@@ -195,14 +202,100 @@ class CaseCreationTests(unittest.TestCase):
         c2 = rca.create_case_from_issue(self.issue["issue_row_id"], ACTOR)
         self.assertEqual(c1["case_id"], c2["case_id"])
 
-    def test_case_ends_at_opening_looks_with_case_file_and_tag_snapshot(self):
+    def test_case_ends_at_intake_with_case_file_and_tag_snapshot(self):
         case = rca.create_case_from_issue(self.issue["issue_row_id"], ACTOR)
-        self.assertEqual(case["state"], "opening_looks")
+        self.assertEqual(case["state"], "intake")
+        self.assertEqual(case["workflow_generation"], 1)
         case_file = s.query_one("rca_case_files", case_id=case["case_id"])
         self.assertEqual(case_file["checklist_json"]["table_name"], "t1")
         self.assertIn("amount", case_file["schema_snapshot_json"])
         transitions = s.query("rca_state_transitions", case_id=case["case_id"])
-        self.assertEqual([t["new_state"] for t in transitions], ["triage", "intake", "opening_looks"])
+        self.assertEqual([t["new_state"] for t in transitions], ["triage", "intake"])
+        bundle = rca.get_case(case["case_id"])
+        self.assertEqual(len(bundle["aar_evidence"]), 1)
+        context = bundle["aar_evidence"][0]
+        self.assertEqual(context["artifact_type"], "rca_case_context")
+        self.assertEqual(context["evidence_kind"], "case_context_created")
+        _, context_payload = AnalysisArtifactRepository().get(context["artifact_id"])
+        self.assertEqual(context_payload["dataset"]["snapshot_id"], case["item_id"])
+        self.assertEqual(context_payload["issue"]["issue_row_id"], self.issue["issue_row_id"])
+        self.assertTrue(context["payload_hash"])
+
+    def test_start_afresh_requires_confirmation_and_discards_derived_work(self):
+        item = _build_fixture_item("rca-start-afresh-fixture")
+        issue = _first_open_issue(item["item_id"])
+        case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
+        case_id = case["case_id"]
+        rca.run_opening_look(case_id, ACTOR)
+        prior_evidence = rca.get_case(case_id)["aar_evidence"]
+        prior_ids = {row["artifact_id"] for row in prior_evidence}
+        artifact_root = AnalysisArtifactRepository().root
+        prior_paths = [artifact_root / f"{artifact_id}.json" for artifact_id in prior_ids]
+        self.assertTrue(all(path.exists() for path in prior_paths))
+
+        with self.assertRaises(rca.RcaError):
+            rca.start_afresh(case_id, ACTOR, confirmed=False)
+
+        reset = rca.start_afresh(case_id, ACTOR, confirmed=True)
+        self.assertEqual(reset["state"], "intake")
+        self.assertEqual(reset["workflow_generation"], 2)
+        self.assertEqual(reset["looks"], [])
+        self.assertEqual(reset["executions"], {})
+        self.assertEqual(reset["hypotheses"], [])
+        self.assertIsNotNone(reset["case_file"])
+        self.assertEqual([event["event_type"] for event in reset["audit_events"]], ["rca_reset"])
+        self.assertEqual([row["new_state"] for row in reset["transitions"]], ["intake"])
+        self.assertFalse(prior_ids & {row["artifact_id"] for row in reset["aar_evidence"]})
+        self.assertEqual(
+            [row["evidence_kind"] for row in reset["aar_evidence"]],
+            ["case_context_created", "workflow_reset"],
+        )
+        self.assertTrue(all(row["workflow_generation"] == 2 for row in reset["aar_evidence"]))
+        self.assertTrue(all(not path.exists() for path in prior_paths))
+        self.assertTrue(all(s.query_one("analysis_artifacts", artifact_id=value) is None
+                            for value in prior_ids))
+
+    def test_initial_review_records_structured_llm_result_and_model_attempts(self):
+        item = _build_fixture_item("rca-llm-initial-review-fixture")
+        issue = _first_open_issue(item["item_id"])
+        case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
+        model = {
+            "model_id": "gpt-5-6-sol", "provider_id": "azure-primary",
+            "deployment": "gpt-5.6-sol", "model_name": "gpt-5.6-sol",
+            "model_version": "2026-07-09",
+        }
+        review = {
+            "output": {
+                "summary": "Missingness is material and concentrated in the retained evidence.",
+                "observed_signals": ["The affected column has elevated null share."],
+                "candidate_hypotheses": [{
+                    "statement": "A source segment may be omitting the value.",
+                    "evidence_basis": "The deterministic profile confirms missing values.",
+                    "testable_next_step": "Compare missingness by source segment.",
+                }],
+                "limitations": ["The opening profile does not establish causality."],
+                "recommended_next_steps": ["Run a segment breakdown."],
+            },
+            "selected_model": model, "response_id": "resp-test-1",
+            "response_model": "gpt-5.6-sol",
+            "attempts": [{"attempt": 1, "status": "completed", **model}],
+            "prompt_version": "rca_initial_review_v0_1",
+            "contract_version": "rca_initial_review_contract_v0_1",
+        }
+        with patch("domains.rca.initial_review.enabled", return_value=True), patch(
+            "domains.rca.initial_review.public_policy",
+            return_value={"api_style": "azure_openai_v1", "primary": model},
+        ), patch("domains.rca.initial_review.review", return_value=review):
+            result = rca.run_opening_look(case["case_id"], ACTOR)
+
+        self.assertEqual(result["llm_review"]["status"], "completed")
+        evidence = rca.get_case(case["case_id"])["aar_evidence"]
+        llm_events = [row for row in evidence if row["evidence_kind"] == "llm_initial_review"]
+        self.assertEqual([row["status"] for row in llm_events], ["started", "completed"])
+        self.assertEqual(llm_events[-1]["details"]["response_id"], "resp-test-1")
+        self.assertEqual(
+            llm_events[-1]["details"]["selected_model"]["model_version"], "2026-07-09"
+        )
 
     def test_illegal_transition_rejected(self):
         case = rca.create_case_from_issue(self.issue["issue_row_id"], ACTOR)
@@ -240,7 +333,6 @@ class CaseCreationTests(unittest.TestCase):
             time.sleep(0.1)
             rca.transition(case_id, "triage", ACTOR)
             rca.transition(case_id, "intake", ACTOR)
-            rca.transition(case_id, "opening_looks", ACTOR)
 
         t = threading.Thread(target=_finish_bootstrap_after_a_beat)
         t.start()
@@ -248,7 +340,7 @@ class CaseCreationTests(unittest.TestCase):
         t.join()
 
         self.assertEqual(result["case_id"], case_id)
-        self.assertEqual(result["state"], "opening_looks")
+        self.assertEqual(result["state"], "intake")
 
 
 class VerticalSliceHappyPathTests(unittest.TestCase):
@@ -265,7 +357,17 @@ class VerticalSliceHappyPathTests(unittest.TestCase):
         result = rca.run_opening_look(self.case["case_id"], ACTOR)
         self.assertTrue(result["summary"]["found"])
         case = rca.require_case(self.case["case_id"])
-        self.assertEqual(case["state"], "investigation_loop")
+        self.assertEqual(case["state"], "initial_review_complete")
+        continued = rca.continue_from_initial_review(self.case["case_id"], ACTOR)
+        self.assertEqual(continued["state"], "investigation_loop")
+        self.assertEqual(
+            [(row["evidence_kind"], row["status"]) for row in continued["aar_evidence"]],
+            [("case_context_created", "recorded"),
+             ("static_initial_review", "started"),
+             ("static_initial_review", "completed"),
+             ("human_decision", "accepted")],
+        )
+        self.assertEqual(result["aar_evidence_id"], continued["aar_evidence"][2]["artifact_id"])
 
     def test_02_planner_runner_reader_cycle_finds_concentrated_suspect(self):
         proposed = rca.planner_propose_look(self.case["case_id"], ACTOR)
@@ -373,6 +475,7 @@ class RejectionAndGatekeeperTests(unittest.TestCase):
         cls.issue = _first_open_issue(cls.item["item_id"])
         cls.case = rca.create_case_from_issue(cls.issue["issue_row_id"], ACTOR)
         rca.run_opening_look(cls.case["case_id"], ACTOR)
+        rca.continue_from_initial_review(cls.case["case_id"], ACTOR)
         _drive_investigation_loop(cls.case["case_id"], ACTOR)
         rca.coverage_challenge_pass1(cls.case["case_id"], ACTOR)
         pass2 = rca.coverage_challenge_pass2(cls.case["case_id"], ACTOR)
@@ -500,6 +603,7 @@ class BoardCapAndRevivalTests(unittest.TestCase):
         issue = _first_open_issue(item["item_id"])
         case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
         rca.run_opening_look(case["case_id"], ACTOR)
+        rca.continue_from_initial_review(case["case_id"], ACTOR)
         return case
 
     def test_board_cap_requires_a_named_kill_target(self):
@@ -541,6 +645,7 @@ class StopConditionTests(unittest.TestCase):
         cls.issue = _first_open_issue(cls.item["item_id"])
         cls.case = rca.create_case_from_issue(cls.issue["issue_row_id"], ACTOR)
         rca.run_opening_look(cls.case["case_id"], ACTOR)
+        rca.continue_from_initial_review(cls.case["case_id"], ACTOR)
 
     def test_budget_spent_stop_condition(self):
         for i in range(rca.LOOK_BUDGET):
@@ -566,6 +671,7 @@ def _case_ready_for_verification(name: str) -> dict:
     issue = _first_open_issue(item["item_id"])
     case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
     rca.run_opening_look(case["case_id"], ACTOR)
+    rca.continue_from_initial_review(case["case_id"], ACTOR)
     _drive_investigation_loop(case["case_id"], ACTOR)
     rca.coverage_challenge_pass1(case["case_id"], ACTOR)
     pass2 = rca.coverage_challenge_pass2(case["case_id"], ACTOR)
@@ -645,6 +751,7 @@ class SecondChanceAndEscalationTests(unittest.TestCase):
         issue = _first_open_issue(item["item_id"])
         case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
         rca.run_opening_look(case["case_id"], ACTOR)
+        rca.continue_from_initial_review(case["case_id"], ACTOR)
         rca.transition(case["case_id"], "coverage_challenge_blind", ACTOR)
         rca.transition(case["case_id"], "coverage_challenge_history", ACTOR)
         rca.transition(case["case_id"], "hypothesis_composition", ACTOR)
@@ -817,6 +924,7 @@ class AttachedFailureReconciliationTests(unittest.TestCase):
         self.assertEqual(attached[0]["reconciliation_status"], "pending")
 
         rca.run_opening_look(case["case_id"], ACTOR)
+        rca.continue_from_initial_review(case["case_id"], ACTOR)
         _drive_investigation_loop(case["case_id"], ACTOR)
         rca.coverage_challenge_pass1(case["case_id"], ACTOR)
         pass2 = rca.coverage_challenge_pass2(case["case_id"], ACTOR)
@@ -885,6 +993,7 @@ class AllFourClosingStatesTests(unittest.TestCase):
         issue = _first_open_issue(item["item_id"])
         case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
         rca.run_opening_look(case["case_id"], ACTOR)
+        rca.continue_from_initial_review(case["case_id"], ACTOR)
         _drive_investigation_loop(case["case_id"], ACTOR)
         rca.coverage_challenge_pass1(case["case_id"], ACTOR)
         pass2 = rca.coverage_challenge_pass2(case["case_id"], ACTOR)
@@ -1138,6 +1247,7 @@ class MvpConclusionApprovalTests(unittest.TestCase):
         issue = _first_open_issue(item["item_id"])
         case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
         rca.run_opening_look(case["case_id"], ACTOR)
+        rca.continue_from_initial_review(case["case_id"], ACTOR)
         return issue, rca.get_case(case["case_id"])
 
     def test_identified_conclusion_completes_without_fix_or_rerun(self):

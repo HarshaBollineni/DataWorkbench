@@ -41,6 +41,64 @@ def _summary(payload: Any) -> dict[str, Any]:
     return {"metrics": metrics, "fields": {"keys": sorted(payload)[:20]}}
 
 
+def _rca_context_validator(payload: Any) -> None:
+    _mapping(payload)
+    required = {"schema_version", "case_id", "workflow_generation", "recorded_at",
+                "issue", "dataset", "intake"}
+    missing = sorted(required - set(payload))
+    if missing:
+        raise ValueError(f"RCA case context is missing fields: {missing}")
+    if payload.get("schema_version") != 1:
+        raise ValueError("unsupported RCA case context schema version")
+    if not all(isinstance(payload.get(key), dict) for key in ("issue", "dataset", "intake")):
+        raise ValueError("RCA case context issue, dataset, and intake must be objects")
+
+
+def _rca_context_summary(payload: Any) -> dict[str, Any]:
+    _rca_context_validator(payload)
+    issue = payload["issue"]
+    return {"metrics": [
+        _metric("violation_count", issue.get("violation_count")),
+        _metric("metric", issue.get("metric")),
+    ], "fields": {
+        "case_id": payload["case_id"],
+        "workflow_generation": payload["workflow_generation"],
+        "test_name": issue.get("test_name"),
+        "table": payload["dataset"].get("table"),
+    }}
+
+
+def _rca_evidence_validator(payload: Any) -> None:
+    _mapping(payload)
+    required = {"schema_version", "case_id", "workflow_generation", "event_id",
+                "evidence_kind", "stage", "status", "actor", "recorded_at", "details"}
+    missing = sorted(required - set(payload))
+    if missing:
+        raise ValueError(f"RCA evidence event is missing fields: {missing}")
+    if payload.get("schema_version") != 1:
+        raise ValueError("unsupported RCA evidence event schema version")
+    if payload.get("stage") not in {"intake", "initial_review", "investigate", "closure", "system"}:
+        raise ValueError("invalid RCA evidence stage")
+    if payload.get("status") not in {"started", "completed", "failed", "timed_out", "blocked",
+                                      "accepted", "rejected", "recorded", "cancelled"}:
+        raise ValueError("invalid RCA evidence status")
+    if not isinstance(payload.get("details"), dict):
+        raise ValueError("RCA evidence details must be an object")
+
+
+def _rca_evidence_summary(payload: Any) -> dict[str, Any]:
+    _rca_evidence_validator(payload)
+    return {"metrics": [], "fields": {
+        "case_id": payload["case_id"],
+        "workflow_generation": payload["workflow_generation"],
+        "evidence_kind": payload["evidence_kind"],
+        "stage": payload["stage"],
+        "status": payload["status"],
+        "actor": payload["actor"],
+        "recorded_at": payload["recorded_at"],
+    }}
+
+
 def _metric(key: str, value: Any, *, unit: str | None = None) -> dict[str, Any]:
     return {"metric_key": key, "label": key.replace("_", " ").title(), "value": value,
             "value_type": "number" if isinstance(value, (int, float)) else "text",
@@ -458,6 +516,34 @@ def _register_defaults() -> None:
             } else "optional"),
             allowed_source_types=source_contracts.get(artifact_type, ()),
         ))
+    # RCA accepts lineage from any governed diagnostic artifact because its
+    # source diagnostic is dynamic. An empty allowed_source_types contract is
+    # intentionally the repository's open-lineage convention; existence and
+    # integrity of every referenced artifact are still verified on write.
+    register_artifact_type(ArtifactTypeDescriptor(
+        artifact_type="rca_case_context",
+        display_name="RCA case intake context",
+        description="Immutable source issue, dataset, and intake evidence pinned to one RCA generation.",
+        owner="Root Cause Analysis",
+        supported_scopes=("workflow_local",), granularity="case",
+        target_applicability="not_applicable",
+        comparison_snapshot_applicability="not_applicable",
+        payload_validator=_rca_context_validator,
+        summary_adapter=_rca_context_summary,
+        sensitivity="confidential", allows_blob_payload=False,
+    ))
+    register_artifact_type(ArtifactTypeDescriptor(
+        artifact_type="rca_evidence_event",
+        display_name="RCA evidence event",
+        description="Immutable timestamped RCA decisions, analyses, model activity, code, and sandbox outcomes.",
+        owner="Root Cause Analysis",
+        supported_scopes=("workflow_local",), granularity="event",
+        target_applicability="not_applicable",
+        comparison_snapshot_applicability="not_applicable",
+        payload_validator=_rca_evidence_validator,
+        summary_adapter=_rca_evidence_summary,
+        sensitivity="confidential", allows_blob_payload=False,
+    ))
     # DSC is active only through its descriptor write validators.  The generic
     # repository invokes these hooks too, so direct writes cannot evade the
     # dedicated trusted-workspace adapter's persistence contract.

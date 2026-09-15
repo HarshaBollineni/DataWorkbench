@@ -373,6 +373,10 @@ def test_ai_requires_explicit_reopen_of_confirmed_decisions(snapshot, monkeypatc
 
 def test_general_context_manifest_run_reports_artifacts_kb_and_findings(snapshot):
     draft = manifest.build_manifest(snapshot, actor="analyst", enforce_register=False)
+    assert {row["knowledge_base_id"] for row in draft["knowledge_references"]} == {
+        "kbdoc_t2d08_value_semantics", "kbdoc_credit_risk_terminology",
+    }
+    assert draft["dataset_structure_context"]["consumer_id"] == "diagnostic:8:execution-v1"
     assert draft["context"]["selected"] == ["GENERAL"]
     assert draft["context"]["execution_effect"] == "none"
     assert any(blocker["code"] == "introduction_required" for blocker in draft["blockers"])

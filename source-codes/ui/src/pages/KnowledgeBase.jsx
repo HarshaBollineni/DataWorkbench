@@ -14,6 +14,7 @@ import {
 import KbDocumentTagPicker from "@/pages/knowledge-base/KbDocumentTagPicker";
 import DiagnosticPackagesPanel from "@/pages/knowledge-base/DiagnosticPackagesPanel";
 import LearningCandidatesPanel from "@/pages/knowledge-base/LearningCandidatesPanel";
+import KnowledgeBasesPanel from "@/pages/knowledge-base/KnowledgeBasesPanel";
 import { BindingBadge, ParseReportPanel, PlaybackSummary } from "@/pages/knowledge-base/KnowledgeReviewPanels";
 
 // RCA Stage 2 / Phase 5 (docs/0.4.0/04-kb-contract.md) — Knowledge Base
@@ -318,9 +319,10 @@ function RulesPanel() {
 
 export default function KnowledgeBase() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const validTabs = new Set(["documents", "rules", "diagnostic-packages", "learning-candidates"]);
+  const aliases = { documents: "source-documents", rules: "source-documents", "diagnostic-packages": "knowledge-bases", "learning-candidates": "proposed-changes" };
+  const validTabs = new Set(["knowledge-bases", "proposed-changes", "source-documents"]);
   const requestedTab = searchParams.get("tab");
-  const [tab, setTab] = useState(() => validTabs.has(requestedTab) ? requestedTab : "documents");
+  const [tab, setTab] = useState(() => validTabs.has(requestedTab) ? requestedTab : aliases[requestedTab] || "knowledge-bases");
 
   const updateLocation = (updates) => {
     setSearchParams((current) => {
@@ -337,34 +339,29 @@ export default function KnowledgeBase() {
   return (
     <main className="min-h-screen bg-slate-50 p-8">
       <div className="mb-6">
-        <h1 className="flex items-center gap-2 text-2xl font-bold text-slate-950"><BookOpen className="h-6 w-6 text-dq-purple" /> Knowledge Base</h1>
+        <h1 className="flex items-center gap-2 text-2xl font-bold text-slate-950"><BookOpen className="h-6 w-6 text-dq-purple" /> Knowledge Base Library</h1>
         <p className="mt-1 text-sm text-slate-500">
-          Governed plain-English rules — structure, lineage, domain facts, ownership, and case history.
-          Nothing here is written by an AI model directly: every rule change is edited, validated, reviewed, and published by a human.
+          Find governed knowledge, see where it is consumed, and manage proposed changes and source evidence.
         </p>
       </div>
-      <div className="mb-4 flex gap-2">
-        <Button variant={tab === "documents" ? "default" : "outline"} size="sm" onClick={() => selectTab("documents")}>
-          <UploadCloud className="h-4 w-4" /> Documents
-        </Button>
-        <Button variant={tab === "rules" ? "default" : "outline"} size="sm" onClick={() => selectTab("rules")}>
-          <FileText className="h-4 w-4" /> Rules
-        </Button>
-        <Button variant={tab === "diagnostic-packages" ? "default" : "outline"} size="sm" onClick={() => selectTab("diagnostic-packages")}>
-          <BookOpen className="h-4 w-4" /> Diagnostic packages
-        </Button>
-        <Button variant={tab === "learning-candidates" ? "default" : "outline"} size="sm" onClick={() => selectTab("learning-candidates")}>
-          <BookOpen className="h-4 w-4" /> Learning candidates
-        </Button>
+      <div className="mb-4 flex flex-wrap gap-2">
+        <Button variant={tab === "knowledge-bases" ? "default" : "outline"} size="sm" onClick={() => selectTab("knowledge-bases")}><BookOpen className="h-4 w-4" /> Knowledge Bases</Button>
+        <Button variant={tab === "proposed-changes" ? "default" : "outline"} size="sm" onClick={() => selectTab("proposed-changes")}><FileText className="h-4 w-4" /> Proposed Changes</Button>
+        <Button variant={tab === "source-documents" ? "default" : "outline"} size="sm" onClick={() => selectTab("source-documents")}><UploadCloud className="h-4 w-4" /> Source Documents</Button>
       </div>
-      {tab === "documents" ? <DocumentsPanel initialDocumentId={searchParams.get("document")}
+      {tab === "knowledge-bases" ? <KnowledgeBasesPanel selectedId={searchParams.get("kb")}
+        onSelect={(knowledgeBaseId) => updateLocation({ kb: knowledgeBaseId })}
+        onOpenSource={(documentId, versionId) => { setTab("source-documents"); updateLocation({ tab: "source-documents", kb: null, document: documentId, version: versionId }); }} />
+        : tab === "source-documents" ? <DocumentsPanel initialDocumentId={searchParams.get("document")}
         initialVersionId={searchParams.get("version")}
         onSelectionChange={({ documentId, versionId }) => updateLocation({
           ...(documentId !== undefined ? { document: documentId } : {}),
           ...(versionId !== undefined ? { version: versionId } : {}),
         })} />
-        : tab === "rules" ? <RulesPanel />
-          : tab === "diagnostic-packages" ? <DiagnosticPackagesPanel /> : <LearningCandidatesPanel />}
+        : <LearningCandidatesPanel />}
     </main>
   );
 }
+
+// Compatibility export while global rule publishing is moved into KB details.
+export { RulesPanel as LegacyRulesPanel, DiagnosticPackagesPanel };

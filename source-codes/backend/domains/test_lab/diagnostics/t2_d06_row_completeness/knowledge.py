@@ -1,6 +1,6 @@
 """Governed knowledge resolver for Test 2, Diagnostic 6.
 
-The JSON package is bootstrap input only. Published KB rows are the runtime
+The YAML package is bootstrap input only. Published KB rows are the runtime
 authority; this module validates their binding to the closed Python primitive
 registry before projecting them into a frozen diagnostic manifest.
 """
@@ -15,10 +15,13 @@ from typing import Any
 
 import kb
 import system_db as db
+import yaml
+
+from domains.test_lab.shared.knowledge_provenance import validate_dsc_execution_context
 
 
 PACKAGE_DIR = Path(__file__).resolve().parents[4] / "knowledge_base"
-PACKAGE_GLOB = "row_completeness_v*.json"
+PACKAGE_GLOB = "row_completeness_v*.yaml"
 EXPECTED_RULE_IDS = tuple(f"T2D6-{number:02d}" for number in range(1, 7))
 SUPPORTED_PRIMITIVES = {
     "T2D6-01": "key_assignability",
@@ -37,6 +40,13 @@ EDITABLE_CONFIGURATION_FIELDS = {"default_reporting_grain", "default_continuity_
 EDITABLE_RULE_FIELDS = {"title", "user_help", "severity", "next_step"}
 ALLOWED_SEVERITIES = {"CRITICAL", "MATERIAL"}
 REPORTING_GRAINS = {"monthly", "quarterly", "semiannual", "annual"}
+DSC_CONSUMER_ID = "diagnostic:6:execution-v1"
+DSC_SELECTORS = {
+    "default-entity": ("table.structure/default_entity_binding", "required", ("confirmed",), "roles.facility_id"),
+    "default-temporal": ("table.temporal/default_temporal_binding", "required", ("confirmed",), "roles.period"),
+    "expected-cadence": ("table.temporal/expected_cadence", "advisory", ("confirmed",), "configuration.reporting_grain"),
+    "row-grain": ("table.structure/row_grain", "optional", ("observed", "confirmed"), "execution.row_grain"),
+}
 
 
 class RowCompletenessKnowledgeError(RuntimeError):
@@ -46,10 +56,24 @@ class RowCompletenessKnowledgeError(RuntimeError):
 def load_seed_packages() -> list[dict[str, Any]]:
     packages = []
     for path in sorted(PACKAGE_DIR.glob(PACKAGE_GLOB)):
-        package = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            package = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as exc:
+            raise RowCompletenessKnowledgeError(f"invalid YAML in {path.name}: {exc}") from exc
+        if not isinstance(package, dict):
+            raise RowCompletenessKnowledgeError(f"{path.name} must contain a YAML mapping")
         _validate_specs(package["rules"])
-        if package.get("diagnostic_id") != 6 or package.get("schema_version") != 1:
+        if package.get("diagnostic_id") != 6 or package.get("schema_version") != 2:
             raise RowCompletenessKnowledgeError(f"{path.name} has an unsupported package contract")
+        if not isinstance(package.get("metadata"), dict) or not isinstance(package.get("governance"), dict):
+            raise RowCompletenessKnowledgeError(f"{path.name} requires metadata and governance mappings")
+        try:
+            validate_dsc_execution_context(
+                package.get("execution_context"), consumer_id=DSC_CONSUMER_ID,
+                expected_selectors=DSC_SELECTORS,
+            )
+        except ValueError as exc:
+            raise RowCompletenessKnowledgeError(f"{path.name}: {exc}") from exc
         packages.append(package)
     if not packages:
         raise RowCompletenessKnowledgeError("no governed T2D6 knowledge package is installed")
@@ -180,7 +204,8 @@ def editable_template(tenant_id: str = "bootstrap") -> dict[str, Any]:
         },
         "do_not_change": [
             "schema_version", "contract_version", "diagnostic_id",
-            "methodology_version", "based_on_version_id", "rule_id", "display_order",
+            "methodology_version", "metadata", "governance", "execution_context",
+            "based_on_version_id", "rule_id", "display_order",
             "primitive", "uses_continuity_floor", "required_roles", "optional",
             "diagnostic.area/mode/stage/decision_type/workflow_status",
             "configuration.segment_optional",
@@ -201,7 +226,8 @@ def _validated_upload(uploaded: dict[str, Any], active: dict[str, Any]) -> dict[
     value = _strip_annotations(uploaded)
     allowed_top = {"schema_version", "contract_version", "diagnostic_id",
                    "based_on_version_id", "change_summary", "methodology_version",
-                   "methodology", "diagnostic", "configuration", "rules"}
+                   "metadata", "governance", "execution_context", "methodology", "diagnostic",
+                   "configuration", "rules"}
     unexpected = set(value) - allowed_top
     if unexpected:
         raise RowCompletenessKnowledgeError(
@@ -210,6 +236,9 @@ def _validated_upload(uploaded: dict[str, Any], active: dict[str, Any]) -> dict[
         raise RowCompletenessKnowledgeError(
             "based_on_version_id must match the currently active package; refresh the editor")
     for field in ("schema_version", "contract_version", "diagnostic_id", "methodology_version"):
+        if value.get(field) != active.get(field):
+            raise RowCompletenessKnowledgeError(f"{field} is fixed by the supported engine contract")
+    for field in ("metadata", "governance", "execution_context"):
         if value.get(field) != active.get(field):
             raise RowCompletenessKnowledgeError(f"{field} is fixed by the supported engine contract")
     summary = str(value.get("change_summary") or "").strip()
@@ -250,7 +279,7 @@ def _validated_upload(uploaded: dict[str, Any], active: dict[str, Any]) -> dict[
     active_rules = {rule["rule_id"]: rule for rule in active["rules"]}
     for rule in rules:
         if not isinstance(rule, dict):
-            raise RowCompletenessKnowledgeError("every rule must be a JSON object")
+            raise RowCompletenessKnowledgeError("every rule must be a YAML mapping")
         current = active_rules.get(rule.get("rule_id"))
         if current is None or set(rule) != set(current):
             raise RowCompletenessKnowledgeError("rule fields and rule IDs cannot be added or removed")
@@ -270,12 +299,37 @@ def _validated_upload(uploaded: dict[str, Any], active: dict[str, Any]) -> dict[
 
 def seed_package(tenant_id: str = "bootstrap") -> dict[str, Any]:
     packages = load_seed_packages()
-    outcomes = [kb.ensure_system_diagnostic_package(package, tenant_id=tenant_id)
+    outcomes = [kb.ensure_system_diagnostic_package(
+                    package, tenant_id=tenant_id,
+                    source_filename=f"row_completeness_v{package['version_seq']}.yaml",
+                    source_media_type="application/yaml")
                 for package in packages]
     for package, package_outcome in zip(packages, outcomes, strict=True):
         _register_seed_package(package, package_outcome, tenant_id)
     active = db.query_one("diagnostic_kb_packages", tenant_id=tenant_id,
                           diagnostic_id=6, lifecycle_state="active")
+    if active is not None and (active.get("package_json") or {}).get("schema_version") != 2:
+        latest = db.query_one(
+            "diagnostic_kb_packages", tenant_id=tenant_id,
+            diagnostic_id=6, version_id=packages[-1]["version_id"],
+        )
+        now = db.now_ist()
+        with db.get_conn() as conn:
+            conn.execute(
+                "UPDATE diagnostic_kb_packages SET lifecycle_state='superseded' "
+                "WHERE package_id=? AND lifecycle_state='active'", (active["package_id"],),
+            )
+            conn.execute(
+                "UPDATE kb_rules SET lifecycle_state='superseded', updated_at=? "
+                "WHERE version_id=? AND lifecycle_state='published'", (now, active["version_id"]),
+            )
+            conn.execute(
+                "UPDATE diagnostic_kb_packages SET lifecycle_state='active', "
+                "activation_reason=?, activated_at=? WHERE package_id=?",
+                ("MVP YAML contract baseline", now, latest["package_id"]),
+            )
+            conn.commit()
+        active = _active_row(tenant_id)
     if active is None:
         latest = db.query_one("diagnostic_kb_packages", tenant_id=tenant_id,
                               diagnostic_id=6, version_id=packages[-1]["version_id"])
@@ -348,13 +402,15 @@ def list_package_versions(tenant_id: str = "bootstrap") -> dict[str, Any]:
 def upload_package_draft(content: bytes, filename: str, actor: str,
                          tenant_id: str = "bootstrap") -> dict[str, Any]:
     if len(content) > 2 * 1024 * 1024:
-        raise RowCompletenessKnowledgeError("diagnostic package JSON must not exceed 2 MB")
+        raise RowCompletenessKnowledgeError("diagnostic package YAML must not exceed 2 MB")
+    if not filename.lower().endswith((".yaml", ".yml")):
+        raise RowCompletenessKnowledgeError("diagnostic package must be a YAML file")
     try:
-        uploaded = json.loads(content.decode("utf-8-sig"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise RowCompletenessKnowledgeError(f"invalid JSON: {exc}") from exc
+        uploaded = yaml.safe_load(content.decode("utf-8-sig"))
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise RowCompletenessKnowledgeError(f"invalid YAML: {exc}") from exc
     if not isinstance(uploaded, dict):
-        raise RowCompletenessKnowledgeError("the uploaded package must be a JSON object")
+        raise RowCompletenessKnowledgeError("the uploaded package must be a YAML mapping")
     seed_package(tenant_id)
     active_row = _active_row(tenant_id)
     validated = _validated_upload(uploaded, active_row["package_json"])
@@ -375,11 +431,11 @@ def upload_package_draft(content: bytes, filename: str, actor: str,
     db.insert("kb_document_versions", {
         "version_id": version_id, "document_id": active_row["document_id"],
         "version_seq": version_seq, "original_filename": filename,
-        "original_media_type": "application/json", "original_sha256": package_hash,
+        "original_media_type": "application/yaml", "original_sha256": package_hash,
         "original_bytes_ref": None, "original_size": len(content),
         "converted_markdown": markdown,
         "converted_markdown_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
-        "converter_name": "diagnostic-package-json", "converter_version": "1",
+        "converter_name": "diagnostic-package-yaml", "converter_version": "1",
         "conversion_warnings_json": [], "conversion_report_json": validation,
         "review_state": "pending_review", "reviewer": None, "reviewed_at": None,
         "created_by": actor, "created_at": now,
@@ -407,7 +463,7 @@ def upload_package_draft(content: bytes, filename: str, actor: str,
         "created_at": now, "reviewed_by": None, "reviewed_at": None,
         "activation_reason": None, "activated_at": None,
     })
-    creation_channel = "live_editor" if filename == "row-completeness-live-editor.json" else "json_upload"
+    creation_channel = "live_editor" if filename == "row-completeness-live-editor.yaml" else "yaml_upload"
     db.insert("transaction_log", {"ts": now, "actor": actor,
         "event": "diagnostic_knowledge_draft_created", "payload": {
             "diagnostic_id": 6, "version_id": version_id,
@@ -500,6 +556,9 @@ def resolve_package(tenant_id: str = "bootstrap", case_id: str | None = None) ->
         "retrieval_manifest_id": retrieval["manifest_id"],
         "methodology": package["methodology_version"],
         "methodology_summary": package["methodology"],
+        "metadata": package["metadata"],
+        "governance": package["governance"],
+        "execution_context": package["execution_context"],
         "diagnostic": package["diagnostic"],
         "configuration": package["configuration"],
         "rules": specs,

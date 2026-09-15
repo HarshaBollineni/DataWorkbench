@@ -456,7 +456,7 @@ CREATE TABLE IF NOT EXISTS rca_cases (
     state TEXT NOT NULL, part TEXT,
     tag_snapshot_json TEXT, complaint_text TEXT,
     created_by TEXT, created_at TEXT, updated_at TEXT, closed_at TEXT,
-    contract_version TEXT DEFAULT '1'
+    contract_version TEXT DEFAULT '1', workflow_generation INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS rca_state_transitions (
     id TEXT PRIMARY KEY, case_id TEXT NOT NULL, prev_state TEXT, new_state TEXT,
@@ -541,6 +541,16 @@ CREATE TABLE IF NOT EXISTS rca_audit_events (
     event_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, actor TEXT, event_type TEXT,
     object_type TEXT, object_id TEXT, before_json TEXT, after_json TEXT,
     reason TEXT, ts TEXT
+);
+-- RCA workflow index into the immutable Analytics Artifact Repository. The
+-- evidence payload, integrity hash, and lineage remain owned by AAR; this row
+-- only gives a case generation a stable, ordered view of its evidence.
+CREATE TABLE IF NOT EXISTS rca_aar_links (
+    case_id TEXT NOT NULL, workflow_generation INTEGER NOT NULL,
+    sequence_no INTEGER NOT NULL, artifact_id TEXT NOT NULL UNIQUE,
+    evidence_kind TEXT NOT NULL, stage TEXT NOT NULL, status TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (case_id, workflow_generation, sequence_no)
 );
 -- Phase 3 (0.4.0) — the diagnostic register + framework taxonomy + test areas
 -- (docs/0.4.0/00-framework.md, FWK-04/17/18). Seeded as data by
@@ -1070,6 +1080,7 @@ _WORKPRODUCT_TABLES = [
     "analysis_artifacts",
     "analysis_artifact_events",
     "analysis_artifact_sources",
+    "rca_aar_links",
     "diag_binning_revisions",
     "analysis_manifests", "analysis_observations", "analysis_observation_dispositions",
 ]
@@ -1421,6 +1432,9 @@ def _migrate_technical_row_id_publication_state(conn: sqlite3.Connection) -> Non
 # Lightweight additive migrations for existing DB files (ALTER is idempotent-
 # guarded by an introspection check). Keyed table -> {column: DDL type}.
 _MIGRATIONS: dict[str, dict[str, str]] = {
+    "rca_cases": {
+        "workflow_generation": "INTEGER NOT NULL DEFAULT 1",
+    },
     "dataset_structure_review_idempotency": {
         # Slice 2 originally shipped this tenant-keyed replay ledger without
         # snapshot ownership. Current draft/decision writes and surgical
@@ -2083,6 +2097,7 @@ def init_schema() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS ix_rca_fix_approvals_proposal ON rca_fix_approvals(fix_proposal_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_rca_audit_events_object ON rca_audit_events(object_type, object_id, ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_rca_audit_events_case ON rca_audit_events(tenant_id, ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_rca_aar_links_case ON rca_aar_links(case_id, workflow_generation, sequence_no)")
         # Plan 6 — retire the old 'lovelace' agent row (renamed to 'newton');
         # seed_agents re-inserts 'newton'. Idempotent and cheap.
         conn.execute("DELETE FROM agent_skills WHERE agent_key='lovelace'")
@@ -2678,6 +2693,7 @@ def wipe_development_artifacts() -> dict:
         deletion_plan = [
             ("analysis_observation_dispositions", {"observation_id": observation_ids}),
             ("analysis_observations", {"observation_id": observation_ids}),
+            ("rca_aar_links", {"case_id": case_ids, "artifact_id": artifact_ids}),
             ("analysis_artifact_events", {"artifact_id": artifact_ids}),
             ("analysis_artifact_sources", {"artifact_id": artifact_ids,
                                            "source_artifact_id": artifact_ids}),
@@ -2875,6 +2891,7 @@ def wipe_diagnostics(selected_run_ids: set[str] | None = None) -> dict:
         deletion_plan = [
             ("analysis_observation_dispositions", {"observation_id": observation_ids}),
             ("analysis_observations", {"observation_id": observation_ids}),
+            ("rca_aar_links", {"case_id": case_ids, "artifact_id": artifact_ids}),
             ("analysis_artifact_events", {"artifact_id": artifact_ids}),
             ("analysis_artifact_sources", {"artifact_id": artifact_ids,
                                            "source_artifact_id": artifact_ids}),

@@ -17,12 +17,17 @@ from domains.test_lab.diagnostics.t2_d11_directional_monotonic_consistency.adjud
 )
 
 
-def test_configuration_prefers_t2_d11_experiment_dotenv(tmp_path, monkeypatch):
-    experiment_env = tmp_path / ".env"
-    experiment_env.touch()
-    monkeypatch.delenv(adjudication.ENV_PATH_VARIABLE, raising=False)
-    monkeypatch.setattr(adjudication, "_experiment_env_path", lambda: experiment_env)
-    monkeypatch.setattr(adjudication, "_backend_env_path", lambda: tmp_path / "backend.env")
+def test_configuration_uses_application_dotenv_with_runtime_override(tmp_path, monkeypatch):
+    backend_env = tmp_path / ".env"
+    backend_env.touch()
+    monkeypatch.setattr(adjudication, "_backend_env_path", lambda: backend_env)
+    for key in (
+        "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY", "OPENAI_API_KEY",
+        "AZURE_OPENAI_DEPLOYMENT", "OPENAI_MODEL", "AZURE_OPENAI_API_VERSION",
+        "AI_MAX_RETRIES",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("AI_REQUEST_TIMEOUT", "37")
     monkeypatch.setattr(adjudication, "dotenv_values", lambda path: {
         "AZURE_OPENAI_ENDPOINT": "https://unit-test.openai.azure.com/openai/v1/responses",
         "AZURE_OPENAI_API_KEY": "non-secret-unit-test-key",
@@ -39,19 +44,19 @@ def test_configuration_prefers_t2_d11_experiment_dotenv(tmp_path, monkeypatch):
         "api_key": "non-secret-unit-test-key",
         "model": "experiment-deployment",
         "api_version": "v1",
-        "timeout": 31.0,
+        "timeout": 37.0,
         "max_retries": 2,
-        "configuration_source": "t2_d11_experiment_dotenv",
+        "configuration_source": "application_dotenv",
     }
     assert adjudication.configuration_metadata() == {
         "model": "experiment-deployment",
         "provider": "azure_openai_v1",
         "provider_api_version": "v1",
-        "configuration_source": "t2_d11_experiment_dotenv",
+        "configuration_source": "application_dotenv",
     }
 
 
-def test_adjudicate_uses_experiment_responses_structured_output(monkeypatch):
+def test_adjudicate_uses_responses_structured_output(monkeypatch):
     configuration = {
         "endpoint": "https://unit-test.openai.azure.com/openai/v1/responses?api-version=preview",
         "api_key": "non-secret-unit-test-key",
@@ -59,7 +64,7 @@ def test_adjudicate_uses_experiment_responses_structured_output(monkeypatch):
         "api_version": "v1",
         "timeout": 45.0,
         "max_retries": 1,
-        "configuration_source": "t2_d11_experiment_dotenv",
+        "configuration_source": "application_dotenv",
     }
     constructor_args: dict[str, object] = {}
     request_args: dict[str, object] = {}

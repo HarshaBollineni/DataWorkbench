@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from domains.test_lab.shared.knowledge_provenance import validate_dsc_execution_context
+
 
 TERMINOLOGY_MAPPING_SECTIONS = (
     "domain_acronyms",
@@ -21,6 +23,13 @@ TERMINOLOGY_MAPPING_SECTIONS = (
     "macroeconomic_terms",
     "common_compound_terms",
 )
+
+DSC_SELECTORS = {
+    "default-entity": ("table.structure/default_entity_binding", "required", ("confirmed",), "roles.entity_id"),
+    "default-temporal": ("table.temporal/default_temporal_binding", "required", ("confirmed",), "roles.period"),
+    "expected-cadence": ("table.temporal/expected_cadence", "advisory", ("confirmed",), "execution.expected_cadence"),
+    "row-grain": ("table.structure/row_grain", "optional", ("observed", "confirmed"), "execution.row_grain"),
+}
 
 
 def _read_yaml(path: str | Path, resource_name: str) -> dict[str, Any]:
@@ -44,9 +53,16 @@ def _unique(values: list[str], label: str) -> None:
 
 def load_value_semantics_kb(path: str | Path) -> dict[str, Any]:
     kb = _read_yaml(path, "value-semantics Knowledge Base")
-    for key in ("metadata", "conventions", "matching_contract", "semantic_roles", "rules"):
+    for key in ("schema_version", "metadata", "governance", "execution_context", "conventions", "matching_contract",
+                "semantic_roles", "rules"):
         if key not in kb:
             raise ValueError(f"Value-semantics Knowledge Base requires {key!r}")
+    if kb["schema_version"] != 2 or not isinstance(kb["governance"], dict):
+        raise ValueError("Value-semantics Knowledge Base requires the YAML schema v2 governance envelope")
+    validate_dsc_execution_context(
+        kb["execution_context"], consumer_id="diagnostic:8:execution-v1",
+        expected_selectors=DSC_SELECTORS,
+    )
 
     roles = kb["semantic_roles"]
     if not isinstance(roles, list) or not roles:
@@ -141,4 +157,3 @@ def expand_implied_roles(roles: list[str] | set[str] | tuple[str, ...], kb: Mapp
                 expanded.append(implied)
         index += 1
     return expanded
-

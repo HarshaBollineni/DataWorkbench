@@ -1096,7 +1096,9 @@ def ensure_system_reference_document(*, tenant_id: str, document_id: str,
 
 
 def ensure_system_diagnostic_package(package: dict, tenant_id: str = "bootstrap",
-                                     actor: str = "system-kb-seed") -> dict:
+                                     actor: str = "system-kb-seed", *,
+                                     source_filename: str = "diagnostic-package.yaml",
+                                     source_media_type: str = "application/yaml") -> dict:
     """Install an immutable, reviewed built-in diagnostic package once.
 
     This is the sole exceptional publication path for source-controlled system
@@ -1139,8 +1141,8 @@ def ensure_system_diagnostic_package(package: dict, tenant_id: str = "bootstrap"
     s.insert("kb_document_versions", {
         "version_id": version_id, "document_id": document_id,
         "version_seq": package["version_seq"],
-        "original_filename": "row_completeness_v1.json",
-        "original_media_type": "application/json", "original_sha256": package_hash,
+        "original_filename": source_filename,
+        "original_media_type": source_media_type, "original_sha256": package_hash,
         "original_bytes_ref": None, "original_size": len(canonical.encode("utf-8")),
         "converted_markdown": markdown,
         "converted_markdown_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),

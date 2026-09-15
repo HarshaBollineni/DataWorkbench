@@ -199,3 +199,108 @@ test("RCA case is reached only through the existing Issue RCA screen, no second 
   const navLinks = await page.locator("nav a").allTextContents();
   expect(navLinks.filter((t) => /rca/i.test(t))).toHaveLength(0);
 });
+
+test("RCA uses four pages and warns before starting afresh", async ({ page }) => {
+  await signIn(page);
+
+  const issueRowId = "issue-ui-four-page";
+  const baseCase = {
+    case_id: "rca-ui-four-page",
+    issue_row_id: issueRowId,
+    table_name: "applications",
+    state: "intake",
+    workflow_generation: 1,
+    created_at: "2026-09-15T10:00:00+05:30",
+    created_by: "anirban",
+    case_file: { checklist_json: { test_name: "Row completeness", table_name: "applications" } },
+    looks: [], executions: {}, suspects: [], hypotheses: [], confirmation_checks: [],
+    judge_decisions: {}, closure: null, transitions: [], audit_events: [],
+    aar_evidence: [{
+      artifact_id: "art-context-g1", artifact_type: "rca_case_context",
+      evidence_kind: "case_context_created", stage: "intake", status: "recorded",
+      recorded_at: "2026-09-15T10:00:00+05:30", payload: { actor: "anirban" },
+    }],
+  };
+  let currentCase = structuredClone(baseCase);
+
+  await page.route(`**/api/v2/issues/${issueRowId}`, (route) => route.fulfill({ json: {
+    issue_row_id: issueRowId,
+    workflow_version: "rca",
+    test_name: "Row completeness",
+    item_name: "Credit applications",
+    table_name: "applications",
+    columns: ["facility_id"],
+    criticality: "High",
+    metric: 0.72,
+    source_evidence: {
+      result_id: "result-four-page",
+      diagnostic_id: 6,
+      entity_or_table: "applications",
+      finding: { rule_text: "Expected facility-period rows are missing.", violation_count: 28 },
+      metrics: { observed_completeness: 0.72 },
+    },
+  }}));
+  await page.route(`**/api/v3/issues/${issueRowId}/tags`, (route) => route.fulfill({ json: [] }));
+  await page.route(`**/api/v3/issues/${issueRowId}/rca/case`, (route) => route.fulfill({ json: currentCase }));
+  await page.route("**/api/v3/rca/cases/rca-ui-four-page/opening-look", (route) => {
+    currentCase = {
+      ...currentCase,
+      state: "initial_review_complete",
+      looks: [{ look_id: "look-initial", kind: "opening", sql_or_helper_ref: "profile_column" }],
+      executions: { "look-initial": { execution_id: "exec-initial", look_id: "look-initial", executed_at: "2026-09-15T10:01:00+05:30", summary_json: { found: true, column: "facility_id", distinct: 72, null_share: 0 } } },
+      aar_evidence: [
+        ...currentCase.aar_evidence,
+        { artifact_id: "art-static-start", evidence_kind: "static_initial_review", stage: "initial_review", status: "started", recorded_at: "2026-09-15T10:00:30+05:30", payload: { actor: "anirban" } },
+        { artifact_id: "art-static-complete", evidence_kind: "static_initial_review", stage: "initial_review", status: "completed", recorded_at: "2026-09-15T10:01:00+05:30", payload: { actor: "anirban" } },
+        { artifact_id: "art-llm-start", evidence_kind: "llm_initial_review", stage: "initial_review", status: "started", recorded_at: "2026-09-15T10:01:01+05:30", payload: { actor: "anirban" } },
+        { artifact_id: "art-llm-complete", evidence_kind: "llm_initial_review", stage: "initial_review", status: "completed", recorded_at: "2026-09-15T10:01:10+05:30", details: {
+          output: {
+            summary: "The deterministic evidence shows the expected facility identifier is present in the retained snapshot.",
+            observed_signals: ["The opening profile found 72 distinct identifiers."],
+            candidate_hypotheses: [{ statement: "The row gap may originate before this snapshot.", evidence_basis: "The retained column itself is populated.", testable_next_step: "Compare expected and observed business keys." }],
+            limitations: ["A column profile cannot establish upstream lineage."],
+            recommended_next_steps: ["Run a governed key-coverage comparison."],
+          },
+          selected_model: { model_name: "gpt-5.6-sol", model_version: "2026-07-09" },
+        } },
+      ],
+    };
+    return route.fulfill({ json: currentCase });
+  });
+  await page.route("**/api/v3/rca/cases/rca-ui-four-page/start-afresh", (route) => {
+    currentCase = {
+      ...baseCase, workflow_generation: 2, audit_events: [{ event_type: "rca_reset" }],
+      aar_evidence: [
+        { artifact_id: "art-context-g2", evidence_kind: "case_context_created", stage: "intake", status: "recorded", recorded_at: "2026-09-15T10:02:00+05:30", payload: { actor: "anirban" } },
+        { artifact_id: "art-reset-g2", evidence_kind: "workflow_reset", stage: "system", status: "completed", recorded_at: "2026-09-15T10:02:01+05:30", payload: { actor: "anirban" } },
+      ],
+    };
+    return route.fulfill({ json: currentCase });
+  });
+
+  await page.goto(`/issues/${issueRowId}`);
+  for (const label of ["1. Intake", "2. Initial Review", "3. Investigate", "4. Closure"]) {
+    await expect(page.getByRole("button", { name: label })).toBeVisible();
+  }
+  await expect(page.getByTestId("rca-intake-evidence")).toBeVisible();
+
+  await page.getByRole("button", { name: /Start initial review/ }).first().click();
+  await expect(page.getByRole("heading", { name: "Initial review" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Profile the affected feature" })).toBeVisible();
+  await expect(page.getByTestId("rca-llm-initial-review")).toContainText("gpt-5.6-sol");
+  await expect(page.getByTestId("rca-llm-initial-review")).toContainText("The row gap may originate before this snapshot.");
+  await page.getByText("Activity (5)").click();
+  await expect(page.getByText("AAR art-static-complete", { exact: false })).toBeVisible();
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("permanently lost");
+    await dialog.dismiss();
+  });
+  await page.getByRole("button", { name: "Start afresh" }).click();
+  await expect(page.getByRole("heading", { name: "Initial review" })).toBeVisible();
+
+  page.once("dialog", async (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Start afresh" }).click();
+  await expect(page.getByRole("button", { name: "1. Intake" })).toHaveAttribute("aria-current", "step");
+  await expect(page.getByText("The initial review has not run yet.")).toHaveCount(0);
+});

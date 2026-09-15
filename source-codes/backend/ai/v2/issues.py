@@ -278,8 +278,8 @@ def _present(row: dict, item: dict | None = None) -> dict:
         state = case.get("state")
         if state in {"created", "triage", "intake"}:
             stage = "Intake"
-        elif state == "opening_looks":
-            stage = "Initial checks"
+        elif state in {"opening_looks", "initial_review_complete"}:
+            stage = "Initial Review"
         elif state in {"awaiting_fix_approval", "all_hypotheses_rejected", "closed", "unresolved"}:
             stage = "Conclusion approval"
         else:

@@ -307,10 +307,10 @@ test("observed results group by immutable empirical classification", () => {
 
 test("reference and segmentation fields cannot also enter the analysis scope", () => {
   const rows = [
-    { feature: "target", numeric: true, classification_source: "KB_V0_3_EXACT" },
-    { feature: "segment", numeric: true, classification_source: "KB_V0_3_EXACT" },
-    { feature: "ltv", numeric: true, classification_source: "KB_V0_3_EXACT" },
-    { feature: "label", numeric: false, classification_source: "KB_V0_3_EXACT" },
+    { feature: "target", numeric: true, classification_source: "KB_EXACT" },
+    { feature: "segment", numeric: true, classification_source: "KB_EXACT" },
+    { feature: "ltv", numeric: true, classification_source: "KB_EXACT" },
+    { feature: "label", numeric: false, classification_source: "KB_EXACT" },
   ];
   assert.deepEqual(scopeCandidates(rows, "target", "segment").map((row) => row.feature), ["ltv"]);
   assert.deepEqual(suggestedScope(rows, "target", "segment"), ["ltv"]);

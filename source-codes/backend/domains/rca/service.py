@@ -15,12 +15,11 @@ module is a better fit for this stage's actual size than a package of
 one-function files. Function names below are grouped and commented to match
 each agent's role from the contract.
 
-Deterministic throughout, by design: MP §14 Stage 3 says "do not require
-generated helper code for the first slice" and "add deterministic fake
-agents for automated tests" — this module IS that deterministic
-implementation, not a stand-in for a live-model one. No Azure OpenAI call is
-required anywhere in this file or its tests (contracts §0/testing posture:
-"do not make billable live model calls without explicit authorization").
+The workflow retains deterministic state transitions and analysis execution.
+Initial Review now adds a governed live-model interpretation after the static
+opening evidence; automated tests disable or fake that boundary so validation
+never creates billable calls. Later investigation stages remain deterministic
+until their agent-driven slices are migrated deliberately.
 
 Note: the legacy `ai/rca_helpers.py` module is NOT reused here — it imports
 `from database import TABLE_KEYS`, and `database.py` was retired from this
@@ -39,6 +38,7 @@ import system_db as s
 import taxonomy
 import tenancy
 from ai.v2 import service as v2_service
+from domains.rca import evidence as rca_evidence
 
 DEFAULT_TENANT = tenancy.DEFAULT_TENANT
 
@@ -105,7 +105,8 @@ ALLOWED_NEXT: dict[str, set[str]] = {
     "created": {"triage"},
     "triage": {"intake"},
     "intake": {"opening_looks"},
-    "opening_looks": {"investigation_loop"},
+    "opening_looks": {"initial_review_complete"},
+    "initial_review_complete": {"investigation_loop"},
     "investigation_loop": {"awaiting_human_answer", "coverage_challenge_blind", "hypothesis_composition"},
     "awaiting_human_answer": {"investigation_loop"},
     "coverage_challenge_blind": {"coverage_challenge_history"},
@@ -142,7 +143,7 @@ ALLOWED_NEXT: dict[str, set[str]] = {
 # they may all hand off to an approved conclusion without pretending that a fix
 # was applied or requiring a diagnostic rerun.
 _CONCLUSION_READY_STATES = {
-    "opening_looks", "investigation_loop", "awaiting_human_answer",
+    "intake", "opening_looks", "initial_review_complete", "investigation_loop", "awaiting_human_answer",
     "coverage_challenge_blind", "coverage_challenge_history",
     "reopened_kill_attempt", "hypothesis_composition", "ready_for_verification",
     "verification_planning", "confirmation_checks", "judging",
@@ -235,6 +236,18 @@ def _infer_test_family(test_name: str) -> str:
     return "missing_data"  # the only family Stage 4's opening looks implement content for
 
 
+def _ensure_case_context(case: dict) -> str:
+    """Publish (or reuse) the immutable Intake evidence for this generation."""
+    from ai.v2 import issues as issues_service
+
+    case_file = s.query_one("rca_case_files", case_id=case["case_id"])
+    if not case_file:
+        raise RcaError("RCA case intake is not complete")
+    issue = issues_service.get_issue(case["issue_row_id"])
+    item = v2_service.require_item(case["item_id"])
+    return rca_evidence.ensure_case_context(case, case_file, issue, item)
+
+
 # --- Triage (Agent 0) ----------------------------------------------------------
 # contracts.md §0 rules: two-signal grouping (same lineage/time window AND
 # similar symptom shape — one signal alone keeps failures separate).
@@ -285,13 +298,17 @@ def create_case_from_issue(issue_row_id: str, actor: str, tenant_id: str = DEFAU
         # transient states rather than handing back a half-built snapshot;
         # bounded so a genuinely stuck case (a bug elsewhere) still returns
         # promptly instead of hanging.
-        if existing["state"] in {"created", "triage", "intake"}:
+        if existing["state"] in {"created", "triage"}:
             import time
             for _ in range(20):
                 time.sleep(0.05)
                 existing = s.query_one("rca_cases", case_id=existing["case_id"], tenant_id=tenant_id)
-                if existing["state"] not in {"created", "triage", "intake"}:
+                if existing["state"] not in {"created", "triage"}:
                     break
+        if existing["state"] not in {"created", "triage"} and s.query_one(
+            "rca_case_files", case_id=existing["case_id"]
+        ):
+            _ensure_case_context(existing)
         return existing
     issue = s.query_one("issues_v2", issue_row_id=issue_row_id)
     if not issue:
@@ -318,7 +335,7 @@ def create_case_from_issue(issue_row_id: str, actor: str, tenant_id: str = DEFAU
         "item_id": issue["item_id"], "table_name": issue["table_name"],
         "state": "created", "part": "A", "tag_snapshot_json": tag_snapshot,
         "complaint_text": None, "created_by": actor, "created_at": now, "updated_at": now,
-        "closed_at": None, "contract_version": "1",
+        "closed_at": None, "contract_version": "1", "workflow_generation": 1,
     })
     _audit(tenant_id, actor, "agent_invocation", "rca_case", case_id, after={"issue_row_id": issue_row_id})
 
@@ -342,8 +359,139 @@ def create_case_from_issue(issue_row_id: str, actor: str, tenant_id: str = DEFAU
         "schema_snapshot_json": v2_service._inventory_map(issue["item_id"], issue["table_name"]),
         "tags_snapshot_json": tag_snapshot, "complaint_json": None, "created_at": now,
     })
-    transition(case_id, "opening_looks", actor, tenant_id=tenant_id)
-    return require_case(case_id, tenant_id)
+    case = require_case(case_id, tenant_id)
+    _ensure_case_context(case)
+    return case
+
+
+def start_afresh(case_id: str, actor: str, confirmed: bool,
+                  tenant_id: str = DEFAULT_TENANT) -> dict:
+    """Discard derived RCA work and return the existing case to blank Intake.
+
+    The source issue, immutable intake file, failure-group membership, and case
+    identity remain. A monotonically increasing generation fences off late
+    results from work started before the reset. The only retained history of
+    the discarded work is the required reset marker itself.
+    """
+    if not confirmed:
+        raise RcaError("Starting afresh requires explicit confirmation.")
+    case = require_case(case_id, tenant_id)
+    if case["state"] == "closed" or s.query_one("rca_closures", case_id=case_id):
+        raise RcaError("A closed RCA cannot be reset. Reopen it before starting afresh.")
+
+    now = s.now_ist()
+    previous_generation = int(case.get("workflow_generation") or 1)
+    with s.get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        looks = s.query("rca_looks", conn=conn, case_id=case_id)
+        look_ids = [row["look_id"] for row in looks]
+        executions = [dict(row) for row in conn.execute(
+            "SELECT execution.* FROM rca_look_executions execution "
+            "JOIN rca_looks look ON look.look_id = execution.look_id WHERE look.case_id = ?",
+            (case_id,),
+        ).fetchall()]
+        suspects = s.query("rca_suspects", conn=conn, case_id=case_id)
+        suspect_ids = [row["suspect_id"] for row in suspects]
+        hypotheses = s.query("rca_hypotheses", conn=conn, case_id=case_id)
+        hypothesis_ids = [row["hypothesis_id"] for row in hypotheses]
+        checks = [dict(row) for row in conn.execute(
+            "SELECT check_row.* FROM rca_confirmation_checks check_row "
+            "JOIN rca_hypotheses hypothesis ON hypothesis.hypothesis_id = check_row.hypothesis_id "
+            "WHERE hypothesis.case_id = ?", (case_id,),
+        ).fetchall()]
+        check_ids = [row["check_id"] for row in checks]
+        judges = [dict(row) for row in conn.execute(
+            "SELECT decision.* FROM rca_judge_decisions decision "
+            "JOIN rca_confirmation_checks check_row ON check_row.check_id = decision.check_id "
+            "JOIN rca_hypotheses hypothesis ON hypothesis.hypothesis_id = check_row.hypothesis_id "
+            "WHERE hypothesis.case_id = ?", (case_id,),
+        ).fetchall()]
+        proposals = [dict(row) for row in conn.execute(
+            "SELECT proposal.* FROM rca_fix_proposals proposal "
+            "JOIN rca_hypotheses hypothesis ON hypothesis.hypothesis_id = proposal.hypothesis_id "
+            "WHERE hypothesis.case_id = ?", (case_id,),
+        ).fetchall()]
+        proposal_ids = [row["id"] for row in proposals]
+        approvals = [dict(row) for row in conn.execute(
+            "SELECT approval.* FROM rca_fix_approvals approval "
+            "JOIN rca_fix_proposals proposal ON proposal.id = approval.fix_proposal_id "
+            "JOIN rca_hypotheses hypothesis ON hypothesis.hypothesis_id = proposal.hypothesis_id "
+            "WHERE hypothesis.case_id = ?", (case_id,),
+        ).fetchall()]
+        questions = s.query("rca_human_questions", conn=conn, case_id=case_id)
+        coverage = s.query("rca_coverage_passes", conn=conn, case_id=case_id)
+        accounting = s.query("rca_symptom_accounting", conn=conn, case_id=case_id)
+
+        def delete_ids(table: str, column: str, values: list[str]) -> int:
+            if not values:
+                return 0
+            placeholders = ",".join("?" for _ in values)
+            return conn.execute(
+                f'DELETE FROM "{table}" WHERE "{column}" IN ({placeholders})', values
+            ).rowcount
+
+        discarded = {
+            "fix_approvals": delete_ids("rca_fix_approvals", "id", [row["id"] for row in approvals]),
+            "fix_proposals": delete_ids("rca_fix_proposals", "id", proposal_ids),
+            "judge_decisions": delete_ids("rca_judge_decisions", "id", [row["id"] for row in judges]),
+            "confirmation_checks": delete_ids("rca_confirmation_checks", "check_id", check_ids),
+            "hypotheses": delete_ids("rca_hypotheses", "hypothesis_id", hypothesis_ids),
+            "suspect_history": delete_ids("rca_suspect_history", "suspect_id", suspect_ids),
+            "suspects": delete_ids("rca_suspects", "suspect_id", suspect_ids),
+            "look_executions": delete_ids("rca_look_executions", "execution_id", [row["execution_id"] for row in executions]),
+            "looks": delete_ids("rca_looks", "look_id", look_ids),
+            "human_questions": delete_ids("rca_human_questions", "id", [row["id"] for row in questions]),
+            "coverage_passes": delete_ids("rca_coverage_passes", "id", [row["id"] for row in coverage]),
+            "symptom_accounting": delete_ids("rca_symptom_accounting", "id", [row["id"] for row in accounting]),
+        }
+
+        related_object_ids = {
+            case_id, *look_ids, *[row["execution_id"] for row in executions], *suspect_ids,
+            *hypothesis_ids, *check_ids, *[row["id"] for row in judges], *proposal_ids,
+            *[row["id"] for row in approvals],
+        }
+        delete_ids("rca_audit_events", "object_id", list(related_object_ids))
+        conn.execute('DELETE FROM rca_state_transitions WHERE case_id = ?', (case_id,))
+        conn.execute('DELETE FROM rca_closures WHERE case_id = ?', (case_id,))
+        s.update("rca_case_files", {"case_id": case_id}, {"complaint_json": None}, conn=conn)
+        s.update("rca_cases", {"case_id": case_id}, {
+            "state": "intake", "part": "A", "complaint_text": None,
+            "updated_at": now, "closed_at": None,
+            "workflow_generation": previous_generation + 1,
+        }, conn=conn)
+        s.insert("rca_state_transitions", {
+            "id": _id("trs"), "case_id": case_id, "prev_state": case["state"],
+            "new_state": "intake", "actor": actor, "reason": "start afresh",
+            "evidence_ids_json": [], "ts": now,
+            "workflow_version": "rca", "contract_version": "1",
+        }, conn=conn)
+        s.insert("rca_audit_events", {
+            "event_id": _id("aud"), "tenant_id": tenant_id, "actor": actor,
+            "event_type": "rca_reset", "object_type": "rca_case", "object_id": case_id,
+            "before_json": {"state": case["state"], "workflow_generation": previous_generation},
+            "after_json": {"state": "intake", "workflow_generation": previous_generation + 1,
+                           "discarded": discarded},
+            "reason": "User confirmed permanent loss of current RCA details.", "ts": now,
+        }, conn=conn)
+        conn.commit()
+    # The user chose destructive restart: prior RCA-owned AAR payloads are
+    # removed, then the retained source issue is pinned into a fresh immutable
+    # generation with one reset decision marker. Diagnostic source artifacts
+    # are lineage inputs and are never deleted here.
+    rca_evidence.discard_case_evidence(case_id)
+    refreshed = require_case(case_id, tenant_id)
+    context_id = _ensure_case_context(refreshed)
+    rca_evidence.record_event(
+        refreshed, evidence_kind="workflow_reset", stage="system", status="completed",
+        actor=actor, source_artifact_ids=(context_id,), details={
+            "previous_state": case["state"],
+            "previous_workflow_generation": previous_generation,
+            "workflow_generation": previous_generation + 1,
+            "discarded": discarded,
+            "decision": "User confirmed permanent loss of current RCA details.",
+        },
+    )
+    return get_case(case_id, tenant_id)
 
 
 def get_case(case_id: str, tenant_id: str = DEFAULT_TENANT) -> dict:
@@ -370,13 +518,16 @@ def get_case(case_id: str, tenant_id: str = DEFAULT_TENANT) -> dict:
                     if event.get("object_type") == "rca_case" and event.get("object_id") == case_id]
     conclusion_events = [event for event in audit_events
                          if event.get("event_type") == "conclusion_approved"]
+    aar_evidence = rca_evidence.list_case_evidence(
+        case_id, int(case.get("workflow_generation") or 1)
+    )
     return {**case, "case_file": case_file, "looks": looks, "executions": executions,
            "suspects": suspects, "hypotheses": hypotheses, "confirmation_checks": checks,
            "judge_decisions": judge_decisions, "confirmed_hypothesis": _confirmed_hypothesis(case_id),
            "symptom_accounting": accounting[-1] if accounting else None,
            "closure": closure, "transitions": transitions,
            "conclusion": conclusion_events[-1].get("after_json") if conclusion_events else None,
-           "audit_events": audit_events}
+           "audit_events": audit_events, "aar_evidence": aar_evidence}
 
 
 def approve_conclusion(case_id: str, actor: str, conclusion: dict,
@@ -438,6 +589,14 @@ def approve_conclusion(case_id: str, actor: str, conclusion: dict,
     s.update("issues_v2", {"issue_row_id": case["issue_row_id"]}, {
         "status": "Closed", "resolution_rationale": rationale, "updated_at": now,
     })
+    closed_case = require_case(case_id, tenant_id)
+    aar_sources = tuple(value for value in evidence_ids
+                        if s.query_one("analysis_artifacts", artifact_id=value))
+    rca_evidence.record_event(
+        closed_case, evidence_kind="human_decision", stage="closure", status="accepted",
+        actor=actor, source_artifact_ids=aar_sources,
+        details={"decision": "approve_conclusion", "conclusion": approved},
+    )
     return get_case(case_id, tenant_id)
 
 
@@ -511,6 +670,14 @@ def propose_reusable_knowledge(case_id: str, actor: str, proposal: dict,
     _audit(tenant_id, actor, "reusable_knowledge_proposed", "rca_case", case_id,
            after={**metadata, "knowledge_draft_id": draft_rule["rule_id"]},
            reason=generalization)
+    rca_evidence.record_event(
+        require_case(case_id, tenant_id), evidence_kind="human_decision", stage="closure",
+        status="accepted", actor=actor,
+        source_artifact_ids=tuple(value for value in evidence_ids
+                                  if s.query_one("analysis_artifacts", artifact_id=value)),
+        details={"decision": "propose_reusable_knowledge",
+                 "knowledge_draft_id": draft_rule["rule_id"], **metadata},
+    )
     return {"case": get_case(case_id, tenant_id), "candidate": draft_rule}
 
 
@@ -523,10 +690,19 @@ def return_to_investigation(case_id: str, actor: str, reason: str,
     if case["state"] in {"opening_looks", "investigation_loop"}:
         _audit(tenant_id, actor, "conclusion_returned", "rca_case", case_id,
                after={"stage": "investigate"}, reason=clean_reason)
+        rca_evidence.record_event(
+            case, evidence_kind="human_decision", stage="closure", status="rejected",
+            actor=actor, details={"decision": "return_to_investigation", "reason": clean_reason},
+        )
         return get_case(case_id, tenant_id)
     _product_transition(case, "investigation_loop", actor, clean_reason)
     _audit(tenant_id, actor, "conclusion_returned", "rca_case", case_id,
            after={"stage": "investigate"}, reason=clean_reason)
+    rca_evidence.record_event(
+        require_case(case_id, tenant_id), evidence_kind="human_decision", stage="closure",
+        status="rejected", actor=actor,
+        details={"decision": "return_to_investigation", "reason": clean_reason},
+    )
     return get_case(case_id, tenant_id)
 
 
@@ -565,14 +741,82 @@ def _segment_breakdown(df, column: str, segment_column: str) -> dict:
 
 # --- Opening looks (Agent 2) ---------------------------------------------------
 
+def _run_llm_initial_review(case: dict, actor: str, context_id: str,
+                            checklist: dict, summary: dict) -> dict | None:
+    """Run the configured LLM review without making static evidence depend on it."""
+    from domains.rca import initial_review
+
+    if not initial_review.enabled():
+        return None
+    try:
+        policy = initial_review.public_policy()
+    except Exception:  # configuration details are captured by the failed event below
+        policy = None
+    rca_evidence.record_event(
+        case, evidence_kind="llm_initial_review", stage="initial_review", status="started",
+        actor=actor, source_artifact_ids=(context_id,), details={
+            "workload": initial_review.WORKLOAD,
+            "prompt_version": initial_review.PROMPT_VERSION,
+            "contract_version": initial_review.CONTRACT_VERSION,
+            "model_policy": policy,
+        },
+    )
+    try:
+        result = initial_review.review({
+            "case_id": case["case_id"],
+            "test_name": checklist.get("test_name"),
+            "test_family": checklist.get("test_family"),
+            "table_name": checklist.get("table_name"),
+            "columns": checklist.get("columns") or [],
+            "metric": checklist.get("metric"),
+            "threshold": checklist.get("threshold"),
+            "violation_count": checklist.get("violation_count"),
+        }, summary)
+    except Exception as exc:  # noqa: BLE001 - failure is retained and manual flow remains usable
+        rca_evidence.record_event(
+            case, evidence_kind="llm_initial_review", stage="initial_review", status="failed",
+            actor=actor, source_artifact_ids=(context_id,), details={
+                "workload": initial_review.WORKLOAD,
+                "error_type": type(exc).__name__,
+                "attempts": getattr(exc, "attempts", []),
+                "manual_continuation_available": True,
+            },
+        )
+        return {"status": "failed", "error_type": type(exc).__name__}
+    evidence_id = rca_evidence.record_event(
+        case, evidence_kind="llm_initial_review", stage="initial_review", status="completed",
+        actor=actor, source_artifact_ids=(context_id,), details=result,
+    )
+    return {"status": "completed", "aar_evidence_id": evidence_id, **result}
+
 def run_opening_look(case_id: str, actor: str, tenant_id: str = DEFAULT_TENANT) -> dict:
     case = require_case(case_id, tenant_id)
-    case_file = s.query_one("rca_case_files", case_id=case_id)
-    checklist = case_file["checklist_json"]
-    columns = checklist.get("columns") or []
-    column = columns[0] if columns else None
-    frame = v2_service._read_table(case["item_id"], case["table_name"])
-    summary = _profile_column(frame, column) if column else {"found": False}
+    context_id = _ensure_case_context(case)
+    if case["state"] == "intake":
+        case = transition(case_id, "opening_looks", actor, reason="initial review started",
+                          tenant_id=tenant_id)
+    if case["state"] != "opening_looks":
+        raise TransitionError(f"Initial review cannot run from state {case['state']!r}")
+    rca_evidence.record_event(
+        case, evidence_kind="static_initial_review", stage="initial_review", status="started",
+        actor=actor, source_artifact_ids=(context_id,),
+        details={"analysis": "profile_column", "deterministic": True},
+    )
+    try:
+        case_file = s.query_one("rca_case_files", case_id=case_id)
+        checklist = case_file["checklist_json"]
+        columns = checklist.get("columns") or []
+        column = columns[0] if columns else None
+        frame = v2_service._read_table(case["item_id"], case["table_name"])
+        summary = _profile_column(frame, column) if column else {"found": False}
+    except Exception as exc:
+        rca_evidence.record_event(
+            case, evidence_kind="static_initial_review", stage="initial_review", status="failed",
+            actor=actor, source_artifact_ids=(context_id,),
+            details={"analysis": "profile_column", "error_type": type(exc).__name__,
+                     "error": str(exc)},
+        )
+        raise
 
     look_id = _id("look")
     s.insert("rca_looks", {
@@ -585,8 +829,36 @@ def run_opening_look(case_id: str, actor: str, tenant_id: str = DEFAULT_TENANT) 
         "execution_id": execution_id, "look_id": look_id, "status": "done",
         "summary_json": summary, "crashed": 0, "retried": 0, "executed_at": s.now_ist(),
     })
-    transition(case_id, "investigation_loop", actor, evidence_ids=[look_id], tenant_id=tenant_id)
-    return {"look_id": look_id, "execution_id": execution_id, "summary": summary}
+    transition(case_id, "initial_review_complete", actor, evidence_ids=[look_id], tenant_id=tenant_id)
+    completed_case = require_case(case_id, tenant_id)
+    evidence_id = rca_evidence.record_event(
+        completed_case, evidence_kind="static_initial_review", stage="initial_review",
+        status="completed", actor=actor, source_artifact_ids=(context_id,),
+        details={"look_id": look_id, "execution_id": execution_id,
+                 "analysis": "profile_column", "deterministic": True, "result": summary},
+    )
+    llm_review = _run_llm_initial_review(
+        completed_case, actor, context_id, checklist, summary
+    )
+    return {"look_id": look_id, "execution_id": execution_id, "summary": summary,
+            "aar_evidence_id": evidence_id, "llm_review": llm_review}
+
+
+def continue_from_initial_review(case_id: str, actor: str,
+                                 tenant_id: str = DEFAULT_TENANT) -> dict:
+    case = require_case(case_id, tenant_id)
+    if case["state"] != "initial_review_complete":
+        raise TransitionError(f"Investigation cannot start from state {case['state']!r}")
+    transition(case_id, "investigation_loop", actor, reason="initial review accepted",
+               tenant_id=tenant_id)
+    continued = require_case(case_id, tenant_id)
+    rca_evidence.record_event(
+        continued, evidence_kind="human_decision", stage="initial_review", status="accepted",
+        actor=actor, details={"decision": "continue_to_investigation",
+                              "from_state": "initial_review_complete",
+                              "to_state": "investigation_loop"},
+    )
+    return get_case(case_id, tenant_id)
 
 
 # --- Planner / Runner / Reader — budgeted loop (Agents 3/4/5) ------------------

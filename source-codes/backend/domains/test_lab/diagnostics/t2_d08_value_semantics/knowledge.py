@@ -12,14 +12,14 @@ from .resources import load_terminology, load_value_semantics_kb
 
 BACKEND_DIR = Path(__file__).resolve().parents[4]
 VALUE_KB_V01_PATH = BACKEND_DIR / "knowledge_base" / "value_semantics_kb_v0_1.yaml"
-VALUE_KB_PATH = BACKEND_DIR / "knowledge_base" / "value_semantics_kb_v0_2.yaml"
+VALUE_KB_PATH = BACKEND_DIR / "knowledge_base" / "value_semantics_kb_v0_3.yaml"
 TERMINOLOGY_V02_PATH = BACKEND_DIR / "knowledge_base" / "credit_risk_abbreviations_v0_2.yaml"
 TERMINOLOGY_PATH = BACKEND_DIR / "knowledge_base" / "credit_risk_abbreviations_v0_3.yaml"
 PROMPT_PATH = BACKEND_DIR / "ai" / "agents" / "value_semantics_role_adjudication_v0_2.txt"
 
 VALUE_DOCUMENT_ID = "kbdoc_t2d08_value_semantics"
 VALUE_VERSION_V01_ID = "kbver_t2d08_value_semantics_v0_1"
-VALUE_VERSION_ID = "kbver_t2d08_value_semantics_v0_2"
+VALUE_VERSION_ID = "kbver_t2d08_value_semantics_v0_3"
 TERMINOLOGY_DOCUMENT_ID = "kbdoc_credit_risk_terminology"
 TERMINOLOGY_VERSION_V02_ID = "kbver_credit_risk_terminology_v0_2"
 TERMINOLOGY_VERSION_ID = "kbver_credit_risk_terminology_v0_3"
@@ -159,7 +159,7 @@ def seed_documents(tenant_id: str = "bootstrap") -> dict[str, Any]:
         _seed_reference(
             tenant_id=tenant_id, path=VALUE_KB_PATH,
             document_id=VALUE_DOCUMENT_ID, version_id=VALUE_VERSION_ID,
-            version_seq=2, title="Test 2, Diagnostic 8 — Value Semantics Knowledge Base",
+            version_seq=3, title="Test 2, Diagnostic 8 — Value Semantics Knowledge Base",
             renderer=render_value_kb_markdown,
             metadata={"diagnostic_id": 8, "kb_version": "0.2", "lifecycle": "active"},
         ),

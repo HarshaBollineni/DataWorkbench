@@ -14,6 +14,9 @@ from domains.aar.dataset_structure_review import DecisionInputError, Idempotency
 from domains.aar import dataset_structure_review as review_service
 from domains.aar.repository import AnalysisArtifactRepository
 from domains.aar.dataset_structure_resolver import resolve_dataset_structure_context
+from domains.test_lab.shared.knowledge_provenance import (
+    default_binding_column, resolve_dsc, selector,
+)
 
 
 def _base(asset: str, snapshot: str, artifact_type: str):
@@ -271,6 +274,29 @@ def test_persisted_v2_authority_resolves_and_stale_pin_fails_closed(authority_it
     db.update("analysis_artifacts", {"artifact_id": value["candidate_pin"]["artifact_id"]}, {"status": "superseded"})
     stale = resolve_dataset_structure_context(repo, request)
     assert stale["selector_results"][0]["result"] == "unavailable"
+
+
+def test_diagnostic_context_pins_confirmed_defaults_for_execution(authority_item, monkeypatch):
+    current = review(authority_item)
+    save_decisions(
+        authority_item, _body(current), idempotency_key="diagnostic-consumer",
+        actor="reviewer",
+    )
+    monkeypatch.setattr(
+        "domains.aar.dataset_structure_resolver._matching_supported_assertions",
+        _retained_v1,
+    )
+    context = resolve_dsc(
+        item=authority_item, table="orders", consumer_id="diagnostic:6:execution-v1",
+        actor="analyst", selectors=[
+            selector("default-entity", "orders", "table.structure/default_entity_binding", requirement="required"),
+            selector("default-temporal", "orders", "table.temporal/default_temporal_binding", requirement="required"),
+        ],
+    )
+    assert context["state"] == "fulfilled"
+    assert context["context_ref"]["artifact_id"].startswith("art_")
+    assert default_binding_column(context, "default-entity") == "customer_id"
+    assert default_binding_column(context, "default-temporal") == "period"
 
 
 def test_v2_resolver_fails_closed_when_v1_dependency_chain_is_no_longer_reusable(authority_item, monkeypatch):

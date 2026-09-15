@@ -463,6 +463,9 @@ export const getResultTagsV3 = (resultId) => req(`/v3/results/${encodeURICompone
 export const getTestTagsV3 = (rowId) => req(`/v3/tests/${encodeURIComponent(rowId)}/tags`);
 
 // --- RCA Stage 2: Knowledge Base (v3) -------------------------------------
+export const getKnowledgeLibraryV3 = () => req("/v3/knowledge/library");
+export const getKnowledgeBaseV3 = (knowledgeBaseId) =>
+  req(`/v3/knowledge/library/${encodeURIComponent(knowledgeBaseId)}`);
 export const getKbDocumentsV3 = () => req("/v3/knowledge/documents");
 export const getKbDocumentV3 = (documentId) => req(`/v3/knowledge/documents/${encodeURIComponent(documentId)}`);
 export const getKbLearningCandidatesV3 = () => req("/v3/knowledge/learning-candidates");
@@ -555,6 +558,10 @@ export const getKbParseReportV3 = (versionId) =>
 export const createRcaCase = (issueRowId) =>
   req(`/v3/issues/${encodeURIComponent(issueRowId)}/rca/case`, { method: "POST" });
 export const getRcaCase = (caseId) => req(`/v3/rca/cases/${encodeURIComponent(caseId)}`);
+export const startRcaAfresh = (caseId) =>
+  req(`/v3/rca/cases/${encodeURIComponent(caseId)}/start-afresh`, {
+    method: "POST", body: JSON.stringify({ confirmed: true }),
+  });
 export const approveRcaConclusion = (caseId, body) =>
   req(`/v3/rca/cases/${encodeURIComponent(caseId)}/conclusion/approve`, {
     method: "POST", body: JSON.stringify(body),
@@ -569,6 +576,8 @@ export const returnRcaToInvestigation = (caseId, reason) =>
   });
 export const runRcaOpeningLook = (caseId) =>
   req(`/v3/rca/cases/${encodeURIComponent(caseId)}/opening-look`, { method: "POST" });
+export const continueRcaFromInitialReview = (caseId) =>
+  req(`/v3/rca/cases/${encodeURIComponent(caseId)}/initial-review/continue`, { method: "POST" });
 export const runRcaPlannerLook = (caseId, killTargetSuspectId) =>
   req(`/v3/rca/cases/${encodeURIComponent(caseId)}/planner-look`
      + (killTargetSuspectId ? `?kill_target_suspect_id=${encodeURIComponent(killTargetSuspectId)}` : ""),

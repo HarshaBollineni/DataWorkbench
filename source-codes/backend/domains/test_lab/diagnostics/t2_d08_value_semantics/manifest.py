@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import time
 import uuid
+import hashlib
 from typing import Any
 
 import system_db as db
 from analysis_runtime.contracts import stable_fingerprint
+from domains.test_lab.shared.knowledge_provenance import (
+    default_binding_column, dsc_request_from_execution_context,
+    knowledge_reference, resolve_dsc,
+)
 from domains.test_lab.shared.run_state import (
     DRAFT, RUNNING, ManifestError, record_decision,
 )
@@ -111,6 +116,27 @@ def _field_card(row: dict[str, Any], contexts: list[str]) -> dict[str, Any]:
         "unresolved_abbreviations": result.get("unresolved_abbreviations") or [],
         "adjudication": {"status": "not_requested", "attempts": []},
     }
+
+
+def _apply_dsc_structure(item: dict[str, Any], table: str,
+                         fields: list[dict[str, Any]], actor: str) -> dict[str, Any]:
+    consumer_id, selectors = dsc_request_from_execution_context(
+        knowledge.resources()[0]["execution_context"], table,
+    )
+    context = resolve_dsc(
+        item=item, table=table, consumer_id=consumer_id, actor=actor,
+        selectors=selectors,
+    )
+    for selector_id, role in (("default-entity", "entity_id"), ("default-temporal", "period")):
+        column = default_binding_column(context, selector_id)
+        field = next((row for row in fields if row["column"] == column), None)
+        if field:
+            field["selected"] = True
+            field["confirmed_roles"] = sorted(set([*field["confirmed_roles"], role]))
+            field["proposed_roles"] = list(field["confirmed_roles"])
+            field["binding_source"] = "dsc_confirmed"
+            field["review_required"] = False
+    return context
 
 
 def _ai_reuse_identity(manifest: dict[str, Any], field: dict[str, Any]) -> str:
@@ -438,6 +464,7 @@ def build_manifest(item_id: str, actor: str = "system", *, tenant_id: str = "boo
     fields = [_field_card(row, contexts) for row in inventory_rows]
     if not fields:
         raise ManifestError("selected table has no profiled fields")
+    dsc_context = _apply_dsc_structure(item, table, fields, actor)
     now, run_id = db.now_ist(), _id()
     safe_defaults: dict[str, Any] = {
         "variance_window": 3,
@@ -472,6 +499,7 @@ def build_manifest(item_id: str, actor: str = "system", *, tenant_id: str = "boo
             ],
         },
         "tables": tables, "table": table, "fields": fields,
+        "dataset_structure_context": dsc_context,
         "role_catalog": [
             {key: role.get(key) for key in ("role", "definition", "role_kind", "model_types")}
             for role in knowledge.resources()[0]["semantic_roles"]
@@ -487,6 +515,20 @@ def build_manifest(item_id: str, actor: str = "system", *, tenant_id: str = "boo
             "value_semantics_document_id": knowledge.VALUE_DOCUMENT_ID,
             "terminology_document_id": knowledge.TERMINOLOGY_DOCUMENT_ID,
         },
+        "knowledge_references": [
+            knowledge_reference(
+                knowledge_base_id=knowledge.VALUE_DOCUMENT_ID,
+                version_id=knowledge.VALUE_VERSION_ID, consumer_id="diagnostic:8",
+                version_label=str(knowledge.resources()[0]["metadata"]["version"]),
+                content_hash=hashlib.sha256(knowledge.VALUE_KB_PATH.read_bytes()).hexdigest(),
+            ),
+            knowledge_reference(
+                knowledge_base_id=knowledge.TERMINOLOGY_DOCUMENT_ID,
+                version_id=knowledge.TERMINOLOGY_VERSION_ID, consumer_id="diagnostic:8",
+                version_label=str(knowledge.resources()[1]["metadata"]["version"]),
+                content_hash=hashlib.sha256(knowledge.TERMINOLOGY_PATH.read_bytes()).hexdigest(),
+            ),
+        ],
         "row_reference": {"column": "__d08_row_reference__", "generated": True,
                           "raw_values_retained": False},
         "source_artifact_references": [
@@ -719,6 +761,10 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
         contexts = manifest["context"]["selected"]
         inventory_rows = _inventory(manifest["item_id"], table)
         manifest["fields"] = [_field_card(row, contexts) for row in inventory_rows]
+        item = db.query_one("dq_items", item_id=manifest["item_id"]) or {}
+        manifest["dataset_structure_context"] = _apply_dsc_structure(
+            item, table, manifest["fields"], actor,
+        )
         manifest["source_artifact_references"] = [
             {"artifact_id": row["profile_artifact_id"], "artifact_type": "column_profile"}
             for row in inventory_rows if row.get("profile_artifact_id")

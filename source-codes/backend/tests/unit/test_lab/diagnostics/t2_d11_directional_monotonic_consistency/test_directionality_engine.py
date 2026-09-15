@@ -90,13 +90,17 @@ def test_expected_direction_is_compared_only_after_reference_orientation():
     assert compare_expected_observed("INCREASING", "HIGHER_IS_BETTER", "INCREASING") == "REVIEW_RECOMMENDED"
 
 
-def test_kb_v03_uses_intentional_income_amount_rename_and_exact_matching():
+def test_kb_v05_has_stable_rule_ids_and_preserves_semantic_matching():
     rules = rule_index()
+    kb, terminology, prepared = resources()
+    assert [rule["rule_id"] for rule in kb["feature_rules"]] == [
+        f"T2D11-{index:02d}" for index in range(1, 50)
+    ]
     assert "income_amount" in rules
     assert "income_capacity" not in rules
-    kb, terminology, prepared = resources()
     result = match_feature_to_kb("CURRENT_LTV", "", kb, terminology,
                                  prepared_matcher=prepared)
+    assert result["deterministic_match"]["knowledge_rule_id"] == "T2D11-23"
     assert result["deterministic_match"]["canonical_feature"] == "loan_to_value"
 
 
@@ -106,7 +110,8 @@ def test_feature_cards_retain_exact_kb_decision_as_immutable_baseline_evidence()
         "role": "Feature", "special_values_confirmed": False,
     })
     assert exact["governed_exact_decision"] == {
-        "kb_version": "0.3",
+        "kb_version": "0.5",
+        "knowledge_rule_id": "T2D11-23",
         "canonical_feature": "loan_to_value",
         "representation_orientation": "SAME",
         "expected_direction": "INCREASING",

@@ -11,10 +11,13 @@ from __future__ import annotations
 
 import json
 
+import yaml
+
 from fastapi import APIRouter, File, Form, Header, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 import kb
+import knowledge_library
 from domains.rca import service as rca
 import system_db as s
 import taxonomy
@@ -93,6 +96,21 @@ def get_issue_tags(issue_row_id: str, authorization: str | None = Header(default
 
 # --- Knowledge Base (Stage 2) -------------------------------------------------
 
+@router.get("/knowledge/library")
+def get_knowledge_library(authorization: str | None = Header(default=None)):
+    p = _principal(authorization)
+    return knowledge_library.get_library(p["tenant_id"])
+
+
+@router.get("/knowledge/library/{knowledge_base_id}")
+def get_knowledge_library_item(knowledge_base_id: str,
+                               authorization: str | None = Header(default=None)):
+    p = _principal(authorization)
+    try:
+        return knowledge_library.get_knowledge_base(p["tenant_id"], knowledge_base_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc).strip("'\"")) from exc
+
 class PublishIn(BaseModel):
     category: str
     related_tables: list[str] = []
@@ -144,10 +162,12 @@ def list_row_completeness_packages(authorization: str | None = Header(default=No
 def download_row_completeness_template(authorization: str | None = Header(default=None)):
     p = _principal(authorization)
     from domains.test_lab.diagnostics.t2_d06_row_completeness import knowledge
-    payload = json.dumps(knowledge.editable_template(p["tenant_id"]), indent=2,
-                         ensure_ascii=False).encode("utf-8")
-    return Response(content=payload, media_type="application/json", headers={
-        "Content-Disposition": "attachment; filename=row-completeness-rules-editable.json",
+    payload = yaml.safe_dump(
+        knowledge.editable_template(p["tenant_id"]), sort_keys=False,
+        allow_unicode=True,
+    ).encode("utf-8")
+    return Response(content=payload, media_type="application/yaml", headers={
+        "Content-Disposition": "attachment; filename=row-completeness-rules-editable.yaml",
     })
 
 
@@ -159,7 +179,7 @@ async def upload_row_completeness_package(file: UploadFile = File(...),
     from domains.test_lab.diagnostics.t2_d06_row_completeness import knowledge
     try:
         return knowledge.upload_package_draft(
-            await file.read(), file.filename or "row-completeness-rules.json",
+            await file.read(), file.filename or "row-completeness-rules.yaml",
             p["username"], p["tenant_id"])
     except knowledge.RowCompletenessKnowledgeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -173,8 +193,8 @@ def create_row_completeness_package_draft(body: dict,
     from domains.test_lab.diagnostics.t2_d06_row_completeness import knowledge
     try:
         return knowledge.upload_package_draft(
-            json.dumps(body, ensure_ascii=False).encode("utf-8"),
-            "row-completeness-live-editor.json", p["username"], p["tenant_id"])
+            yaml.safe_dump(body, sort_keys=False, allow_unicode=True).encode("utf-8"),
+            "row-completeness-live-editor.yaml", p["username"], p["tenant_id"])
     except knowledge.RowCompletenessKnowledgeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -433,6 +453,21 @@ class ReturnToInvestigationIn(BaseModel):
     reason: str
 
 
+class StartAfreshIn(BaseModel):
+    confirmed: bool
+
+
+@router.post("/rca/cases/{case_id}/start-afresh")
+def start_rca_afresh(case_id: str, body: StartAfreshIn,
+                     authorization: str | None = Header(default=None)):
+    p = _principal(authorization)
+    try:
+        return rca.start_afresh(
+            case_id, p["username"], body.confirmed, tenant_id=p["tenant_id"])
+    except Exception as exc:  # noqa: BLE001
+        raise _rca_error_map(exc) from exc
+
+
 @router.post("/rca/cases/{case_id}/conclusion/approve")
 def approve_rca_conclusion(case_id: str, body: ConclusionApprovalIn,
                            authorization: str | None = Header(default=None)):
@@ -473,6 +508,17 @@ def run_rca_opening_look(case_id: str, authorization: str | None = Header(defaul
     try:
         rca.run_opening_look(case_id, p["username"], tenant_id=p["tenant_id"])
         return rca.get_case(case_id, p["tenant_id"])
+    except Exception as exc:  # noqa: BLE001
+        raise _rca_error_map(exc) from exc
+
+
+@router.post("/rca/cases/{case_id}/initial-review/continue")
+def continue_rca_from_initial_review(case_id: str,
+                                     authorization: str | None = Header(default=None)):
+    p = _principal(authorization)
+    try:
+        return rca.continue_from_initial_review(
+            case_id, p["username"], tenant_id=p["tenant_id"])
     except Exception as exc:  # noqa: BLE001
         raise _rca_error_map(exc) from exc
 

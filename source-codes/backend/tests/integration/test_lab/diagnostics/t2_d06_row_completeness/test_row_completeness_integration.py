@@ -328,8 +328,11 @@ def test_manifest_freeze_run_and_external_report(snapshot, monkeypatch):
         "facility_candidate": True, "period_candidate": True, "segment_candidate": True,
     }]
     assert manifest["inference_disclosure"]["llm_call_count"] == 0
-    assert manifest["kb"]["version_id"] == "kbver_t2d6_row_completeness_v1"
+    assert manifest["kb"]["version_id"] == "kbver_t2d6_row_completeness_v2"
     assert len(manifest["kb"]["package_hash"]) == 64
+    assert manifest["knowledge_references"][0]["version_id"] == manifest["kb"]["version_id"]
+    assert manifest["knowledge_references"][0]["retrieval_manifest_id"] == manifest["kb"]["retrieval_manifest_id"]
+    assert manifest["dataset_structure_context"]["consumer_id"] == "diagnostic:6:execution-v1"
     installed = db.query("kb_rules", version_id=manifest["kb"]["version_id"])
     assert len(installed) == 6
     assert {rule["lifecycle_state"] for rule in installed} == {"published"}

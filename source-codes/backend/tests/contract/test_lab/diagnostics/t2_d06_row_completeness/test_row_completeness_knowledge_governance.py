@@ -1,8 +1,8 @@
-"""Governed JSON editing workflow for the T2D6 diagnostic package."""
+"""Governed YAML editing workflow for the T2D6 diagnostic package."""
 from __future__ import annotations
 
 import copy
-import json
+import yaml
 
 import pytest
 
@@ -18,11 +18,11 @@ def governed_kb(tmp_path, monkeypatch):
     return knowledge.list_package_versions()
 
 
-def test_download_template_is_valid_json_and_explains_safe_editing(governed_kb):
+def test_download_template_is_valid_yaml_and_explains_safe_editing(governed_kb):
     template = knowledge.editable_template()
-    serialized = json.dumps(template)
+    serialized = yaml.safe_dump(template, sort_keys=False)
 
-    assert json.loads(serialized)["based_on_version_id"] == governed_kb["active"]["version_id"]
+    assert yaml.safe_load(serialized)["based_on_version_id"] == governed_kb["active"]["version_id"]
     assert "change_summary" in template["_editing_guide"]["editable_fields"]
     assert "primitive" in " ".join(template["_editing_guide"]["do_not_change"])
     assert all(rule["_edit_note"] for rule in template["rules"])
@@ -37,9 +37,27 @@ def test_unsupported_engine_change_is_rejected_without_creating_a_draft(governed
 
     with pytest.raises(knowledge.RowCompletenessKnowledgeError, match="not editable"):
         knowledge.upload_package_draft(
-            json.dumps(template).encode(), "unsupported.json", "editor")
+            yaml.safe_dump(template).encode(), "unsupported.yaml", "editor")
 
     assert len(knowledge.list_package_versions()["packages"]) == len(governed_kb["packages"])
+
+
+def test_json_upload_is_not_supported_in_the_yaml_only_mvp(governed_kb):
+    with pytest.raises(knowledge.RowCompletenessKnowledgeError, match="must be a YAML file"):
+        knowledge.upload_package_draft(b"{}", "legacy.json", "editor")
+
+
+def test_dsc_execution_contract_cannot_be_changed_in_a_draft(governed_kb):
+    template = knowledge.editable_template()
+    template["change_summary"] = "Attempt to redirect the structural dependency."
+    template["execution_context"]["dataset_structure_context"]["selectors"][0][
+        "predicate"
+    ] = "table.structure/unregistered_claim"
+
+    with pytest.raises(knowledge.RowCompletenessKnowledgeError, match="fixed"):
+        knowledge.upload_package_draft(
+            yaml.safe_dump(template).encode(), "unsupported-context.yaml", "editor",
+        )
 
 
 def test_upload_creates_inactive_draft_and_reviewer_activation_changes_future_resolution(governed_kb):
@@ -49,7 +67,7 @@ def test_upload_creates_inactive_draft_and_reviewer_activation_changes_future_re
     template["configuration"]["default_continuity_floor"] = 0.90
 
     draft = knowledge.upload_package_draft(
-        json.dumps(template).encode(), "row-completeness-update.json", "kb-editor")
+        yaml.safe_dump(template).encode(), "row-completeness-update.yaml", "kb-editor")
 
     assert draft["lifecycle_state"] == "draft"
     assert draft["validation_json"]["valid"] is True
@@ -81,13 +99,13 @@ def test_stale_draft_cannot_replace_a_newer_active_version(governed_kb):
     first["change_summary"] = "First independent draft."
     first["rules"][0]["user_help"] = "First reviewed wording."
     first_draft = knowledge.upload_package_draft(
-        json.dumps(first).encode(), "first.json", "editor")
+        yaml.safe_dump(first).encode(), "first.yaml", "editor")
 
     second = knowledge.editable_template()
     second["change_summary"] = "Second independent draft."
     second["rules"][0]["user_help"] = "Second reviewed wording."
     second_draft = knowledge.upload_package_draft(
-        json.dumps(second).encode(), "second.json", "editor")
+        yaml.safe_dump(second).encode(), "second.yaml", "editor")
     knowledge.activate_package(first_draft["version_id"], "Approve first draft.", "reviewer")
 
     with pytest.raises(knowledge.RowCompletenessKnowledgeError, match="superseded version"):

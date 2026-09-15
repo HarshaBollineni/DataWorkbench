@@ -14,6 +14,11 @@ from domains.aar.repository import AnalysisArtifactRepository
 from analysis_runtime.contracts import stable_fingerprint
 from domains.aar.data_sourcing import persist_snapshot_profile_artifacts
 from analysis_runtime.snapshots import SnapshotLoader
+from domains.test_lab.shared.knowledge_provenance import (
+    default_binding_column, dsc_request_from_execution_context,
+    knowledge_reference, resolve_dsc,
+    selector_value,
+)
 
 from .engine import ENGINE_VERSION, METHODOLOGY_VERSION
 from .models import RULE_IDS, RoleBinding, RunScope
@@ -28,7 +33,6 @@ from dq_diagnostics.readiness import readiness
 from dq_diagnostics.register import get_diagnostic, require_executable
 from dq_diagnostics.thresholds import effective_threshold
 from .knowledge import resolve_package
-from .dsc_assist import resolved_d06_assist
 
 
 DIAGNOSTIC_ID = 6
@@ -183,15 +187,31 @@ def _bounded_candidates(values: list[dict[str, Any]], limit_per_table: int = 8) 
     return retained
 
 
-def _apply_dsc_assist(item: dict[str, Any], manifest: dict[str, Any], *, table: str) -> None:
-    """Apply only exact-table confirmed DSC defaults as editable draft suggestions."""
-    assist = resolved_d06_assist(item=item, table=table)
-    manifest["dsc_assist"] = {"state": assist["state"], "scope_confirmed": False,
-                              "expected_cadence": assist.get("expected_cadence"),
-                              "provenance": assist.get("provenance")}
-    if assist["state"] != "available":
+def _apply_dsc_assist(item: dict[str, Any], manifest: dict[str, Any], *,
+                      table: str, actor: str) -> None:
+    """Resolve and pin confirmed structure before proposing executable scope."""
+    consumer_id, selectors = dsc_request_from_execution_context(
+        manifest["kb"]["execution_context"], table,
+    )
+    context = resolve_dsc(
+        item=item, table=table, consumer_id=consumer_id, actor=actor,
+        selectors=selectors,
+    )
+    manifest["dataset_structure_context"] = context
+    entity = default_binding_column(context, "default-entity")
+    period = default_binding_column(context, "default-temporal")
+    cadence = selector_value(context, "expected-cadence")
+    expected_cadence = (
+        {"unit": cadence.get("unit"), "step": cadence.get("step")}
+        if isinstance(cadence, dict) and cadence.get("selection") != "none" else None
+    )
+    manifest["dsc_assist"] = {
+        "state": "available" if entity and period else "unavailable",
+        "scope_confirmed": False, "expected_cadence": expected_cadence,
+        "provenance": {"source": "dataset_structure_context", "context_ref": context.get("context_ref")},
+    }
+    if not entity or not period:
         return
-    entity, period = assist["entity_column"], assist["period_column"]
     if entity == period or entity not in manifest["available_columns"] or period not in manifest["available_columns"]:
         manifest["dsc_assist"] = {"state": "unavailable", "scope_confirmed": False}
         return
@@ -199,6 +219,21 @@ def _apply_dsc_assist(item: dict[str, Any], manifest: dict[str, Any], *, table: 
                                            "reason": "Confirmed Dataset Structure default; review and confirm before execution."}
     manifest["roles"]["period"] = {"table": table, "column": period, "source": "dsc_assist", "score": None,
                                       "reason": "Confirmed Dataset Structure default; review and confirm before execution."}
+    grain_by_cadence = {
+        ("month", 1): "monthly", ("month", 3): "quarterly",
+        ("quarter", 1): "quarterly", ("month", 6): "semiannual",
+        ("quarter", 2): "semiannual", ("month", 12): "annual",
+        ("quarter", 4): "annual", ("year", 1): "annual",
+    }
+    proposed_grain = grain_by_cadence.get(
+        (expected_cadence or {}).get("unit") and (
+            expected_cadence["unit"], expected_cadence.get("step")
+        )
+    )
+    if proposed_grain:
+        manifest["configuration"]["reporting_grain"] = {
+            "value": proposed_grain, "source": "confirmed Dataset Structure expected cadence",
+        }
 
 
 def build_manifest(item_id: str, actor: str = "system", *, enforce_register: bool = True) -> dict[str, Any]:
@@ -260,13 +295,20 @@ def build_manifest(item_id: str, actor: str = "system", *, enforce_register: boo
         },
         "rule_ids": list(RULE_IDS),
         "kb": knowledge,
+        "knowledge_references": [{
+            **knowledge_reference(
+                knowledge_base_id=knowledge["document_id"],
+                version_id=knowledge["version_id"], consumer_id="diagnostic:6",
+            ),
+            "retrieval_manifest_id": knowledge.get("retrieval_manifest_id"),
+        }],
         "source_artifact_references": source_refs,
         "role_verification": {"enabled": False, "status": "not_requested",
                               "policy": VERIFICATION_POLICY},
         "engine_version": ENGINE_VERSION,
         "methodology_version": METHODOLOGY_VERSION,
     }
-    _apply_dsc_assist(item, manifest, table=table)
+    _apply_dsc_assist(item, manifest, table=table, actor=actor)
     manifest["source_artifact_references"] = _source_artifacts(
         item_id, table, [binding["column"] for binding in manifest["roles"].values() if binding], actor)
     db.insert("diag_runs", {"run_id": run_id, "item_id": item_id,
@@ -393,7 +435,8 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
         manifest["roles"] = roles
         manifest["source_artifact_references"] = _source_artifacts(
             manifest["item_id"], table, [value["column"] for value in roles.values() if value], actor)
-        _apply_dsc_assist(db.query_one("dq_items", item_id=manifest["item_id"]) or {}, manifest, table=table)
+        _apply_dsc_assist(db.query_one("dq_items", item_id=manifest["item_id"]) or {}, manifest,
+                          table=table, actor=actor)
         manifest["source_artifact_references"] = _source_artifacts(
             manifest["item_id"], table, [value["column"] for value in manifest["roles"].values() if value], actor)
         record_decision(run_id, "scope_exclusion", {"event": "table_selection",

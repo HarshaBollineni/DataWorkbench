@@ -240,11 +240,11 @@ export default function LearningCandidatesPanel() {
       <div className="flex gap-2">
         <BookOpen className="mt-0.5 h-5 w-5 text-blue-700" />
         <div>
-          <h2 className="font-semibold text-blue-950">Reusable-knowledge candidates</h2>
+          <h2 className="font-semibold text-blue-950">Proposed changes</h2>
           <p className="mt-1 text-xs text-blue-800">
-            Candidates come from an explicit RCA learning submission or a user-confirmed Diagnostic
-            11 direction proposal. They do not become governed knowledge until a KB reviewer
-            publishes them; the source workflow and AI suggestions cannot publish or archive rules.
+            Proposals come from an explicit Root Cause Analysis (RCA) learning submission or a
+            user-confirmed Diagnostic 11 direction proposal. They do not change active knowledge
+            until a user explicitly promotes them for use.
           </p>
         </div>
       </div>
@@ -261,7 +261,7 @@ export default function LearningCandidatesPanel() {
           : <RcaCandidateDetails candidate={candidate} />}
         {pending && <div className="mt-3 flex flex-wrap gap-2">
           <Button size="sm" disabled={busy === candidate.candidate_id} onClick={() => publish(candidate)}>
-            <CheckCircle2 className="h-4 w-4" /> Review and publish
+            <CheckCircle2 className="h-4 w-4" /> Promote for use
           </Button>
           <input
             className="h-9 min-w-64 flex-1 rounded-md border border-slate-200 px-3 text-xs"
@@ -269,7 +269,7 @@ export default function LearningCandidatesPanel() {
             onChange={(event) => setReasons((current) => ({
               ...current, [candidate.candidate_id]: event.target.value,
             }))}
-            placeholder="Reason to archive candidate"
+            placeholder="Reason to archive proposal"
           />
           <Button
             size="sm"
@@ -283,7 +283,7 @@ export default function LearningCandidatesPanel() {
       </article>;
     })}
     {!candidates.length && <div className="rounded-md border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
-      No reusable-knowledge candidates have been proposed.
+      No changes have been proposed.
     </div>}
   </div>;
 }
