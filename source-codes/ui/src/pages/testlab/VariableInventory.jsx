@@ -106,7 +106,7 @@ const VariableInventory = forwardRef(function VariableInventory({ item, readOnly
   const update = (idx, key, value) => {
     setStatus("");
     setRows((current) => {
-      const next = current.map((row, rowIndex) => rowIndex === idx ? { ...row, [key]: value } : row);
+      const next = current.map((row, rowIndex) => rowIndex === idx ? { ...row, [key]: value, ...(key === "role" ? { role_reviewed: 1 } : {}) } : row);
       onRowsLoaded?.(next);
       return next;
     });
@@ -139,6 +139,9 @@ const VariableInventory = forwardRef(function VariableInventory({ item, readOnly
   };
 
   const issues = useMemo(() => specialValueIssues(rows), [rows]);
+  const eligibleSpecialCodeReviews = useMemo(() => rows.filter((row) => (
+    specialValuesFor(row).length > 0 && !row.missing_codes_confirmed && !specialValueIssue(row)
+  )), [rows]);
   const focusIssue = (target = issues[0]) => {
     if (!target) return;
     setQuery("");
@@ -147,6 +150,20 @@ const VariableInventory = forwardRef(function VariableInventory({ item, readOnly
       input?.scrollIntoView({ behavior: "smooth", block: "center" });
       input?.focus();
     }, 0);
+  };
+
+  const approveValidSpecialCodes = () => {
+    if (!eligibleSpecialCodeReviews.length) return;
+    setStatus("");
+    setRows((current) => {
+      const next = current.map((row) => (
+        specialValuesFor(row).length > 0 && !specialValueIssue(row)
+          ? { ...row, missing_codes_confirmed: true } : row
+      ));
+      onRowsLoaded?.(next);
+      return next;
+    });
+    setStatus(`Approved Special / missing values for ${eligibleSpecialCodeReviews.length} ${eligibleSpecialCodeReviews.length === 1 ? "column" : "columns"}.`);
   };
 
   const save = async () => {
@@ -185,7 +202,7 @@ const VariableInventory = forwardRef(function VariableInventory({ item, readOnly
         {item?.kind === "database" && <select aria-label="Table" className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={table} onChange={(event) => setTable(event.target.value)}>{tables.map((entry) => <option key={entry.table_name}>{entry.table_name}</option>)}</select>}
       </div>
     </div>
-    <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><strong>{dirty ? "Metadata edits awaiting confirmation" : "Auto-detected metadata ready for confirmation"}</strong><span className="ml-2">{deferSave ? "The final Save and Proceed action will persist these definitions." : "Apply edits before continuing."}</span></div>
+    <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><strong>{dirty ? "Metadata edits awaiting confirmation" : "Auto-detected metadata ready for confirmation"}</strong><span className="ml-2">{deferSave ? "The final Save and Proceed action will persist these definitions." : "Apply edits before continuing."}</span>{status && <p className="mt-2 text-xs font-medium" role="status">{status}</p>}</div>
     {!!issues.length && <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800" role="alert"><span><strong>{issues.length} blocking special-value {issues.length === 1 ? "issue" : "issues"} in this step.</strong> Correct the highlighted {issues.length === 1 ? "column" : "columns"} before confirming or proceeding.</span><Button type="button" size="sm" variant="outline" onClick={() => focusIssue()}>Review first issue</Button></div>}
     <div
       ref={inventoryScrollRef}
@@ -202,7 +219,7 @@ const VariableInventory = forwardRef(function VariableInventory({ item, readOnly
       className="mt-4 max-h-[32rem] overflow-auto overscroll-y-auto rounded-md border border-slate-200"
     >
       <table className="w-full min-w-[1180px] text-sm">
-        <thead className="sticky top-0 z-10 bg-slate-100 text-left text-xs uppercase text-slate-500"><tr><th className="w-36 max-w-36 px-3 py-3">Column</th><th className="px-3 py-3">Format</th><th className="px-3 py-3">Detected format</th><th className="px-3 py-3">Role</th><th className="px-3 py-3">Valid values</th><th className="px-3 py-3">Special / missing</th><th className="px-3 py-3">Source</th><th className="px-3 py-3">Description</th></tr></thead>
+        <thead className="sticky top-0 z-10 bg-slate-100 text-left text-xs uppercase text-slate-500"><tr><th className="w-36 max-w-36 px-3 py-3">Column</th><th className="px-3 py-3">Format</th><th className="px-3 py-3">Detected format</th><th className="px-3 py-3">Role</th><th className="px-3 py-3">Valid values</th><th className="min-w-64 px-3 py-3"><div className="flex items-center justify-between gap-2"><span>Special / missing</span>{!readOnly && !!eligibleSpecialCodeReviews.length && <button type="button" disabled={saving} onClick={approveValidSpecialCodes} className="rounded-full border border-teal-300 bg-teal-50 px-2 py-1 text-[10px] font-semibold normal-case tracking-normal text-teal-800 hover:bg-teal-100 disabled:cursor-not-allowed disabled:opacity-50">Approve valid ({eligibleSpecialCodeReviews.length})</button>}</div></th><th className="px-3 py-3">Source</th><th className="px-3 py-3">Description</th></tr></thead>
         <tbody>{filtered.map(({ row, index }) => {
           const suggestion = mapping.find((entry) => entry.source_column === row.column_name && entry.tier === "fuzzy" && entry.status === "confirm_suggestion");
           const codes = specialValuesFor(row);

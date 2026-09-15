@@ -54,10 +54,34 @@ export function candidateEvidenceSummary(candidate) {
   const summary = candidate?.evidence_summary;
   if (typeof summary === "string") return summary;
   if (!summary || typeof summary !== "object") return "";
+  if (candidate?.predicate === "table.structure/entity_binding"
+      && summary.distinct_key_count != null && summary.duplicate_excess_rows != null) {
+    return `${Number(summary.usable_observations || 0).toLocaleString()} usable rows · ${Number(summary.distinct_key_count).toLocaleString()} distinct entities · ${Number(summary.duplicate_excess_rows).toLocaleString()} duplicate excess rows`;
+  }
   const parts = [];
   if (summary.usable_observations != null) parts.push(`${Number(summary.usable_observations).toLocaleString()} usable observations`);
   if (summary.evidence_count != null) parts.push(`${Number(summary.evidence_count).toLocaleString()} evidence records`);
   return parts.join(" · ");
+}
+
+export function shouldShowCandidateDiscovery(candidateCount, limit = {}, page = {}, active = false) {
+  return Boolean(active || candidateCount > 5 || limit?.truncated
+    || page?.next_page != null || page?.next_cursor || page?.next_offset != null);
+}
+
+export function emptyCandidateMessage(table, facetName, filtered = false) {
+  if (filtered) return "No eligible candidates match this search.";
+  if (facetName === "entities") return "No reviewed Identifier candidate is available.";
+  if (facetName === "temporals") return "No profile-supported Date or Period candidate is available.";
+  if (facetName !== "row_grains") return "No evidence-backed candidate is available.";
+  const entity = facetCandidates(table, "entities").items[0];
+  const temporalCount = facetCandidates(table, "temporals").items.length;
+  const duplicates = Number(entity?.evidence_summary?.duplicate_excess_rows);
+  const column = String(entity?.instance_key || "").replace(/^column:/, "") || "The selected entity identifier";
+  if (entity && Number.isFinite(duplicates) && duplicates > 0 && temporalCount === 0) {
+    return `No unique business row key found. ${column} identifies the entity but has ${duplicates.toLocaleString()} duplicate excess rows, and no supported column combination establishes unique row grain.`;
+  }
+  return "No evidence-backed column or supported combination establishes unique row grain.";
 }
 
 function draftTableByName(review, tableName) {
@@ -74,6 +98,7 @@ function recommendedId(table, field) {
 export function initialStructureSelections(review) {
   return Object.fromEntries((review?.tables || []).map((table) => {
     const saved = draftTableByName(review, table.table);
+    const hasTemporalCandidate = facetCandidates(table, "temporals").items.length > 0;
     const noSelectionDecisions = Object.fromEntries(SELECTION_FIELDS.flatMap((field) => [
       ...[`action`, `acknowledged`].filter((suffix) => hasOwn(saved, `${field}_${suffix}`))
         .map((suffix) => [`${field}_${suffix}`, saved[`${field}_${suffix}`]]),
@@ -83,9 +108,16 @@ export function initialStructureSelections(review) {
       default_temporal_candidate_id: hasOwn(saved, "default_temporal_candidate_id") ? saved.default_temporal_candidate_id : recommendedId(table, "default_temporal"),
       row_grain_candidate_id: hasOwn(saved, "row_grain_candidate_id") ? saved.row_grain_candidate_id : recommendedId(table, "row_grain"),
       ...noSelectionDecisions,
-      ...(hasOwn(saved, "expected_cadence") ? { expected_cadence: saved.expected_cadence } : table.recommendations?.expected_cadence ? { expected_cadence: { action: "confirm", ...table.recommendations.expected_cadence } } : {}),
+      ...(hasTemporalCandidate && hasOwn(saved, "expected_cadence") ? { expected_cadence: saved.expected_cadence }
+        : hasTemporalCandidate && table.recommendations?.expected_cadence ? { expected_cadence: { action: "confirm", ...table.recommendations.expected_cadence } } : {}),
     }];
   }));
+}
+
+export function draftSaveFailureMessage(error) {
+  const message = String(error?.message || "").trim();
+  const prefix = message && !/^failed to fetch$/i.test(message) ? `${message} ` : "";
+  return `${prefix}Draft not saved. Check the connection and retry before leaving this page.`;
 }
 
 export function draftPayload(review, selections) {
@@ -118,13 +150,20 @@ export function decisionPayload(review, selections) {
 }
 
 export function canConfirmStructure(review, selections, { saving = false, dirty = false, metadataIncompatible = false } = {}) {
-  if (!review?.draft?.editable || saving || dirty || metadataIncompatible || REVIEWABLE_MATERIALIZATION_STATUSES.has(review?.materialization?.status)) return false;
+  if (!review?.draft?.editable || review?.structure_review_state === "confirmed"
+      || saving || dirty || metadataIncompatible || REVIEWABLE_MATERIALIZATION_STATUSES.has(review?.materialization?.status)) return false;
   return (review.tables || []).every((table) => {
     const value = selections?.[table.table] || {};
     if (value.expected_cadence && value.expected_cadence.action !== "confirm" && value.expected_cadence.acknowledged !== true) return false;
     if (table.state === "limited") return SELECTION_FIELDS.every((field) => !requirementIsActive(table.requirements, field) || Boolean(value[field]) || (["clear", "mark_not_applicable"].includes(value[`${field}_action`]) && value[`${field}_acknowledged`] === true));
     return SELECTION_FIELDS.every((field) => !requirementIsActive(table.requirements, field) || Boolean(value[field]) || (["clear", "mark_not_applicable"].includes(value[`${field}_action`]) && value[`${field}_acknowledged`] === true));
   });
+}
+
+export function testLabPathAfterStructureConfirmation(itemId, response) {
+  return response?.status === "confirmed" && itemId
+    ? `/test-lab?item=${encodeURIComponent(itemId)}`
+    : null;
 }
 
 export function createDecisionCoordinator(makeKey = newIdempotencyKey) {

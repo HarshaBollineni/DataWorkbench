@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -11,7 +12,8 @@ import {
 import {
   boundedCandidates, candidateEvidenceSummary, createAutosaveCoordinator, draftPayload,
   canConfirmStructure, createDecisionCoordinator, decisionPayload, createMaterializationPoller, facetCandidates, initialStructureSelections, insufficientAssistance,
-  mergeCandidatePage, REVIEWABLE_MATERIALIZATION_STATUSES, reviewNeedsReconfirmation, safeWarningLabel, selectionMessage,
+  draftSaveFailureMessage, emptyCandidateMessage, mergeCandidatePage, REVIEWABLE_MATERIALIZATION_STATUSES, reviewNeedsReconfirmation,
+  safeWarningLabel, selectionMessage, shouldShowCandidateDiscovery, testLabPathAfterStructureConfirmation,
 } from "./datasetStructureReview.js";
 
 const FACETS = [
@@ -35,6 +37,7 @@ function CandidateSelect({ itemId, table, facet, value, onChange }) {
   const allCandidates = remote?.items || local.items;
   const page = remote?.page || local.page;
   const candidates = boundedCandidates(allCandidates, filter, remote ? { limit: 100 } : limit);
+  const showDiscovery = shouldShowCandidateDiscovery(allCandidates.length, limit, page, Boolean(filter || remote));
   const staleSelection = value && !allCandidates.some((candidate) => candidate.candidate_id === value);
   const loadPage = useCallback(async ({ q = "", cursor, append = false } = {}) => {
     requestRef.current?.abort();
@@ -64,11 +67,11 @@ function CandidateSelect({ itemId, table, facet, value, onChange }) {
   }, [filter, loadPage]);
   useEffect(() => () => requestRef.current?.abort(), []);
   return <section className="rounded-md border border-slate-200 bg-white p-4">
-    <div className="flex flex-wrap items-start justify-between gap-2"><div><h4 className="font-semibold text-slate-900">{facet.title}</h4><p className="mt-1 text-xs text-slate-500">{facet.hint}</p></div><span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold uppercase text-slate-600">ranked evidence</span></div>
-    <Input className="mt-3 h-9" aria-label={`Filter ${facet.title} candidates for ${table.table}`} placeholder="Filter label, predicate, instance, or evidence" value={filter} onChange={(event) => setFilter(event.target.value)} />
+    <div className="flex flex-wrap items-start justify-between gap-2"><div><h4 className="font-semibold text-slate-900">{facet.title}</h4><p className="mt-1 text-xs text-slate-500">{facet.hint}</p></div>{showDiscovery && <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-semibold uppercase text-slate-600">Ranked candidates</span>}</div>
+    {showDiscovery && <Input className="mt-3 h-9" aria-label={`Filter ${facet.title} candidates for ${table.table}`} placeholder="Search candidates" value={filter} onChange={(event) => setFilter(event.target.value)} />}
     <label className="mt-3 block text-sm text-slate-700"><span className="sr-only">{facet.title} for {table.table}</span><select className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={value ?? ""} onChange={(event) => onChange(event.target.value || null)}><option value="">{facet.empty}</option>{staleSelection && <option value={value}>Previous selection — evidence changed</option>}{candidates.map((candidate) => <option key={candidate.candidate_id} value={candidate.candidate_id}>{candidate.display_label}{candidate.recommended ? " — Recommended" : ""}{candidateEvidenceSummary(candidate) ? ` · ${candidateEvidenceSummary(candidate)}` : ""}</option>)}</select></label>
     {staleSelection && <p className="mt-2 text-xs text-amber-700">Previous selection — evidence changed. Choose a current candidate or no applicable selection to replace it.</p>}
-    {candidates.length === 0 && <p className="mt-2 text-xs text-slate-500">No eligible candidates match this filter.</p>}
+    {candidates.length === 0 && <p className="mt-2 text-xs text-slate-500">{emptyCandidateMessage(table, facet.candidates, Boolean(filter))}</p>}
     {limit?.truncated && !remote && <p className="mt-2 text-xs text-slate-500">Showing the bounded {limit.returned} returned candidates; load more or refine the filter to inspect this safe projection.</p>}
     {page?.next_page != null && <p className="mt-2 text-xs text-slate-500">Additional bounded candidate pages are available from the review service.</p>}
     {(page?.next_cursor || page?.next_offset != null || (!remote && limit?.truncated)) && <Button type="button" className="mt-2" size="sm" variant="outline" disabled={loadingPage} onClick={() => loadPage({ q: filter, cursor: page?.next_cursor || page?.next_offset || `offset:${allCandidates.length}`, append: true })}>{loadingPage ? "Loading candidates…" : "Load more candidates"}</Button>}
@@ -78,12 +81,20 @@ function CandidateSelect({ itemId, table, facet, value, onChange }) {
   </section>;
 }
 
-function ExpectedCadence({ table, value, onChange }) {
+function CadenceReview({ table, temporalCandidateId, value, onChange }) {
+  const temporalCandidates = facetCandidates(table, "temporals").items;
+  const observedCadences = facetCandidates(table, "observed_cadences").items;
+  if (temporalCandidates.length === 0) {
+    return <section className="mt-3 rounded-md border border-slate-200 bg-white p-3" aria-label={`Cadence for ${table.table}`}><h4 className="font-semibold text-slate-900">Cadence for the Date/Period candidate</h4><p className="mt-2 text-sm text-slate-600"><strong>Not applicable</strong> — no supported Date or Period column is available.</p></section>;
+  }
+  if (!temporalCandidateId) {
+    return <section className="mt-3 rounded-md border border-slate-200 bg-white p-3" aria-label={`Cadence for ${table.table}`}><h4 className="font-semibold text-slate-900">Cadence for the Date/Period candidate</h4><p className="mt-2 text-sm text-slate-600">Select a Date or Period candidate above to review its cadence.</p></section>;
+  }
   const proposal = table.recommendations?.expected_cadence;
   const selected = value || (proposal ? { action: "confirm", ...proposal } : { action: "clear", acknowledged: false });
   const update = (next) => onChange({ ...selected, ...next });
   const differs = proposal && selected.action === "confirm" && (proposal.value?.unit !== selected.value?.unit || Number(proposal.value?.step) !== Number(selected.value?.step));
-  return <section className="mt-3 rounded-md border border-slate-200 bg-white p-3"><h4 className="font-semibold text-slate-900">Expected cadence</h4><p className="mt-1 text-xs text-slate-500">Observed cadence is read-only. This is your separately confirmed intended configuration.</p>{proposal ? <p className="mt-2 text-xs text-emerald-700">Recommended from exact regular observation: every {proposal.value?.step} {proposal.value?.unit}.</p> : <p className="mt-2 text-xs text-amber-700">No regular observed cadence proposal is available; a supported intended cadence may still be declared.</p>}<div className="mt-2 flex flex-wrap gap-2"><select aria-label={`Expected cadence action for ${table.table}`} className="h-9 rounded border border-slate-200 px-2 text-sm" value={selected.action} onChange={(event) => update({ action: event.target.value, acknowledged: false })}><option value="confirm">Confirm expected cadence</option><option value="clear">No expected cadence</option><option value="mark_not_applicable">Not applicable</option></select>{selected.action === "confirm" && <><select aria-label={`Expected cadence unit for ${table.table}`} className="h-9 rounded border border-slate-200 px-2 text-sm" value={selected.value?.unit || proposal?.value?.unit || "month"} onChange={(event) => update({ value: { unit: event.target.value, step: Number(selected.value?.step || proposal?.value?.step || 1) }, axis_candidate_id: selected.axis_candidate_id || proposal?.axis_candidate_id, grouping_candidate_id: selected.grouping_candidate_id ?? proposal?.grouping_candidate_id ?? null })}>{["day", "week", "month", "quarter", "year"].map((unit) => <option key={unit}>{unit}</option>)}</select><Input aria-label={`Expected cadence step for ${table.table}`} className="h-9 w-20" type="number" min="1" value={selected.value?.step || proposal?.value?.step || 1} onChange={(event) => update({ value: { unit: selected.value?.unit || proposal?.value?.unit || "month", step: Math.max(1, Number(event.target.value) || 1) }, axis_candidate_id: selected.axis_candidate_id || proposal?.axis_candidate_id, grouping_candidate_id: selected.grouping_candidate_id ?? proposal?.grouping_candidate_id ?? null })} /></>}</div>{selected.action !== "confirm" && <label className="mt-2 flex items-center gap-2 text-xs"><input type="checkbox" checked={Boolean(selected.acknowledged)} onChange={(event) => update({ acknowledged: event.target.checked })} />I acknowledge this choice.</label>}{differs && <p className="mt-2 text-xs text-amber-700">Your selection differs from the observed dataset structure. It will be preserved as your intended configuration, and applicable diagnostics will ask you to confirm the difference before execution.</p>}</section>;
+  return <section className="mt-3 rounded-md border border-slate-200 bg-white p-3" aria-label={`Cadence for ${table.table}`}><h4 className="font-semibold text-slate-900">Cadence for the Date/Period candidate</h4><div className="mt-3 grid gap-4 md:grid-cols-2"><div><h5 className="text-sm font-semibold text-slate-800">Observed</h5><p className="mt-1 text-xs text-slate-500">Read-only frequency measured from the selected column.</p>{observedCadences.length ? <ul className="mt-2 space-y-1 text-sm text-slate-700">{observedCadences.map((candidate) => <li key={candidate.candidate_id || candidate.display_label}>{candidate.display_label}{candidateEvidenceSummary(candidate) ? ` · ${candidateEvidenceSummary(candidate)}` : ""}</li>)}</ul> : <p className="mt-2 text-sm text-slate-600">Cadence could not be determined from the available observations.</p>}</div><div className="border-t border-slate-200 pt-3 md:border-l md:border-t-0 md:pl-4 md:pt-0"><h5 className="text-sm font-semibold text-slate-800">Expected</h5><p className="mt-1 text-xs text-slate-500">The intended frequency for this dataset.</p>{proposal ? <p className="mt-2 text-xs text-emerald-700">Recommended from exact regular observation: every {proposal.value?.step} {proposal.value?.unit}.</p> : <p className="mt-2 text-xs text-amber-700">No regular cadence was inferred; you can still declare the intended cadence.</p>}<div className="mt-2 flex flex-wrap gap-2"><select aria-label={`Expected cadence action for ${table.table}`} className="h-9 rounded border border-slate-200 px-2 text-sm" value={selected.action} onChange={(event) => update({ action: event.target.value, acknowledged: false })}><option value="confirm">Confirm expected cadence</option><option value="clear">No expected cadence</option><option value="mark_not_applicable">Not applicable</option></select>{selected.action === "confirm" && <><select aria-label={`Expected cadence unit for ${table.table}`} className="h-9 rounded border border-slate-200 px-2 text-sm" value={selected.value?.unit || proposal?.value?.unit || "month"} onChange={(event) => update({ value: { unit: event.target.value, step: Number(selected.value?.step || proposal?.value?.step || 1) }, axis_candidate_id: selected.axis_candidate_id || proposal?.axis_candidate_id, grouping_candidate_id: selected.grouping_candidate_id ?? proposal?.grouping_candidate_id ?? null })}>{["day", "week", "month", "quarter", "year"].map((unit) => <option key={unit}>{unit}</option>)}</select><Input aria-label={`Expected cadence step for ${table.table}`} className="h-9 w-20" type="number" min="1" value={selected.value?.step || proposal?.value?.step || 1} onChange={(event) => update({ value: { unit: selected.value?.unit || proposal?.value?.unit || "month", step: Math.max(1, Number(event.target.value) || 1) }, axis_candidate_id: selected.axis_candidate_id || proposal?.axis_candidate_id, grouping_candidate_id: selected.grouping_candidate_id ?? proposal?.grouping_candidate_id ?? null })} /></>}</div>{selected.action !== "confirm" && <label className="mt-2 flex items-center gap-2 text-xs"><input type="checkbox" checked={Boolean(selected.acknowledged)} onChange={(event) => update({ acknowledged: event.target.checked })} />I acknowledge this choice.</label>}{differs && <p className="mt-2 text-xs text-amber-700">Your selection differs from the observed dataset structure. It will be preserved as your intended configuration, and applicable diagnostics will ask you to confirm the difference before execution.</p>}</div></div></section>;
 }
 
 function NoApplicableAction({ table, facet, selection, onSelection }) {
@@ -95,18 +106,17 @@ function NoApplicableAction({ table, facet, selection, onSelection }) {
 
 function TableReview({ itemId, table, selections, onSelection }) {
   const warningCodes = table.warnings || [];
-  const observedCadences = facetCandidates(table, "observed_cadences").items;
   return <section className="mt-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4" aria-labelledby={`structure-table-${table.table}`}>
     <div className="flex flex-wrap items-center justify-between gap-2"><div><h3 id={`structure-table-${table.table}`} className="font-semibold text-slate-950">{table.table}</h3><p className="text-xs text-slate-500">Review state: {statusLabel(table.state)}</p></div></div>
     <div className="mt-4 grid gap-3 xl:grid-cols-3">{FACETS.map((facet) => <CandidateSelect key={facet.key} itemId={itemId} table={table} facet={facet} value={selections[facet.key]} onChange={(candidateId) => onSelection(facet.key, candidateId)} />)}</div>
     {FACETS.map((facet) => <NoApplicableAction key={`${facet.key}-action`} table={table} facet={facet} selection={selections} onSelection={onSelection} />)}
-    <section className="mt-3 rounded-md border border-slate-200 bg-white p-3" aria-label={`Observed cadence for ${table.table}`}><h4 className="font-semibold text-slate-900">Observed cadence</h4><p className="mt-1 text-xs text-slate-500">Read-only measurement from the dataset.</p>{observedCadences.length ? <ul className="mt-2 space-y-1 text-sm text-slate-700">{observedCadences.map((candidate) => <li key={candidate.candidate_id || candidate.display_label}>{candidate.display_label}{candidateEvidenceSummary(candidate) ? ` · ${candidateEvidenceSummary(candidate)}` : ""}</li>)}</ul> : <p className="mt-2 text-sm text-slate-500">No observed cadence evidence is available.</p>}</section>
-    <ExpectedCadence table={table} value={selections.expected_cadence} onChange={(value) => onSelection("expected_cadence", value)} />
+    <CadenceReview table={table} temporalCandidateId={selections.default_temporal_candidate_id} value={selections.expected_cadence} onChange={(value) => onSelection("expected_cadence", value)} />
     {warningCodes.length > 0 && <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><p className="flex items-center gap-1 font-medium"><AlertTriangle className="h-4 w-4" /> Review warnings</p><ul className="mt-1 list-disc pl-5 text-xs">{warningCodes.map((warning, index) => <li key={`${safeWarningLabel(warning)}-${index}`}>{safeWarningLabel(warning)}. This choice does not establish authority.</li>)}</ul></div>}
   </section>;
 }
 
 export default function DatasetStructureReview({ itemId, onReturnToColumns }) {
+  const navigate = useNavigate();
   const [review, setReview] = useState(null);
   const [selections, setSelections] = useState({});
   const [loading, setLoading] = useState(true);
@@ -167,20 +177,20 @@ export default function DatasetStructureReview({ itemId, onReturnToColumns }) {
       const operation = autosaveRef.current.begin(draftPayload(reviewRef.current, selections));
       if (!operation) return;
       setSaving(true);
-      setSaveError("");
       try {
         const response = await patchDatasetStructureDraftV2(itemId, operation.payload, operation.idempotencyKey);
         const current = reviewRef.current;
         const next = { ...current, draft: { ...(current?.draft || {}), revision: response.draft_revision ?? current?.draft?.revision, evidence_fingerprint: response.evidence_fingerprint || current?.draft?.evidence_fingerprint, selections: response.preserved_selections || current?.draft?.selections } };
         reviewRef.current = next;
         setReview(next);
+        setSaveError("");
         setReconfirmation(reviewNeedsReconfirmation(next, response.status));
         const completion = autosaveRef.current.finish(operation);
         if (completion.hasNewerEdits) setSaveAttempt((currentAttempt) => currentAttempt + 1);
         else setDirty(false);
       } catch (saveFailure) {
         autosaveRef.current.finish(operation);
-        setSaveError(`${saveFailure.message || "Draft could not be saved."} Your selections are still retained on this screen; retrying will not discard them.`);
+        setSaveError(draftSaveFailureMessage(saveFailure));
       } finally { setSaving(false); }
     }, 650);
     return () => window.clearTimeout(timer);
@@ -208,7 +218,11 @@ export default function DatasetStructureReview({ itemId, onReturnToColumns }) {
       if (response.status === "needs_reconfirmation") {
         setSelections(initialStructureSelections({ ...reviewRef.current, draft: { ...reviewRef.current.draft, selections: response.preserved_selections, revision: response.draft_revision, evidence_fingerprint: response.evidence_fingerprint } }));
         setReconfirmation(true); await loadReview();
-      } else { await loadReview(); }
+      } else {
+        const testLabPath = testLabPathAfterStructureConfirmation(itemId, response);
+        if (testLabPath) navigate(testLabPath);
+        else await loadReview();
+      }
     } catch (failure) { setSaveError(`${failure.message || "Confirmation could not be saved."} Your selections remain on this screen; retrying uses the same confirmation request.`); }
     finally { setConfirming(false); }
   };
@@ -224,8 +238,11 @@ export default function DatasetStructureReview({ itemId, onReturnToColumns }) {
         {reconfirmation && <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">Evidence changed while this draft was saved. Your selections are preserved and remain editable; review the changed evidence before any later confirmation.</div>}
         {assistance.length > 0 && <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950"><strong>The selected details are insufficient for certain diagnostics: {assistance.map((entry) => entry.diagnostic_name || entry.diagnostic_id).join(", ")}.</strong> Resolve the following requirements to enable them: {assistance.flatMap((entry) => entry.requirements || [entry.message]).filter(Boolean).join("; ")}. Other diagnostics are unaffected.</div>}
         {(review.tables || []).map((table) => <TableReview key={table.table} itemId={itemId} table={table} selections={selections[table.table] || {}} onSelection={(key, candidateId) => changeSelection(table.table, key, candidateId)} />)}
-        <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-slate-600">{saving ? <><Loader2 className="h-4 w-4 animate-spin" />Saving draft…</> : dirty ? "Draft changes are queued to save." : <><CheckCircle2 className="h-4 w-4 text-emerald-700" />Draft saved. These choices are not confirmed decisions.</>}{saveError && <span className="w-full rounded-md border border-red-200 bg-red-50 p-2 text-red-800" role="alert">{saveError} <Button size="sm" variant="outline" onClick={() => setSaveAttempt((currentAttempt) => currentAttempt + 1)}>Retry save</Button></span>}</div>
-        <div className="mt-4 rounded-md border border-indigo-200 bg-indigo-50 p-3"><p className="text-sm text-indigo-950">{review.structure_review_state === "confirmed" ? "These selections are supported by the dataset evidence. They will be used to prefill applicable diagnostics, and you can review them before execution." : "Confirming records these selections as Dataset Structure decisions. It does not run a diagnostic."}</p><Button className="mt-3" disabled={!confirmEnabled} onClick={confirmStructure}>{confirming ? <><Loader2 className="h-4 w-4 animate-spin" />Confirming…</> : "Confirm dataset structure"}</Button>{!confirmEnabled && <p className="mt-2 text-xs text-slate-600">Save pending changes and resolve required selections or metadata warnings before confirmation.</p>}</div>
+        <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-slate-600">{saving ? <><Loader2 className="h-4 w-4 animate-spin" />Saving draft…</> : dirty ? "Draft changes are queued to save." : <><CheckCircle2 className="h-4 w-4 text-emerald-700" />Draft saved. These choices are not confirmed decisions.</>}{saveError && <span className="w-full rounded-md border border-red-200 bg-red-50 p-2 text-red-800" role="alert">{saveError} <Button size="sm" variant="outline" disabled={saving} onClick={() => setSaveAttempt((currentAttempt) => currentAttempt + 1)}>{saving ? "Retrying…" : "Retry save"}</Button></span>}</div>
+        <div className="mt-4 rounded-md border border-indigo-200 bg-indigo-50 p-3">
+          <p className="text-sm text-indigo-950">{review.structure_review_state === "confirmed" ? "Dataset structure is confirmed. Open Test Lab to review diagnostic coverage for this sourced snapshot." : "Confirming records these selections as Dataset Structure decisions. It does not run a diagnostic."}</p>
+          {review.structure_review_state === "confirmed" ? <Button className="mt-3" onClick={() => navigate(`/test-lab?item=${encodeURIComponent(itemId)}`)}>Open in Test Lab</Button> : <><Button className="mt-3" disabled={!confirmEnabled} onClick={confirmStructure}>{confirming ? <><Loader2 className="h-4 w-4 animate-spin" />Confirming…</> : "Confirm dataset structure"}</Button>{!confirmEnabled && <p className="mt-2 text-xs text-slate-600">Save pending changes and resolve required selections or metadata warnings before confirmation.</p>}</>}
+        </div>
       </>}
       {metadataIncompatible && <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950"><p>Source metadata is incompatible. Your draft is retained while column definitions are corrected.</p><Button className="mt-2" size="sm" variant="outline" onClick={() => onReturnToColumns?.(review.return_to_column_definitions || review.metadata_return || {})}>Return to column definitions</Button></div>}
     </>}

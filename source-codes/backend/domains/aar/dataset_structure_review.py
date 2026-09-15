@@ -19,6 +19,7 @@ from .repository import AnalysisArtifactRepository
 from .dataset_structure_producer import _assertion_batch_entry, _verified_authority_write_scope
 
 _ASSERTION = "dataset_structure_assertion"
+_PHYSICAL_SCHEMA_PREDICATE = "table.physical/schema_column"
 _PREDICATES = {
     "table.structure/entity_binding": "entities",
     "table.temporal/temporal_binding": "temporals",
@@ -111,13 +112,19 @@ def _display(value: dict[str, Any], kind: str) -> str:
 def _aggregate(payload: dict[str, Any]) -> dict[str, Any]:
     evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
     usable = total = 0
+    measurements: dict[str, int] = {}
     for item in evidence[:8]:
         basis = item.get("basis") if isinstance(item, dict) else None
         if isinstance(basis, dict):
             total += int(basis.get("total_count") or 0)
             usable += int(basis.get("usable_count") or 0)
+        for measurement in item.get("measurements", []) if isinstance(item, dict) else []:
+            name = measurement.get("name") if isinstance(measurement, dict) else None
+            count = measurement.get("count") if isinstance(measurement, dict) else None
+            if name in {"distinct_key_count", "duplicate_excess_rows"} and isinstance(count, int):
+                measurements[name] = measurements.get(name, 0) + count
     return {"evidence_count": len(evidence), "aggregate_basis": "materialized",
-            "usable_observations": usable, "total_observations": total}
+            "usable_observations": usable, "total_observations": total, **measurements}
 
 
 def _candidate(metadata: Any, payload: dict[str, Any], kind: str) -> dict[str, Any] | None:
@@ -148,6 +155,17 @@ def _candidate(metadata: Any, payload: dict[str, Any], kind: str) -> dict[str, A
     return result
 
 
+def _read_review_payload(repo: AnalysisArtifactRepository, metadata: Any) -> dict[str, Any]:
+    """Integrity-check one immutable assertion without rewriting read metadata."""
+    payload_bytes = repo._payload_path(metadata).read_bytes()
+    if hashlib.sha256(payload_bytes).hexdigest() != metadata.payload_hash:
+        raise ValueError("artifact payload hash mismatch")
+    payload = json.loads(payload_bytes)
+    if not isinstance(payload, dict):
+        raise ValueError("artifact payload must be an object")
+    return payload
+
+
 def _artifacts(item: dict[str, Any]) -> dict[str, dict[str, list[dict[str, Any]]]]:
     tables: dict[str, dict[str, list[dict[str, Any]]]] = {}
     repo = AnalysisArtifactRepository()
@@ -156,11 +174,18 @@ def _artifacts(item: dict[str, Any]) -> dict[str, dict[str, list[dict[str, Any]]
     for metadata in repo.list(snapshot_id=item["item_id"], artifact_type=_ASSERTION, status="active", scope="universal"):
         if metadata.asset_id != item.get("dataset_family_id"):
             continue
+        # The artifact summary is a bounded catalogue projection produced from
+        # the validated payload at write time. Physical-schema assertions are
+        # not review candidates, so do not re-read and re-hash one payload per
+        # source column on every GET/autosave. A missing/legacy summary still
+        # takes the verified payload path below and is filtered there.
+        if metadata.summary.get("predicate") == _PHYSICAL_SCHEMA_PREDICATE:
+            continue
         try:
-            checked, payload = repo.get(metadata.artifact_id)
+            payload = _read_review_payload(repo, metadata)
         except Exception:
             continue
-        if checked.status != "active" or not isinstance(payload, dict) or payload.get("context_version") != "1":
+        if metadata.status != "active" or payload.get("context_version") != "1":
             continue
         subject, predicate = payload.get("subject"), payload.get("predicate")
         if not isinstance(subject, dict) or subject.get("kind") != "table" or predicate not in _PREDICATES:
@@ -169,7 +194,7 @@ def _artifacts(item: dict[str, Any]) -> dict[str, dict[str, list[dict[str, Any]]
         if not isinstance(table, str) or not table:
             continue
         kind = _PREDICATES[predicate]
-        candidate = _candidate(checked, payload, kind)
+        candidate = _candidate(metadata, payload, kind)
         if candidate is not None:
             tables.setdefault(table, {name: [] for name in _PREDICATES.values()})[kind].append(candidate)
     return tables
@@ -260,6 +285,20 @@ def _derive_state(materialization: dict[str, Any], candidates: dict[str, dict[st
     required = ("entities", "temporals", "row_grains")
     return "limited" if (not table_names or any(not candidates.get(table, {}).get(name)
                         for table in table_names for name in required)) else "review_required"
+
+
+def _column_refs(candidate: dict[str, Any] | None, field: str = "columns") -> set[tuple[Any, Any]]:
+    value = (candidate or {}).get("_value") or {}
+    return {(column.get("table"), column.get("column"))
+            for column in value.get(field, []) if isinstance(column, dict)}
+
+
+def _compatible_row_grain(entity: dict[str, Any] | None, temporal: dict[str, Any] | None,
+                          grains: list[dict[str, Any]]) -> dict[str, Any] | None:
+    required = _column_refs(entity) | _column_refs(temporal)
+    if not required:
+        return None
+    return next((grain for grain in grains if required <= _column_refs(grain, "key_columns")), None)
 
 
 def _upsert_state(item: dict[str, Any], *, state: str, generation: int | None, fingerprint: str,
@@ -411,8 +450,14 @@ def _confirmed_authority(item: dict[str, Any]) -> dict[str, dict[str, str]]:
     result: dict[str, dict[str, str]] = {}
     repo = AnalysisArtifactRepository()
     for metadata in repo.list(snapshot_id=item["item_id"], artifact_type=_ASSERTION, status="active", scope="universal"):
+        summary_predicate = metadata.summary.get("predicate")
+        # Confirmed authority uses only the three v2 decision predicates.
+        # Skip known candidate/schema assertions from the catalogue summary;
+        # legacy entries without a summary retain the verified fallback.
+        if summary_predicate and summary_predicate not in names:
+            continue
         try:
-            _metadata, payload = repo.get(metadata.artifact_id)
+            payload = _read_review_payload(repo, metadata)
         except Exception:
             continue
         table = payload.get("subject", {}).get("table") if isinstance(payload.get("subject"), dict) else None
@@ -476,14 +521,24 @@ def review(item: dict[str, Any]) -> dict[str, Any]:
         groups = candidates.get(table, {name: [] for name in _PREDICATES.values()})
         public_groups, recommendations = {}, {}
         candidate_limits = {}
+        ordered_groups = {kind: sorted(groups.get(kind, []),
+                                       key=lambda c: (-c["evidence"]["usable_observations"], c["candidate_id"]))
+                          for kind in _PREDICATES.values()}
+        recommended = {
+            "entities": next(iter(ordered_groups["entities"]), None),
+            "temporals": next(iter(ordered_groups["temporals"]), None),
+        }
+        recommended["row_grains"] = _compatible_row_grain(
+            recommended["entities"], recommended["temporals"], ordered_groups["row_grains"])
         for kind in _PREDICATES.values():
-            ordered = sorted(groups.get(kind, []), key=lambda c: (-c["evidence"]["usable_observations"], c["candidate_id"]))
+            ordered = ordered_groups[kind]
             visible = ordered[:_MAX_CANDIDATES_PER_FACET]
-            public_groups[kind] = [_public_candidate(value, recommended=(index == 0 and kind in _SELECTABLE), rank=index + 1)
+            recommended_id = (recommended.get(kind) or {}).get("candidate_id")
+            public_groups[kind] = [_public_candidate(value, recommended=(value["candidate_id"] == recommended_id), rank=index + 1)
                                    for index, value in enumerate(visible)]
             candidate_limits[kind] = {"returned": len(visible), "truncated": len(ordered) > len(visible),
                                       "limit": _MAX_CANDIDATES_PER_FACET}
-            recommendations[{"entities": "default_entity", "temporals": "default_temporal", "row_grains": "row_grain", "observed_cadences": "observed_cadence"}[kind]] = (ordered[0]["candidate_id"] if ordered and kind in _SELECTABLE else None)
+            recommendations[{"entities": "default_entity", "temporals": "default_temporal", "row_grains": "row_grain", "observed_cadences": "observed_cadence"}[kind]] = (recommended_id if kind in _SELECTABLE else None)
         # A proposal exists only when a retained regular observation binds to
         # this exact temporal axis (and, where present, the exact entity
         # grouping).  It is a draft recommendation, never an authority value.

@@ -3,8 +3,10 @@ import test from "node:test";
 
 import {
   MAX_CANDIDATES_PER_FACET, STRUCTURE_COPY, boundedCandidates, candidateEvidenceSummary,
-  createAutosaveCoordinator, createMaterializationPoller, draftPayload, facetCandidates,
-  canConfirmStructure, createDecisionCoordinator, decisionPayload, initialStructureSelections, mergeCandidatePage, reviewNeedsReconfirmation, selectionMessage,
+  createAutosaveCoordinator, createMaterializationPoller, draftPayload, draftSaveFailureMessage, facetCandidates,
+  canConfirmStructure, createDecisionCoordinator, decisionPayload, emptyCandidateMessage,
+  initialStructureSelections, mergeCandidatePage, reviewNeedsReconfirmation, selectionMessage,
+  shouldShowCandidateDiscovery, testLabPathAfterStructureConfirmation,
 } from "../src/pages/sourcing/datasetStructureReview.js";
 import { metadataCorrectionParams, metadataCorrectionTarget, structureReviewParams } from "../src/pages/sourcing/metadataCorrectionReturn.js";
 
@@ -41,6 +43,29 @@ test("candidate UI ranks, filters, and honors the server-provided bound", () => 
   const candidates = Array.from({ length: MAX_CANDIDATES_PER_FACET + 2 }, (_, index) => ({ candidate_id: String(index), display_label: `Candidate ${index}`, rank: MAX_CANDIDATES_PER_FACET + 2 - index }));
   assert.equal(boundedCandidates(candidates, "", { limit: 3 }).length, 3);
   assert.equal(boundedCandidates(candidates, "Candidate 3", { limit: 20 })[0].candidate_id, "3");
+});
+
+test("candidate discovery controls appear only when the candidate set needs discovery", () => {
+  assert.equal(shouldShowCandidateDiscovery(0), false);
+  assert.equal(shouldShowCandidateDiscovery(1), false);
+  assert.equal(shouldShowCandidateDiscovery(6), true);
+  assert.equal(shouldShowCandidateDiscovery(1, { truncated: true }), true);
+});
+
+test("entity evidence and missing row grain explain repetition without conflating identity", () => {
+  const table = {
+    candidates: {
+      entities: [{
+        predicate: "table.structure/entity_binding", instance_key: "column:user_id",
+        evidence_summary: { usable_observations: 4816, distinct_key_count: 4787, duplicate_excess_rows: 29 },
+      }],
+      temporals: [], row_grains: [],
+    },
+  };
+  assert.equal(candidateEvidenceSummary(table.candidates.entities[0]),
+    "4,816 usable rows · 4,787 distinct entities · 29 duplicate excess rows");
+  assert.equal(emptyCandidateMessage(table, "row_grains"),
+    "No unique business row key found. user_id identifies the entity but has 29 duplicate excess rows, and no supported column combination establishes unique row grain.");
 });
 
 test("optional backend facet-page envelope is consumed without changing the candidate contract", () => {
@@ -175,10 +200,38 @@ test("expected-cadence draft edit is included in autosave and survives re-open",
   assert.deepEqual(draftPayload(saved, selections).selections.tables[0].expected_cadence, edit);
 });
 
+test("cadence is omitted when no Date or Period candidate exists", () => {
+  const withoutTemporal = {
+    ...review,
+    tables: [{ ...review.tables[0], candidates: { ...review.tables[0].candidates, temporals: [] } }],
+    draft: { ...review.draft, selections: { tables: [{
+      table: "applications", expected_cadence: { action: "clear", acknowledged: false },
+    }] } },
+  };
+  const selections = initialStructureSelections(withoutTemporal);
+  assert.equal(Object.hasOwn(selections.applications, "expected_cadence"), false);
+  assert.equal(Object.hasOwn(draftPayload(withoutTemporal, selections).selections.tables[0], "expected_cadence"), false);
+});
+
+test("save failures use an actionable message without exposing browser fetch jargon", () => {
+  assert.equal(draftSaveFailureMessage(new TypeError("Failed to fetch")),
+    "Draft not saved. Check the connection and retry before leaving this page.");
+  assert.equal(draftSaveFailureMessage(new Error("Draft revision changed.")),
+    "Draft revision changed. Draft not saved. Check the connection and retry before leaving this page.");
+});
+
 test("limited no-selection confirmation needs an acknowledged closed action", () => {
   const limited = { ...review, tables: [{ ...review.tables[0], state: "limited", requirements: ["entity"] }] };
   assert.equal(canConfirmStructure(limited, { applications: { default_entity_candidate_id: null, default_entity_candidate_id_action: "clear", default_entity_candidate_id_acknowledged: false } }), false);
   const required = { ...review, tables: [{ ...review.tables[0], requirements: ["entity"] }] };
   assert.equal(canConfirmStructure(required, { applications: { default_entity_candidate_id: null, default_entity_candidate_id_action: "clear", default_entity_candidate_id_acknowledged: false } }), false);
   assert.equal(canConfirmStructure(required, { applications: { default_entity_candidate_id: null, default_entity_candidate_id_action: "clear", default_entity_candidate_id_acknowledged: true } }), true);
+});
+
+test("confirmed structure hands off to the exact Test Lab item and cannot be confirmed twice", () => {
+  const selections = initialStructureSelections(review);
+  assert.equal(testLabPathAfterStructureConfirmation("item safe/1", { status: "confirmed" }),
+    "/test-lab?item=item%20safe%2F1");
+  assert.equal(testLabPathAfterStructureConfirmation("item-safe", { status: "needs_reconfirmation" }), null);
+  assert.equal(canConfirmStructure({ ...review, structure_review_state: "confirmed" }, selections), false);
 });

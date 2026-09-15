@@ -378,7 +378,7 @@ def test_dsc_context_without_fulfilled_pins_is_external_safe(aar):
         save_dataset_structure_context(repo, payload, consumer_id="consumer_dsc_test")
 
 
-def test_profile_backed_schema_observer_and_resolver_are_atomic_and_reusable(aar):
+def test_profile_backed_schema_observer_and_resolver_are_atomic_and_reusable(aar, monkeypatch):
     repo, asset_id, snapshot_id = aar
     db.update("dq_item_tables", {"item_id": snapshot_id, "table_name": "private_applications"},
               {"columns": ["private_application_id", "amount"], "col_count": 2})
@@ -406,7 +406,17 @@ def test_profile_backed_schema_observer_and_resolver_are_atomic_and_reusable(aar
     }
 
     first = observe_dataset_structure(repo, snapshot_id, tables=["private_applications"])
+    schema_ids = {item.artifact.artifact_id for item in first}
+    original_get = repo.get
+    assertion_reads = []
+    def counted_get(artifact_id, *args, **kwargs):
+        if artifact_id in schema_ids:
+            assertion_reads.append(artifact_id)
+        return original_get(artifact_id, *args, **kwargs)
+    monkeypatch.setattr(repo, "get", counted_get)
     second = observe_dataset_structure(repo, snapshot_id, tables=["private_applications"])
+    assert sorted(assertion_reads) == sorted(schema_ids)
+    monkeypatch.setattr(repo, "get", original_get)
     assert [item.outcome for item in first] == ["created", "created"]
     assert [item.outcome for item in second] == ["reused", "reused"]
     assertions = [repo.get(item.artifact.artifact_id)[1] for item in first]
@@ -748,7 +758,12 @@ def test_phase_b_resolver_isolates_failed_grain_observation_from_schema(aar):
             "discrepancies": [], "notes": "", "role": role, "role_reviewed": 1, "provisional": 0,
             "profile_json": {"total_count": 4, "non_null_count": 4, "null_count": 0,
                              "physical_null_count": 0, "regular_value_count": 4,
-                             "cardinality": 2, "calculation_method": "exact", "top_k": {}},
+                             "cardinality": 2, "calculation_method": "exact", "top_k": {},
+                             **({"period_bounds": {"start_date": "2024-01-01", "end_date": "2024-06-30",
+                                                   "format": "calendar_quarter"},
+                                 "period_format_evidence_available": True,
+                                 "period_format_checked_regular_count": 4,
+                                 "period_format_failure_count": 0} if role == "Period" else {})},
             "updated_at": db.now_ist(),
         })
     persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
@@ -795,7 +810,12 @@ def test_phase_b_composite_grain_resolver_scans_once_reuses_and_refreshes(aar, m
         "private_application_id": {"role": "Identifier", "data_type": "integer", "cardinality": 2,
                                    "top_k": {"raw-identifier-a": 2}, "distinct_set_hash": "aggregate-id-v1"},
         "reviewed_period": {"role": "Period", "data_type": "string", "cardinality": 2,
-                              "top_k": {"raw-period-a": 2}, "distinct_set_hash": "aggregate-period-v1"},
+                              "top_k": {"raw-period-a": 2}, "distinct_set_hash": "aggregate-period-v1",
+                              "period_bounds": {"start_date": "2024-01-01", "end_date": "2024-06-30",
+                                                "format": "calendar_quarter"},
+                              "period_format_evidence_available": True,
+                              "period_format_checked_regular_count": 4,
+                              "period_format_failure_count": 0},
     }
     for column, profile in profiles.items():
         db.insert("variable_inventory", {
@@ -850,7 +870,12 @@ def test_phase_b_composite_grain_resolver_scans_once_reuses_and_refreshes(aar, m
     updated_period = {"total_count": 4, "non_null_count": 4, "null_count": 0,
                       "physical_null_count": 0, "regular_value_count": 4, "cardinality": 2,
                       "calculation_method": "exact", "top_k": {"raw-period-a": 2},
-                      "distinct_set_hash": "aggregate-period-v2"}
+                      "distinct_set_hash": "aggregate-period-v2",
+                      "period_bounds": {"start_date": "2024-01-01", "end_date": "2024-06-30",
+                                        "format": "calendar_quarter"},
+                      "period_format_evidence_available": True,
+                      "period_format_checked_regular_count": 4,
+                      "period_format_failure_count": 0}
     db.update("variable_inventory", {"item_id": snapshot_id, "table_name": table,
                                       "column_name": "reviewed_period"},
               {"profile_json": updated_period, "updated_at": db.now_ist()})
@@ -871,7 +896,8 @@ def test_phase_c2_temporal_candidates_are_atomic_aggregate_only_and_dependency_l
     })
     seed = {
         "reviewed_date": {"role": " Date ", "reviewed": 1, "provisional": 0,
-                          "date_parse_failure_count": 2, "special": 2},
+                          "date_parse_failure_count": 0, "min": "2024-01-01",
+                          "max": "2024-12-31", "special": 2},
         "reviewed_period": {"role": "period", "reviewed": 1, "provisional": 0,
                             "period_bounds": {"start_date": "2024-01-01", "end_date": "2024-12-31",
                                               "format": "calendar_quarter"},
@@ -879,7 +905,12 @@ def test_phase_c2_temporal_candidates_are_atomic_aggregate_only_and_dependency_l
                             "period_format_checked_regular_count": 9,
                             "period_format_failure_count": 0, "special": 0},
         "unreviewed_date": {"role": "Date", "reviewed": 0, "provisional": 0, "special": 0},
-        "provisional_period": {"role": "Period", "reviewed": 1, "provisional": 1, "special": 0},
+        "provisional_period": {"role": "Period", "reviewed": 1, "provisional": 1,
+                               "period_bounds": {"start_date": "2024-01-01", "end_date": "2024-12-31",
+                                                 "format": "calendar_quarter"},
+                               "period_format_evidence_available": True,
+                               "period_format_checked_regular_count": 9,
+                               "period_format_failure_count": 0, "special": 0},
         "missing_review_date": {"role": "Date", "reviewed": None, "provisional": 0, "special": 0},
     }
     for column, settings in seed.items():
@@ -927,10 +958,10 @@ def test_phase_c2_temporal_candidates_are_atomic_aggregate_only_and_dependency_l
     assert "timezone" not in date["claims"][0]["value"] and "timezone" not in period["claims"][0]["value"]
     date_basis = date["evidence"][0]["basis"]
     assert date_basis == {"population": table, "total_count": 10,
-                          "exclusions": {"physical_null": 1, "confirmed_special": 2, "parse_failure": 2},
-                          "usable_count": 5, "computation": "exact"}
+                          "exclusions": {"physical_null": 1, "confirmed_special": 2, "parse_failure": 0},
+                          "usable_count": 7, "computation": "exact"}
     assert {item["name"]: item["count"] for item in date["evidence"][0]["measurements"]} == {
-        "regular_value_rows": 7, "temporal_parse_failure_available": 1, "temporal_parse_failure_rows": 2}
+        "regular_value_rows": 7, "temporal_parse_failure_available": 1, "temporal_parse_failure_rows": 0}
     assert {item["name"]: item["count"] for item in period["evidence"][0]["measurements"]} == {
         "regular_value_rows": 9, "temporal_parse_failure_available": 1, "temporal_parse_failure_rows": 0}
     rendered = json.dumps(payloads)
@@ -950,6 +981,8 @@ def test_phase_c2_temporal_candidates_are_atomic_aggregate_only_and_dependency_l
     db.update("variable_inventory", {"item_id": snapshot_id, "table_name": table, "column_name": "reviewed_date"},
               {"profile_json": date_profile, "updated_at": db.now_ist()})
     persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
+    observe_dataset_structure(repo, snapshot_id, tables=[table],
+                              predicates=["table.temporal/temporal_binding"])
     refreshed = resolve_dataset_structure_context(repo, request, clock=lambda: "2030-04-01T00:00:02+00:00")
     new_pins = {pin["assertion_id"]: pin for pin in refreshed["selector_results"][0]["pins"]}
     old_by_key = {payload["instance_key"]: metadata.artifact_id for metadata in
@@ -957,12 +990,13 @@ def test_phase_c2_temporal_candidates_are_atomic_aggregate_only_and_dependency_l
                   for _checked, payload in [repo.get(metadata.artifact_id)]}
     active_by_key = {repo.get(pin["artifact_id"])[1]["instance_key"]: pin["artifact_id"]
                      for pin in new_pins.values()}
-    assert active_by_key["column:reviewed_date"] != old_by_key["column:reviewed_date"]
+    assert "column:reviewed_date" not in active_by_key
+    assert old_by_key["column:reviewed_date"] == old_pins[date["assertion_id"]]["artifact_id"]
     assert active_by_key["column:reviewed_period"] == old_pins[period["assertion_id"]]["artifact_id"]
     assert active_by_key["column:provisional_period"] == old_pins[provisional["assertion_id"]]["artifact_id"]
 
 
-def test_phase_c2_temporal_parse_evidence_is_explicitly_unavailable_when_not_profiled(aar):
+def test_phase_c2_period_role_without_profile_evidence_is_not_materialized(aar):
     repo, asset_id, snapshot_id = aar
     table = "private_applications"
     db.update("dq_item_tables", {"item_id": snapshot_id, "table_name": table}, {
@@ -978,12 +1012,10 @@ def test_phase_c2_temporal_parse_evidence_is_explicitly_unavailable_when_not_pro
                          "calculation_method": "exact", "top_k": {"private-period": 1}}, "updated_at": db.now_ist(),
     })
     persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
-    payload = repo.get(observe_dataset_structure(repo, snapshot_id, tables=[table],
-                       predicates=["table.temporal/temporal_binding"])[0].artifact.artifact_id)[1]
-    assert payload["claims"][0]["value"]["precision"] == payload["claims"][0]["value"]["calendar"] == "unknown"
-    assert payload["evidence"][0]["basis"]["exclusions"]["parse_failure"] == 0
-    assert {item["name"]: item["count"] for item in payload["evidence"][0]["measurements"]} == {
-        "regular_value_rows": 2, "temporal_parse_failure_available": 0}
+    assert observe_dataset_structure(repo, snapshot_id, tables=[table],
+                                     predicates=["table.temporal/temporal_binding"]) == ()
+    assert not repo.list(snapshot_id=snapshot_id, artifact_type="dataset_structure_assertion",
+                         status="active")
 
 
 def test_phase_c2_period_precision_requires_full_zero_failure_format_evidence():
@@ -1018,7 +1050,8 @@ def test_phase_c2_temporal_withdrawal_is_owned_and_fails_closed(aar):
         "missing_value_codes_json": [], "missing_codes_confirmed": 0,
         "profile_json": {"total_count": 2, "non_null_count": 2, "null_count": 0,
                          "physical_null_count": 0, "regular_value_count": 2, "cardinality": 2,
-                         "calculation_method": "exact"}, "updated_at": db.now_ist(),
+                         "calculation_method": "exact", "date_parse_failure_count": 0,
+                         "min": "2024-01-01", "max": "2024-02-01"}, "updated_at": db.now_ist(),
     })
     persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
     proposal_outcome = observe_dataset_structure(repo, snapshot_id, tables=[table],
@@ -1080,7 +1113,10 @@ def test_phase_cadence_states_parser_privacy_and_exact_reuse(aar, monkeypatch):
                 "profile_json": {"total_count": rows, "non_null_count": rows, "null_count": 0,
                                  "physical_null_count": 0, "regular_value_count": rows,
                                  "cardinality": int(cardinality), "calculation_method": "exact",
-                                 "top_k": {"private-entity-value": 1}}, "updated_at": db.now_ist()})
+                                 "top_k": {"private-entity-value": 1},
+                                 **({"date_parse_failure_count": 0,
+                                     "min": "2024-01-01", "max": "2024-03-01"}
+                                    if column == "observed_on" else {})}, "updated_at": db.now_ist()})
         persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
         observe_dataset_structure(repo, snapshot_id, tables=[table], predicates=[
             "table.structure/entity_binding", "table.temporal/temporal_binding"])
@@ -1088,6 +1124,15 @@ def test_phase_cadence_states_parser_privacy_and_exact_reuse(aar, monkeypatch):
     regular = pd.DataFrame({"entity": ["private-a"] * 3 + ["private-b"] * 3,
                             "observed_on": ["2024-01-01", "2024-02-01", "2024-03-01"] * 2})
     materialize(regular)
+    schema = observe_dataset_structure(repo, snapshot_id, tables=[table],
+                                       predicates=["table.physical/schema_column"])
+    schema_ids = {outcome.artifact.artifact_id for outcome in schema}
+    original_get = repo.get
+    assertion_reads = []
+    def counted_get(artifact_id, *args, **kwargs):
+        assertion_reads.append(artifact_id)
+        return original_get(artifact_id, *args, **kwargs)
+    monkeypatch.setattr(repo, "get", counted_get)
     calls = []
     def load_table(_self, received_snapshot, received_table, columns=None, **_kwargs):
         calls.append((received_snapshot, received_table, list(columns or [])))
@@ -1096,6 +1141,7 @@ def test_phase_cadence_states_parser_privacy_and_exact_reuse(aar, monkeypatch):
     created = observe_dataset_structure(repo, snapshot_id, tables=[table],
                                          predicates=["table.temporal/observed_cadence"])
     assert len(created) == 1 and calls == [(snapshot_id, table, ["entity", "observed_on"])]
+    assert schema_ids.isdisjoint(assertion_reads)
     payload = repo.get(created[0].artifact.artifact_id)[1]
     assert payload["resolution"]["status"] == "observed"
     assert payload["claims"][0]["value"]["cadence"] == "regular"
@@ -1240,7 +1286,10 @@ def test_d06_shadow_projector_projects_real_producer_unknown_and_fails_closed(aa
             "provisional": 0, "missing_value_codes_json": [], "missing_codes_confirmed": 0,
             "profile_json": {"total_count": 4, "non_null_count": 4, "null_count": 0,
                              "physical_null_count": 0, "regular_value_count": 4,
-                             "cardinality": 2, "calculation_method": "exact", "top_k": {}},
+                             "cardinality": 2, "calculation_method": "exact", "top_k": {},
+                             **({"date_parse_failure_count": 0,
+                                 "min": "2024-01-01", "max": "2024-02-01"}
+                                if column == "observed_on" else {})},
             "updated_at": db.now_ist()})
     persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
     observe_dataset_structure(repo, snapshot_id, tables=[table], predicates=[
@@ -1377,7 +1426,10 @@ def test_d06_shadow_projector_enforces_candidate_and_payload_bounds(aar, monkeyp
             "provisional": 0, "missing_value_codes_json": [], "missing_codes_confirmed": 0,
             "profile_json": {"total_count": 4, "non_null_count": 4, "null_count": 0,
                              "physical_null_count": 0, "regular_value_count": 4,
-                             "cardinality": 2, "calculation_method": "exact", "top_k": {}},
+                             "cardinality": 2, "calculation_method": "exact", "top_k": {},
+                             **({"date_parse_failure_count": 0,
+                                 "min": "2024-01-01", "max": "2024-02-01"}
+                                if column == "observed_on" else {})},
             "updated_at": db.now_ist()})
     persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
     observe_dataset_structure(repo, snapshot_id, tables=[table], predicates=[
@@ -1418,7 +1470,10 @@ def test_phase_cadence_batch_guard_leaves_two_candidates_unpublished(aar, monkey
             "missing_value_codes_json": [], "missing_codes_confirmed": 0,
             "profile_json": {"total_count": 6, "non_null_count": 6, "null_count": 0,
                              "physical_null_count": 0, "regular_value_count": 6, "cardinality": 2,
-                             "calculation_method": "exact", "top_k": {}}, "updated_at": db.now_ist()})
+                             "calculation_method": "exact", "top_k": {},
+                             **({"date_parse_failure_count": 0,
+                                 "min": "2024-01-01", "max": "2024-03-01"}
+                                if column == "observed_on" else {})}, "updated_at": db.now_ist()})
     persist_snapshot_profile_artifacts(snapshot_id, artifact_repository=repo)
     observe_dataset_structure(repo, snapshot_id, tables=[table], predicates=[
         "table.structure/entity_binding", "table.temporal/temporal_binding"])

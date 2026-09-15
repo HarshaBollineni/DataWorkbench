@@ -756,7 +756,12 @@ def _grain_plan(table_metadata: Any, candidates: list[tuple[Any, dict[str, Any]]
     """The complete pre-scan identity plan shared by observe and reuse."""
     capped = (len(candidates) > MAX_IDENTIFIER_CANDIDATES or len(temporal) > MAX_TEMPORAL_PARTNERS
               or len(candidates) * len(temporal) > MAX_COMPOSITE_CANDIDATES)
-    pair_scan = bool(candidates and temporal and not capped)
+    unique_single = any(
+        total > 0 and physical == special == 0 and distinct == total
+        for _metadata, profile in candidates
+        for total, physical, special, _usable, distinct in [_profile_counts(profile)]
+    )
+    pair_scan = bool(candidates and temporal and not capped and not unique_single)
     profiles = sorted({meta.feature: meta for meta, _ in candidates + temporal}.values(), key=lambda meta: meta.feature)
     refs = [{"artifact_id": table_metadata.artifact_id, "role": "scan" if pair_scan else "dependency",
              "payload_hash": table_metadata.payload_hash}]
@@ -812,7 +817,7 @@ def _grain_payload(asset_id: str, snapshot_id: str, table: str, table_metadata: 
     # Composite candidates are deliberately closed: no arbitrary pair search,
     # no temporal parsing and exactly one all-row read when pairs exist.
     pair_ids: list[str] = []
-    if pair_scan:
+    if pair_scan and not unique_ids:
         pair_columns = sorted({meta.feature for meta, _ in candidates + temporal})
         try:
             frame = (snapshot_loader or SnapshotLoader()).load_table(snapshot_id, table, columns=pair_columns)
@@ -899,6 +904,22 @@ def _cadence_period_profile(profile: dict[str, Any]) -> bool:
         return False
 
 
+def _temporal_profile_supported(profile: dict[str, Any]) -> bool:
+    """Require observed values, not a name or role alone, for temporal use."""
+    role = str(profile.get("role") or "").strip().lower()
+    if role == "period":
+        return _cadence_period_profile(profile)
+    if role != "date":
+        return False
+    try:
+        _total, _physical, _special, regular, _distinct = _profile_counts(profile)
+        return (regular > 0 and "date_parse_failure_count" in profile
+                and _exact_count(profile.get("date_parse_failure_count")) == 0
+                and profile.get("min") is not None and profile.get("max") is not None)
+    except DatasetStructureObservationError:
+        return False
+
+
 def _active_locator_assertions(repo: Any, *, snapshot_id: str, asset_id: str, table: str,
                                predicate: str, instance_key: str, conn: Any = None) -> list[tuple[Any, dict[str, Any]]]:
     """Return only hash-verified, syntactically valid same-snapshot locator facts."""
@@ -906,6 +927,9 @@ def _active_locator_assertions(repo: Any, *, snapshot_id: str, asset_id: str, ta
     for metadata in repo.list(snapshot_id=snapshot_id, artifact_type=_ASSERTION_TYPE, status="active"):
         if (metadata.asset_id != asset_id or metadata.snapshot_id != snapshot_id
                 or metadata.scope != "universal" or metadata.identity.get("table") != table):
+            continue
+        summary_predicate = (metadata.summary or {}).get("predicate")
+        if summary_predicate is not None and summary_predicate != predicate:
             continue
         try:
             checked, payload = _repository_get(repo, metadata.artifact_id, conn=conn)
@@ -920,6 +944,35 @@ def _active_locator_assertions(repo: Any, *, snapshot_id: str, asset_id: str, ta
                 and payload.get("subject") == {"kind": "table", "table": table}
                 and payload.get("predicate") == predicate and payload.get("instance_key") == instance_key):
             found.append((checked, payload))
+    return found
+
+
+def _active_locator_index(repo: Any, *, snapshot_id: str, asset_id: str, table: str,
+                          predicates: set[str], conn: Any = None,
+                          strict: bool = False) -> dict[tuple[str, str], list[tuple[Any, dict[str, Any]]]]:
+    """Hash-verify relevant table assertions once, indexed by locator."""
+    found: dict[tuple[str, str], list[tuple[Any, dict[str, Any]]]] = {}
+    for metadata in repo.list(snapshot_id=snapshot_id, artifact_type=_ASSERTION_TYPE, status="active"):
+        if (metadata.asset_id != asset_id or metadata.snapshot_id != snapshot_id
+                or metadata.scope != "universal" or metadata.identity.get("table") != table):
+            continue
+        summary_predicate = (metadata.summary or {}).get("predicate")
+        if summary_predicate is not None and summary_predicate not in predicates:
+            continue
+        try:
+            checked, payload = _repository_get(repo, metadata.artifact_id, conn=conn)
+            validate_assertion_payload(payload)
+        except Exception as exc:
+            if strict or exc.__class__.__name__ == "ArtifactIntegrityError":
+                _observation_failure("DSC_R_SOURCE_INTEGRITY_FAILED")
+            continue
+        predicate, instance_key = payload.get("predicate"), payload.get("instance_key")
+        if (checked.status == "active" and checked.integrity_status == "verified"
+                and checked.payload_hash == metadata.payload_hash and predicate in predicates
+                and isinstance(instance_key, str)
+                and payload.get("snapshot") == {"asset_id": asset_id, "snapshot_id": snapshot_id}
+                and payload.get("subject") == {"kind": "table", "table": table}):
+            found.setdefault((predicate, instance_key), []).append((checked, payload))
     return found
 
 
@@ -957,13 +1010,16 @@ def _is_entity_producer_payload(repo: Any, payload: dict[str, Any], *, conn: Any
 
 
 def _project_cadence_prerequisite(repo: Any, *, asset_id: str, snapshot_id: str, table: str,
-                                  predicate: str, instance_key: str, conn: Any = None) -> tuple[Any, dict[str, Any], dict[str, Any]] | None:
+                                  predicate: str, instance_key: str, conn: Any = None,
+                                  locator_index: dict[tuple[str, str], list[tuple[Any, dict[str, Any]]]] | None = None) -> tuple[Any, dict[str, Any], dict[str, Any]] | None:
     """Apply the confirmation-over-one-agreeing-producer rule at one locator."""
     confirmations: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []
     proposals: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []
-    for metadata, payload in _active_locator_assertions(repo, snapshot_id=snapshot_id, asset_id=asset_id,
-                                                         table=table, predicate=predicate, instance_key=instance_key,
-                                                         conn=conn):
+    located = (locator_index.get((predicate, instance_key), []) if locator_index is not None else
+               _active_locator_assertions(repo, snapshot_id=snapshot_id, asset_id=asset_id,
+                                          table=table, predicate=predicate, instance_key=instance_key,
+                                          conn=conn))
+    for metadata, payload in located:
         claim = _effective_locator_claim(payload)
         if claim is None:
             continue
@@ -984,6 +1040,14 @@ def _cadence_plan(repo: Any, *, asset_id: str, snapshot_id: str, table: str,
                   table_metadata: Any, table_payload: dict[str, Any],
                   profiles: list[tuple[Any, dict[str, Any]]], conn: Any = None) -> list[dict[str, Any]]:
     """Build the complete candidate-local plan before any source-table read."""
+    eligible_axes = [(metadata, profile) for metadata, profile in profiles
+                     if profile.get("metadata_reviewed") is True
+                     and _temporal_profile_supported(profile)]
+    eligible_groups = [(metadata, profile) for metadata, profile in profiles
+                       if profile.get("metadata_reviewed") is True
+                       and str(profile.get("role") or "").strip().lower() == "identifier"]
+    if not eligible_axes or not eligible_groups:
+        return []
     try:
         inventory_metadata, _inventory_payload = _temporal_inventory_profile(
             repo, snapshot_id, asset_id, table, table_payload, conn=conn)
@@ -991,16 +1055,18 @@ def _cadence_plan(repo: Any, *, asset_id: str, snapshot_id: str, table: str,
         if exc.reason_code == "DSC_R_INSUFFICIENT_BASIS":
             _observation_failure("DSC_R_SOURCE_INTEGRITY_FAILED")
         raise
-    profile_by_column = {metadata.feature: (metadata, profile) for metadata, profile in profiles}
+    locator_index = _active_locator_index(
+        repo, snapshot_id=snapshot_id, asset_id=asset_id, table=table,
+        predicates={_TEMPORAL_PREDICATE, _ENTITY_PREDICATE}, conn=conn)
     axes: list[dict[str, Any]] = []
     groups: list[dict[str, Any]] = []
-    # Only mechanical profile locators are considered.  Assertions cannot
-    # create a column absent from the retained inventory.
-    for column, (profile_meta, profile) in sorted(profile_by_column.items()):
+    # Reviewed role and value-profile evidence define the candidate scope.
+    for profile_meta, profile in sorted(eligible_axes, key=lambda item: item[0].feature):
+        column = profile_meta.feature
         key = f"column:{column}"
         temporal = _project_cadence_prerequisite(repo, asset_id=asset_id, snapshot_id=snapshot_id,
                                                   table=table, predicate=_TEMPORAL_PREDICATE, instance_key=key,
-                                                  conn=conn)
+                                                  conn=conn, locator_index=locator_index)
         if temporal is not None:
             meta, payload, claim = temporal; value = claim.get("value", {})
             cols = value.get("columns")
@@ -1014,9 +1080,12 @@ def _cadence_plan(repo: Any, *, asset_id: str, snapshot_id: str, table: str,
             if valid_date or valid_period:
                 axes.append({"axis_id": key, "column": column, "temporal_type": value["temporal_type"],
                              "assertion": (meta, payload), "profile": (profile_meta, profile)})
+    for profile_meta, profile in sorted(eligible_groups, key=lambda item: item[0].feature):
+        column = profile_meta.feature
+        key = f"column:{column}"
         entity = _project_cadence_prerequisite(repo, asset_id=asset_id, snapshot_id=snapshot_id,
                                                 table=table, predicate=_ENTITY_PREDICATE, instance_key=key,
-                                                conn=conn)
+                                                conn=conn, locator_index=locator_index)
         if entity is not None:
             meta, payload, claim = entity; value = claim.get("value", {})
             if (value == {"kind": "entity_binding", "columns": [{"table": table, "column": column}]}
@@ -1614,7 +1683,7 @@ def observe_dataset_structure(repo: Any, snapshot_id: str, *, tables: Iterable[s
                         and str(profile.get("role") or "").strip().lower() == "identifier"]
         reviewed_temporal = [(metadata, profile) for metadata, profile in profiles
                              if profile.get("metadata_reviewed") is True
-                             and str(profile.get("role") or "").strip().lower() in {"date", "period"}]
+                             and _temporal_profile_supported(profile)]
         if _ENTITY_PREDICATE in requested_predicates:
             payloads.extend(_entity_payload(reference.asset_id, snapshot_id, table, table_metadata, metadata, profile)
                             for metadata, profile in reviewed_ids)
@@ -1624,7 +1693,7 @@ def observe_dataset_structure(repo: Any, snapshot_id: str, *, tables: Iterable[s
             payloads.extend(_temporal_payload(reference.asset_id, snapshot_id, table, temporal_inventory_metadata, metadata, profile)
                             for metadata, profile in profiles
                             if profile.get("metadata_reviewed") is True
-                            and str(profile.get("role") or "").strip().lower() in {"date", "period"})
+                            and _temporal_profile_supported(profile))
             # Withdrawal is candidate-local.  Do not let a stale producer
             # proposal remain active after its reviewed temporal eligibility
             # disappears, and do not touch independently authored assertions.
@@ -1639,11 +1708,15 @@ def observe_dataset_structure(repo: Any, snapshot_id: str, *, tables: Iterable[s
         if _GRAIN_PREDICATE in requested_predicates and reuse_grain is None:
             payloads.append(_grain_payload(reference.asset_id, snapshot_id, table, table_metadata, table_payload,
                                             reviewed_ids, reviewed_temporal, snapshot_loader))
+        prior_index = (_active_locator_index(
+            repo, snapshot_id=snapshot_id, asset_id=reference.asset_id, table=table,
+            predicates={payload["predicate"] for payload in payloads}, strict=True)
+            if payloads else {})
         for write_index, payload in enumerate(payloads):
-            prior = _producer_locator_candidates(repo, snapshot_id=snapshot_id, asset_id=reference.asset_id,
-                                                 table=table, predicate=payload["predicate"],
-                                                 instance_key=payload["instance_key"],
-                                                 temporal_producer_only=(payload["predicate"] == _TEMPORAL_PREDICATE))
+            prior = prior_index.get((payload["predicate"], payload["instance_key"]), [])
+            if payload["predicate"] == _TEMPORAL_PREDICATE:
+                prior = [(metadata, candidate) for metadata, candidate in prior
+                         if _is_temporal_producer_payload(repo, candidate)]
             if len(prior) > 1: _observation_failure("DSC_R_AMBIGUOUS_CANDIDATES")
             if prior and prior[0][1] != payload:
                 lifecycle_supersessions.append({"artifact_id": prior[0][0].artifact_id,
@@ -1665,7 +1738,11 @@ def _producer_locator_candidates(repo: Any, *, snapshot_id: str, asset_id: str,
     """Return atomic producer candidates without treating arbitrary claims as ours."""
     candidates: list[tuple[Any, dict[str, Any]]] = []
     for metadata in repo.list(snapshot_id=snapshot_id, artifact_type=_ASSERTION_TYPE, status="active"):
-        if metadata.asset_id != asset_id or metadata.scope != "universal":
+        if (metadata.asset_id != asset_id or metadata.scope != "universal"
+                or metadata.identity.get("table") != table):
+            continue
+        summary_predicate = (metadata.summary or {}).get("predicate")
+        if predicate is not None and summary_predicate is not None and summary_predicate != predicate:
             continue
         try:
             _checked, payload = _repository_get(repo, metadata.artifact_id, conn=conn)
@@ -1759,8 +1836,9 @@ def _matching_supported_assertions(repo: Any, *, snapshot_id: str, asset_id: str
     else:
         reviewed = [(metadata, profile) for metadata, profile in profiles if profile.get("metadata_reviewed") is True
                     and str(profile.get("role") or "").strip().lower() == "identifier"]
-        temporal = [(metadata, profile) for metadata, profile in profiles if profile.get("metadata_reviewed") is True
-                    and str(profile.get("role") or "").strip().lower() in {"date", "period"}]
+        temporal = [(metadata, profile) for metadata, profile in profiles
+                    if profile.get("metadata_reviewed") is True
+                    and _temporal_profile_supported(profile)]
         if predicate == _ENTITY_PREDICATE:
             expected = [_entity_payload(asset_id, snapshot_id, table, table_metadata, metadata, profile)
                         for metadata, profile in reviewed]
@@ -1770,7 +1848,7 @@ def _matching_supported_assertions(repo: Any, *, snapshot_id: str, asset_id: str
             expected = [_temporal_payload(asset_id, snapshot_id, table, temporal_inventory_metadata, metadata, profile)
                         for metadata, profile in profiles
                         if profile.get("metadata_reviewed") is True
-                        and str(profile.get("role") or "").strip().lower() in {"date", "period"}]
+                        and _temporal_profile_supported(profile)]
         elif predicate == _GRAIN_PREDICATE:
             _capped, _pair_scan, plan_refs, dependency = _grain_plan(table_metadata, reviewed, temporal)
             expected_refs = {(ref["artifact_id"], ref["role"], ref["payload_hash"]) for ref in plan_refs}

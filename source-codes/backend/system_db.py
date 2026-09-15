@@ -1421,6 +1421,12 @@ def _migrate_technical_row_id_publication_state(conn: sqlite3.Connection) -> Non
 # Lightweight additive migrations for existing DB files (ALTER is idempotent-
 # guarded by an introspection check). Keyed table -> {column: DDL type}.
 _MIGRATIONS: dict[str, dict[str, str]] = {
+    "dataset_structure_review_idempotency": {
+        # Slice 2 originally shipped this tenant-keyed replay ledger without
+        # snapshot ownership. Current draft/decision writes and surgical
+        # snapshot cleanup require the owning snapshot on legacy databases.
+        "snapshot_id": "TEXT",
+    },
     "technical_row_id_transforms": {
         # Existing complete rows predate the split lifecycle and are already
         # active; never strand them behind a newly-added publication state.

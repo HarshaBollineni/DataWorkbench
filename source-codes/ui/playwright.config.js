@@ -43,6 +43,7 @@ export default defineConfig({
         ...process.env,
         SYSTEM_DB_PATH: path.join(e2eRoot, "system_state.db"),
         SYSTEM_DB_BACKUP_PATH: "",
+        ANALYSIS_ARTIFACT_DIR: path.join(e2eRoot, "analysis_artifacts"),
         UPLOAD_DIR: path.join(e2eRoot, "uploads"),
         CORS_ORIGINS: `http://127.0.0.1:${frontendPort}`,
       },

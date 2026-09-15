@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -57,6 +58,109 @@ def _candidates(pin: str = "private-payload-hash"):
         "row_grains": [candidate("grain", "Row grain: entity + period", 3)],
         "observed_cadences": [],
     }}
+
+
+def test_review_projection_skips_catalogued_physical_schema_payloads(item, monkeypatch):
+    def metadata(artifact_id, summary):
+        return SimpleNamespace(
+            artifact_id=artifact_id,
+            asset_id=item["dataset_family_id"],
+            payload_hash=f"hash-{artifact_id}",
+            status="active",
+            summary=summary,
+        )
+
+    schema = metadata("art_schema", {"predicate": "table.physical/schema_column"})
+    entity = metadata("art_entity", {"predicate": "table.structure/entity_binding"})
+    legacy_schema = metadata("art_legacy_schema", {})
+    payloads = {
+        "art_entity": {
+            "context_version": "1",
+            "subject": {"kind": "table", "table": "observations"},
+            "predicate": "table.structure/entity_binding",
+            "instance_key": "column:entity",
+            "assertion_id": "assertion-entity",
+            "dependency_fingerprint": "dependency-entity",
+            "resolution": {"status": "proposed", "effective_claim_ids": ["claim-entity"]},
+            "claims": [{"claim_id": "claim-entity", "value": {"column": "entity"}}],
+            "evidence": [],
+        },
+        "art_legacy_schema": {
+            "context_version": "1",
+            "subject": {"kind": "table", "table": "observations"},
+            "predicate": "table.physical/schema_column",
+        },
+    }
+
+    class Repository:
+        def list(self, **_filters):
+            return [schema, entity, legacy_schema]
+
+    repository = Repository()
+    reads = []
+    monkeypatch.setattr(review, "AnalysisArtifactRepository", lambda: repository)
+    monkeypatch.setattr(review, "_read_review_payload", lambda _repo, selected: (
+        reads.append(selected.artifact_id) or payloads[selected.artifact_id]
+    ))
+
+    projected = review._artifacts(item)
+
+    assert reads == ["art_entity", "art_legacy_schema"]
+    assert projected["observations"]["entities"][0]["instance_key"] == "column:entity"
+
+
+def test_confirmed_authority_reads_only_decision_or_legacy_payloads(item, monkeypatch):
+    def metadata(artifact_id, predicate):
+        return SimpleNamespace(
+            artifact_id=artifact_id,
+            summary={} if predicate is None else {"predicate": predicate},
+        )
+
+    schema = metadata("art_schema", "table.physical/schema_column")
+    candidate = metadata("art_candidate", "table.structure/entity_binding")
+    decision = metadata("art_decision", "table.structure/default_entity_binding")
+    legacy = metadata("art_legacy", None)
+    payloads = {
+        "art_decision": {
+            "context_version": "2",
+            "subject": {"kind": "table", "table": "observations"},
+            "predicate": "table.structure/default_entity_binding",
+            "resolution": {"status": "confirmed"},
+        },
+        "art_legacy": {"context_version": "1", "subject": {}, "predicate": "legacy"},
+    }
+
+    class Repository:
+        def list(self, **_filters):
+            return [schema, candidate, decision, legacy]
+
+    reads = []
+    monkeypatch.setattr(review, "AnalysisArtifactRepository", Repository)
+    monkeypatch.setattr(review, "_read_review_payload", lambda _repo, selected: (
+        reads.append(selected.artifact_id) or payloads[selected.artifact_id]
+    ))
+
+    projected = review._confirmed_authority(item)
+
+    assert reads == ["art_decision", "art_legacy"]
+    assert projected == {"observations": {"default_entity": "confirmed"}}
+
+
+def test_row_grain_recommendation_is_compatible_with_entity_and_temporal_defaults():
+    def candidate(candidate_id, columns, *, grain=False):
+        return {"candidate_id": candidate_id, "_value": {
+            "key_columns" if grain else "columns": [
+                {"table": "observations", "column": column} for column in columns
+            ],
+        }}
+
+    entity = candidate("entity", ["facility_id"])
+    temporal = candidate("temporal", ["maturity_date"])
+    entity_only = candidate("grain-entity", ["facility_id"], grain=True)
+    compatible = candidate("grain-entity-date", ["facility_id", "maturity_date"], grain=True)
+
+    assert review._compatible_row_grain(entity, temporal, [entity_only, compatible]) == compatible
+    assert review._compatible_row_grain(entity, temporal, [entity_only]) is None
 
 
 def test_slice2_projection_is_private_idempotent_and_preserves_stale_draft(item, monkeypatch):
@@ -192,6 +296,22 @@ def test_slice2_endpoint_shape_limits_and_candidate_free_tables_are_bounded(item
     assert len(observations["candidates"]["entities"]) == 20
     assert observations["candidate_limits"]["entities"] == {"returned": 20, "truncated": True, "limit": 20}
     assert next(row for row in response["tables"] if row["table"] == "candidate_free")["state"] == "limited"
+
+
+def test_candidate_aggregate_exposes_safe_entity_distinctness_counts():
+    payload = {"evidence": [{
+        "basis": {"total_count": 4816, "usable_count": 4816},
+        "measurements": [
+            {"name": "distinct_key_count", "count": 4787},
+            {"name": "duplicate_excess_rows", "count": 29},
+        ],
+    }]}
+
+    assert review._aggregate(payload) == {
+        "evidence_count": 1, "aggregate_basis": "materialized",
+        "usable_observations": 4816, "total_observations": 4816,
+        "distinct_key_count": 4787, "duplicate_excess_rows": 29,
+    }
 
 
 def test_materializing_state_does_not_create_a_stale_revision_zero_draft(item, monkeypatch):

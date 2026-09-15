@@ -14,8 +14,9 @@ def infer_inventory_role(
     target: str | None = None,
     *,
     unique_text: bool = False,
+    temporal_evidence: str | None = None,
 ) -> str:
-    """Suggest a bounded role using the same signals as tempTestPath."""
+    """Suggest a bounded role; temporal names alone never establish time."""
     name = _label(column_name)
     normalized_target = _label(target)
     observed = str(classification or "").strip().lower()
@@ -25,10 +26,10 @@ def infer_inventory_role(
         return "Target"
     if observed == "identifier" or name.endswith(" id") or name == "id" or unique_text:
         return "Identifier"
-    if observed in {"date", "datetime", "timestamp"}:
-        return "Date"
-    if re.search(r"(^| )(date|time|quarter|month|year|period)( |$)", name):
+    if temporal_evidence == "period":
         return "Period"
+    if temporal_evidence == "date" or observed in {"date", "datetime", "timestamp"}:
+        return "Date"
     if re.search(r"(^| )(score|rating|grade)( |$)", name):
         return "Score"
     return "Feature"

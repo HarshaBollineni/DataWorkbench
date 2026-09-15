@@ -31,3 +31,56 @@ export function periodDate(value, end = false, quarterLike = false) {
   if (quarterLike && end) date.setUTCMonth(Math.floor(date.getUTCMonth() / 3) * 3 + 3, 0);
   return date.toISOString().slice(0, 10);
 }
+
+export function targetProfileFacts(row) {
+  if (!row) return [];
+  const profile = row.profile_json || {};
+  const type = String(row.inferred_type || row.classification || "").toLowerCase();
+  const levels = Number(row.distinct_count ?? profile.unique_count ?? profile.cardinality ?? 0);
+  const valueCounts = Object.entries(profile.top_values || profile.top_k || {});
+  const total = Number(profile.regular_value_count ?? profile.non_null_count ?? valueCounts.reduce((sum, [, count]) => sum + Number(count || 0), 0));
+  const topValues = valueCounts.slice(0, 3).map(([value, count]) => `${value} (${Number(count).toLocaleString()})`).join(", ");
+  const hasZeroOneBounds = profile.min != null && profile.max != null
+    && Number(profile.min) === 0 && Number(profile.max) === 1;
+  const numericZeroOneCounts = hasZeroOneBounds && Number.isFinite(Number(profile.zero_count))
+    && Number.isFinite(Number(profile.finite_value_count))
+    ? { "0": Number(profile.zero_count), "1": Number(profile.finite_value_count) - Number(profile.zero_count) }
+    : null;
+  const numeric = ["numerical", "numeric", "number", "ordinal", "continuous"].includes(type);
+  if (numeric && levels > 2) {
+    const range = profile.min != null && profile.max != null
+      ? `${profile.min} → ${profile.max}` : "Not retained";
+    const p5 = profile.percentiles?.p05 ?? profile.percentiles?.p5;
+    const p95 = profile.percentiles?.p95;
+    const span = p5 != null && p95 != null ? `${p5} → ${p95}` : "Not retained";
+    return [["Range", range], ["P5–P95", span], ["Mean", profile.mean != null ? String(profile.mean) : "Not retained"]];
+  }
+  if (levels === 2) {
+    const counts = valueCounts.length ? Object.fromEntries(valueCounts) : (numericZeroOneCounts || {});
+    if ("0" in counts && "1" in counts) {
+      const ones = Number(counts["1"]);
+      return [["0 count", Number(counts["0"]).toLocaleString()],
+        ["1 count", ones.toLocaleString()], ["1 rate", total ? `${(100 * ones / total).toFixed(1)}%` : "Not retained"]];
+    }
+    return [["Class counts", topValues || "Not retained"], ["Classes", "2"]];
+  }
+  return [["Levels", Number(levels || 0).toLocaleString()], ["Class counts", topValues || "Not retained"]];
+}
+
+export function temporalProfileEvidence(row) {
+  const profile = row?.profile_json || {};
+  const regular = Number(profile.regular_value_count || 0);
+  const bounds = profile.period_bounds;
+  if (regular > 0 && profile.period_format_evidence_available === true
+      && Number(profile.period_format_checked_regular_count) === regular
+      && Number(profile.period_format_failure_count || 0) === 0
+      && bounds?.start_date && bounds?.end_date) {
+    return { kind: "period", startDate: bounds.start_date, endDate: bounds.end_date };
+  }
+  if (regular > 0 && profile.date_parse_failure_count != null
+      && Number(profile.date_parse_failure_count) === 0
+      && profile.min != null && profile.max != null) {
+    return { kind: "date", startDate: periodDate(profile.min), endDate: periodDate(profile.max, true) };
+  }
+  return null;
+}

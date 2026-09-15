@@ -120,6 +120,10 @@ class TechnicalRowIdIn(BaseModel):
     acknowledge_snapshot_transformation: bool = False
 
 
+class StructuralPrecheckIn(BaseModel):
+    inventory_rows: list[dict] = Field(default_factory=list)
+
+
 class ItemPatch(BaseModel):
     status: str | None = None
 
@@ -298,6 +302,17 @@ def technical_row_id_source_revision(item_id: str,
         "eligible": eligibility["eligible"],
         "ineligibility_reason": eligibility["reason"],
     }
+
+
+@router.post("/items/{item_id}/structural-precheck")
+def structural_precheck(item_id: str, body: StructuralPrecheckIn,
+                        authorization: str | None = Header(default=None)):
+    principal = _sourcing_principal(authorization)
+    _require_draft_access(item_id, principal)
+    try:
+        return service.staged_structural_precheck(item_id, body.inventory_rows)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post("/items/{item_id}/technical-row-id")

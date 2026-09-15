@@ -15,7 +15,7 @@ import {
   FilePicker, SourcingProgress, StepCard, Summary,
 } from "@/pages/sourcing/SourcingPresentation";
 import { DICTIONARY_HEADER_FIELDS, SOURCING_STAGES } from "@/pages/sourcing/constants";
-import { highConfidenceHeaderMapping, inferTaxonomyValue, periodDate } from "@/pages/sourcing/workflowHelpers";
+import { highConfidenceHeaderMapping, inferTaxonomyValue, targetProfileFacts, temporalProfileEvidence } from "@/pages/sourcing/workflowHelpers";
 import DatasetStructureReview from "@/pages/sourcing/DatasetStructureReview.jsx";
 import { metadataCorrectionParams, metadataCorrectionTarget, structureReviewParams } from "@/pages/sourcing/metadataCorrectionReturn.js";
 import { Button } from "@/components/ui/button";
@@ -25,11 +25,11 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
-  createUploadTargetV2, discardSourcingDraftV2, getIngestV2, getNextAssetIdV2,
+  createUploadTargetV2, discardSourcingDraftV2, getIngestV2, getInventoryV2, getNextAssetIdV2,
   getSourcingDraftsV2,
   getItemTablesV2, getSupersedePreviewV2, getTaxonomyDimensionsV3, processSnapshotV2,
   profileStreamUrlV2, restoreAssetVersionV2, inspectSourceV2, uploadSourceBundleV2WithProgress,
-  getTechnicalRowIdSourceRevisionV2, createTechnicalRowIdV2,
+  getTechnicalRowIdSourceRevisionV2, createTechnicalRowIdV2, getStructuralPrecheckV2,
 } from "@/api/client";
 
 const KIND_CARDS = [
@@ -81,7 +81,6 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
   const [endDate, setEndDate] = useState("");
   const [snapshotLabel, setSnapshotLabel] = useState("");
   const [periodColumn, setPeriodColumn] = useState("");
-  const [periodColumns, setPeriodColumns] = useState([]);
   const [intent, setIntent] = useState(initialAsset?.resume_intent || "add_period");
   const [schemaConfirmed, setSchemaConfirmed] = useState(false);
   const [replacementConfirmed, setReplacementConfirmed] = useState(false);
@@ -116,6 +115,9 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
   const [technicalNonBusinessAcknowledged, setTechnicalNonBusinessAcknowledged] = useState(false);
   const [technicalTransformAcknowledged, setTechnicalTransformAcknowledged] = useState(false);
   const [technicalBusy, setTechnicalBusy] = useState(false);
+  const [technicalRowIdCreated, setTechnicalRowIdCreated] = useState(null);
+  const [technicalRowIdError, setTechnicalRowIdError] = useState("");
+  const [structuralPrecheck, setStructuralPrecheck] = useState(null);
   const inventoryRef = useRef(null);
   const stream = useAgentStream();
 
@@ -164,18 +166,6 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
       .finally(() => { if (live) setRestoring(false); });
     return () => { live = false; };
   }, [resumeSnapshotId, initialAsset?.resume_dictionary_file_name]);
-
-  useEffect(() => {
-    if (!itemId) return undefined;
-    getItemTablesV2(itemId).then((tables) => {
-      setPeriodColumns((tables || []).flatMap((table) => (table.columns || []).map((column) => String(column))));
-    }).catch(() => setPeriodColumns([]));
-    return undefined;
-    // itemId is set (via ensureTarget) before the file upload completes, so
-    // dq_item_tables is still empty the first time this fires — re-running
-    // once `summaries` lands (right after the upload response, by which
-    // point the tables are already written) is what actually populates it.
-  }, [itemId, summaries]);
 
   const loadTaxonomyDimensions = useCallback(async () => {
     setTaxonomyLoading(true);
@@ -264,21 +254,18 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
   }, [inventoryRows, targetSelectionReviewed, targetVariable]);
 
   useEffect(() => {
-    if (!inventoryRows.length) return;
-    const candidates = inventoryRows
-      .filter((row) => ["period", "date"].includes(String(row.role || row.dictionary_role || "").toLowerCase()))
-      .sort((left, right) => {
-        const score = (row) => (/reporting|quarter|period/i.test(row.column_name) ? 3 : 0) + (String(row.dictionary_role).toLowerCase() === "period" ? 2 : 0);
-        return score(right) - score(left);
-      });
-    const period = candidates[0];
-    if (!period) return;
-    setPeriodColumn((current) => current || period.column_name);
-    const profile = period.profile_json || {};
-    const quarterLike = /quarter|\bq[1-4]\b/i.test(`${period.column_name} ${period.description || ""} ${(profile.sample_values || []).join(" ")}`);
-    setStartDate((current) => current || profile.period_bounds?.start_date || periodDate(profile.min ?? profile.sample_values?.[0], false, quarterLike));
-    setEndDate((current) => current || profile.period_bounds?.end_date || periodDate(profile.max ?? profile.sample_values?.at(-1), true, quarterLike));
-  }, [inventoryRows]);
+    if (!itemId || !inventoryRows.length || completion) {
+      setStructuralPrecheck(null);
+      return undefined;
+    }
+    let live = true;
+    const timer = window.setTimeout(() => {
+      getStructuralPrecheckV2(itemId, inventoryRows)
+        .then((result) => { if (live) setStructuralPrecheck(result); })
+        .catch(() => { if (live) setStructuralPrecheck(null); });
+    }, 150);
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [completion, inventoryRows, itemId]);
 
   useEffect(() => {
     if (!inventoryRows.length) return;
@@ -445,34 +432,46 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
   ].filter(Boolean);
   const selectedTargetProfile = inventoryRows.find((row) => row.column_name === targetVariable);
   const targetCandidates = inventoryRows.filter((row) => String(row.role || row.dictionary_role || "").toLowerCase() === "target");
-  const selectedTargetValues = selectedTargetProfile
-    ? Object.keys(selectedTargetProfile.profile_json?.top_values || selectedTargetProfile.profile_json?.top_k || {}).slice(0, 5)
-    : [];
-  const periodRoleRows = inventoryRows.filter((row) => String(row.role || row.dictionary_role || "").toLowerCase() === "period");
+  const periodEvidenceRows = inventoryRows
+    .map((row) => ({ row, evidence: temporalProfileEvidence(row) }))
+    .filter(({ row, evidence }) => evidence && ["date", "period"].includes(String(row.role || row.dictionary_role || "").trim().toLowerCase()));
+  const unsupportedTemporalRows = inventoryRows.filter((row) =>
+    ["date", "period"].includes(String(row.role || row.dictionary_role || "").trim().toLowerCase())
+      && !temporalProfileEvidence(row));
   const constantRows = inventoryRows.filter((row) => Number(row.distinct_count || 0) === 1);
-  const periodOptions = periodRoleRows.length ? periodRoleRows.map((row) => row.column_name) : periodColumns;
+  const periodOptions = periodEvidenceRows.map(({ row }) => row.column_name);
   const choosePeriodColumn = (column) => {
     setPeriodColumn(column);
+    if (!column) {
+      setStartDate("");
+      setEndDate("");
+      return;
+    }
     const row = inventoryRows.find((candidate) => candidate.column_name === column);
     if (!row) return;
-    const profile = row.profile_json || {};
-    const quarterLike = /quarter|\bq[1-4]\b/i.test(`${row.column_name} ${row.description || ""} ${(profile.sample_values || []).join(" ")}`);
-    setStartDate(profile.period_bounds?.start_date || periodDate(profile.min ?? profile.sample_values?.[0], false, quarterLike));
-    setEndDate(profile.period_bounds?.end_date || periodDate(profile.max ?? profile.sample_values?.at(-1), true, quarterLike));
+    const evidence = temporalProfileEvidence(row);
+    setStartDate(evidence?.startDate || "");
+    setEndDate(evidence?.endDate || "");
   };
 
   const createTechnicalRowId = async () => {
     if (!itemId || !technicalTable || !technicalNonBusinessAcknowledged || !technicalTransformAcknowledged) return;
-    setTechnicalBusy(true); setError("");
+    setTechnicalBusy(true); setError(""); setTechnicalRowIdError("");
     try {
       const revision = await getTechnicalRowIdSourceRevisionV2(itemId);
-      await createTechnicalRowIdV2(itemId, {
+      const created = await createTechnicalRowIdV2(itemId, {
         table: technicalTable, source_revision: revision.source_revision,
         acknowledge_non_business_identifier: true, acknowledge_snapshot_transformation: true,
       }, crypto.randomUUID());
+      setTechnicalRowIdCreated({ table: created?.table || technicalTable });
       setIngest(await getIngestV2(itemId));
+      setInventoryRows(await getInventoryV2(itemId));
       setSummaries(await getItemTablesV2(itemId).then((rows) => rows.map((row) => ({ tab: row.table_name, rows: row.row_count, columns: row.col_count }))));
-    } catch (err) { setError(typeof err.detail === "string" ? err.detail : err.message); }
+    } catch (err) {
+      const message = typeof err.detail === "string" ? err.detail : err.message;
+      setTechnicalRowIdError(message || "Technical row identifier could not be created.");
+      setError(message);
+    }
     finally { setTechnicalBusy(false); }
   };
   return (
@@ -548,19 +547,20 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
 
       {sourceComplete && <StepCard step="3" title="Normalize column definitions" subtitle="Review types, roles, valid values and special-value handling."><UploadReviewInventory ref={inventoryRef} item={{ item_id: itemId, kind }} mapping={ingest?.mapping || []} deferSave onRowsLoaded={receiveInventoryRows} onSaved={async () => setIngest(await getIngestV2(itemId))} /></StepCard>}
 
-      {sourceComplete && !completion && <StepCard step="3a" title="Optional technical row identifier" subtitle="Use only when the dataset has no credible business identifier. This creates a deterministic technical column before the snapshot is finalized."><div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950"><strong>Not a business identifier.</strong> `technical_row_id` is retained as an Ignore column. It cannot support entity continuity, joins, relationships, cadence, or entity-based diagnostics.</div><div className="mt-3 max-w-md"><Label htmlFor="technical-row-table">Table</Label><select id="technical-row-table" className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={technicalTable} onChange={(event) => setTechnicalTable(event.target.value)}><option value="">Select a table</option>{summaries.map((summary) => <option key={summary.tab} value={summary.tab}>{summary.tab}</option>)}</select></div><label className="mt-3 flex items-start gap-2 text-sm"><input type="checkbox" checked={technicalNonBusinessAcknowledged} onChange={(event) => setTechnicalNonBusinessAcknowledged(event.target.checked)} />I understand this is not a business entity or identifier.</label><label className="mt-2 flex items-start gap-2 text-sm"><input type="checkbox" checked={technicalTransformAcknowledged} onChange={(event) => setTechnicalTransformAcknowledged(event.target.checked)} />I approve this staged snapshot transformation before finalization.</label><Button type="button" className="mt-3" variant="outline" disabled={technicalBusy || !technicalTable || !technicalNonBusinessAcknowledged || !technicalTransformAcknowledged} onClick={createTechnicalRowId}>{technicalBusy && <Loader2 className="h-4 w-4 animate-spin" />}{technicalBusy ? "Creating technical row identifier…" : "Create technical row identifier"}</Button></StepCard>}
+      {sourceComplete && !completion && structuralPrecheck?.offer_technical_row_id && !technicalRowIdCreated && !inventoryRows.some((row) => row.column_name === "technical_row_id") && <StepCard step="3a" title="Structural precheck" subtitle="No selected Identifier column or supported Identifier-and-reporting-period combination uniquely identifies every row."><div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950"><strong>Why the selected identifier cannot be used as a row key</strong><ul className="mt-2 list-disc pl-5">{structuralPrecheck.tables.flatMap((table) => table.candidates.filter((candidate) => candidate.kind === "single" && !candidate.is_unique).map((candidate) => <li key={`${table.table}.${candidate.columns.join(".")}`}><strong>{candidate.columns.join(" + ")}</strong>: {Number(candidate.total_rows).toLocaleString()} rows, {Number(candidate.distinct_key_count).toLocaleString()} distinct values, {Number(candidate.duplicate_excess_rows).toLocaleString()} duplicate row{candidate.duplicate_excess_rows === 1 ? "" : "s"}{candidate.null_or_missing_rows ? `, ${Number(candidate.null_or_missing_rows).toLocaleString()} blank or missing row${candidate.null_or_missing_rows === 1 ? "" : "s"}` : ""}.</li>))}</ul><p className="mt-2 text-xs">A technical row identifier provides deterministic row-level traceability only. It is retained as Ignore and does not become a business identifier, relationship key, or diagnostic entity.</p></div><div className="mt-3 max-w-md"><Label htmlFor="technical-row-table">Table</Label><select id="technical-row-table" className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={technicalTable} onChange={(event) => setTechnicalTable(event.target.value)}><option value="">Select a table</option>{summaries.map((summary) => <option key={summary.tab} value={summary.tab}>{summary.tab}</option>)}</select></div><label className="mt-3 flex items-start gap-2 text-sm"><input type="checkbox" checked={technicalNonBusinessAcknowledged} onChange={(event) => setTechnicalNonBusinessAcknowledged(event.target.checked)} />I understand this is not a business entity or identifier.</label><label className="mt-2 flex items-start gap-2 text-sm"><input type="checkbox" checked={technicalTransformAcknowledged} onChange={(event) => setTechnicalTransformAcknowledged(event.target.checked)} />I approve this staged snapshot transformation before finalization.</label><Button type="button" className="mt-3" variant="outline" disabled={technicalBusy || !technicalTable || !technicalNonBusinessAcknowledged || !technicalTransformAcknowledged} onClick={createTechnicalRowId}>{technicalBusy && <Loader2 className="h-4 w-4 animate-spin" />}{technicalBusy ? "Creating technical row identifier…" : "Create technical row identifier"}</Button>{technicalRowIdError && <p className="mt-3 rounded-md border border-red-200 bg-red-50 p-2 text-sm text-red-800" role="alert"><strong>Technical row identifier was not created.</strong> {technicalRowIdError}</p>}</StepCard>}
+      {sourceComplete && !completion && technicalRowIdCreated && <StepCard step="3a" title="Structural precheck" subtitle="Technical row identifier created"><div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950"><strong>Technical row identifier created successfully.</strong> `technical_row_id` was added to {technicalRowIdCreated.table} as an Ignore column for deterministic row-level traceability. It does not change the business identifier or row-grain decision.</div></StepCard>}
 
       {sourceComplete && <StepCard step="4" title="Confirm dataset information" subtitle="Dictionary and profiling evidence preloads the target, period and business context." testId="upl-step-4">
-        {kind === "dataset" && <section className="rounded-lg border border-teal-200 bg-emerald-50/40 p-4"><h4 className="font-semibold text-teal-950">Dictionary and profile intelligence</h4><div className="mt-3 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4"><div><span className="block text-xs uppercase text-slate-500">Target candidates</span><strong>{targetCandidates.length ? targetCandidates.map((row) => `${row.column_name} (${Number(row.distinct_count || 0).toLocaleString()} levels)`).join(", ") : "None identified"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Observed period</span><strong>{periodColumn ? `${periodColumn} · ${startDate || "?"} → ${endDate || "?"}` : "None identified"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Business context</span><strong>{[useCase, product].filter(Boolean).join(" · ") || "No taxonomy match"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Constant features</span><strong>{constantRows.length ? `${constantRows.length} recommended Ignore` : "None"}</strong></div></div><p className="mt-3 text-xs text-teal-800">Suggestions combine dictionary roles and descriptions, retained file context, observed n-levels, unique values, and profiled date bounds. Review every selection below before confirming.</p></section>}
+        {kind === "dataset" && <section className="rounded-lg border border-teal-200 bg-emerald-50/40 p-4"><h4 className="font-semibold text-teal-950">Dictionary and profile intelligence</h4><div className="mt-3 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4"><div><span className="block text-xs uppercase text-slate-500">Target candidates</span><strong>{targetCandidates.length ? targetCandidates.map((row) => `${row.column_name} (${Number(row.distinct_count || 0).toLocaleString()} levels)`).join(", ") : "None identified"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Reporting period</span><strong>{periodColumn ? `${periodColumn} · ${startDate || "?"} → ${endDate || "?"}` : periodEvidenceRows.length ? "Profile evidence available; no period selected" : "No reporting period evidenced in this dataset"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Business context</span><strong>{[useCase, product].filter(Boolean).join(" · ") || "No taxonomy match"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Constant features</span><strong>{constantRows.length ? `${constantRows.length} recommended Ignore` : "None"}</strong></div></div><p className="mt-3 text-xs text-teal-800">Temporal suggestions require observed date or period values. Column names and descriptions are supporting context only and cannot establish a reporting period.</p>{unsupportedTemporalRows.length > 0 && <p className="mt-2 text-xs text-amber-800">Not treated as reporting-period columns because their values lack temporal evidence: <strong>{unsupportedTemporalRows.map((row) => row.column_name).join(", ")}</strong>.</p>}</section>}
         {targetMode === "existing" && !resumingFresh && <div className="mt-3"><Label>Intent</Label><div className="mt-1 flex flex-wrap gap-4 text-sm"><label><input type="radio" name="intent" checked={intent === "add_period"} onChange={() => setIntent("add_period")} /> Add period</label><label><input type="radio" name="intent" checked={intent === "full_replacement"} onChange={() => setIntent("full_replacement")} /> Full replacement</label></div></div>}
-        {basis === "period" ? <div className="mt-3 grid gap-3 md:grid-cols-3"><div><Label htmlFor="start-date">Start date</Label><Input id="start-date" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></div><div><Label htmlFor="end-date">End date</Label><Input id="end-date" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></div><div><Label htmlFor="snapshot-label">Snapshot label</Label><Input id="snapshot-label" value={snapshotLabel} onChange={(e) => setSnapshotLabel(e.target.value)} placeholder={startDate && endDate ? `${startDate} → ${endDate}` : "Period label"} /></div></div> : <div className="mt-3 max-w-md"><Label htmlFor="snapshot-label">Snapshot label</Label><Input id="snapshot-label" value={snapshotLabel} onChange={(e) => setSnapshotLabel(e.target.value)} placeholder="Required within this asset" /></div>}
+        {basis === "period" ? <div className="mt-3 grid gap-3 md:grid-cols-3"><div><Label htmlFor="start-date">Start date</Label><Input id="start-date" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></div><div><Label htmlFor="end-date">End date</Label><Input id="end-date" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></div><div><Label htmlFor="snapshot-label">Snapshot label</Label><Input id="snapshot-label" value={snapshotLabel} onChange={(e) => setSnapshotLabel(e.target.value)} placeholder={startDate && endDate ? `${startDate} → ${endDate}` : "Period label"} /></div></div> : <div className="mt-3 max-w-md"><Label htmlFor="snapshot-label">Snapshot label <span className="text-red-600">*</span><span className="ml-1 text-xs font-normal text-slate-500">Required</span></Label><Input id="snapshot-label" value={snapshotLabel} onChange={(e) => setSnapshotLabel(e.target.value)} placeholder="e.g. Initial model extract" /><p className="mt-1 text-xs text-slate-500">Use a short, unique label to distinguish this immutable snapshot from other uploads in the same asset.</p></div>}
         {dateError && <p className="mt-2 text-xs text-red-700" role="alert">Start and end dates are required together, and start must not be after end.</p>}
-        <div className="mt-3 max-w-md"><Label htmlFor="period-column">Reporting period column (optional)</Label><select id="period-column" className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={periodColumn} onChange={(e) => choosePeriodColumn(e.target.value)}><option value="">None / Not applicable</option>{periodOptions.map((column) => <option key={column} value={column}>{column}</option>)}</select><p className="mt-1 text-xs text-slate-400">Columns assigned the Period role are prioritized. Observed quarter/year values populate the date range.</p></div>
+        <div className="mt-3 max-w-md"><Label htmlFor="period-column">Reporting period column (optional)</Label><select id="period-column" className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={periodColumn} onChange={(e) => choosePeriodColumn(e.target.value)}><option value="">None / Not applicable</option>{periodOptions.map((column) => <option key={column} value={column}>{column}</option>)}</select><p className="mt-1 text-xs text-slate-400">{periodOptions.length ? "Only columns with profiled temporal values are listed; names are supporting context only." : "No column has sufficient profiled date or period evidence. You can continue without one."}</p></div>
         {kind === "dataset" && <><div className="mt-4 grid gap-3 md:grid-cols-3">
           <div><Label htmlFor="target-variable">Target variable (optional)</Label><select id="target-variable" className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={targetVariable} onChange={(e) => { setTargetVariable(e.target.value); setTargetSelectionReviewed(true); setMetadataConfirmed(false); }}><option value="">No target selected</option>{inventoryRows.map((row) => <option key={row.column_name} value={row.column_name}>{row.column_name} · {Number(row.distinct_count || 0).toLocaleString()} levels</option>)}</select><p className="mt-1 text-xs text-slate-400">{targetCandidates.length ? `${targetCandidates.length} optional target candidate${targetCandidates.length === 1 ? "" : "s"} identified from normalized roles. Clear the selection if no target should be confirmed.` : "No target role was detected. You can proceed without one and confirm it later if required by a diagnostic."}</p></div>
           <div><Label htmlFor="use-case">Use case</Label><Select value={useCase} onValueChange={(value) => { setUseCase(value); setMetadataConfirmed(false); }} disabled={taxonomyLoading || !useCaseOptions.length}><SelectTrigger id="use-case" className="mt-1 h-10" aria-label="Use case"><SelectValue placeholder={taxonomyLoading ? "Loading use cases…" : "Select a use case…"} /></SelectTrigger><SelectContent>{useCaseOptions.map((value) => <SelectItem key={value.key} value={value.label}>{value.label}</SelectItem>)}</SelectContent></Select></div>
           <div><Label htmlFor="product">Product</Label><Select value={product} onValueChange={(value) => { setProduct(value); setMetadataConfirmed(false); }} disabled={taxonomyLoading || !productOptions.length}><SelectTrigger id="product" className="mt-1 h-10" aria-label="Product"><SelectValue placeholder={taxonomyLoading ? "Loading products…" : "Select a product…"} /></SelectTrigger><SelectContent>{productOptions.map((value) => <SelectItem key={value.key} value={value.label}>{value.label}</SelectItem>)}</SelectContent></Select></div>
-        </div>{taxonomyError && <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert"><span>Use Case and Product choices could not be loaded.</span><Button type="button" size="sm" variant="outline" onClick={loadTaxonomyDimensions} disabled={taxonomyLoading}>Retry</Button></div>}<div className="mt-4 rounded-lg border border-teal-200 bg-emerald-50/50 p-4">{selectedTargetProfile ? <div className="grid gap-3 text-sm sm:grid-cols-4"><div><span className="block text-xs uppercase text-slate-500">Target</span><strong>{selectedTargetProfile.column_name}</strong></div><div><span className="block text-xs uppercase text-slate-500">Observed type</span><strong>{selectedTargetProfile.inferred_type || selectedTargetProfile.classification}</strong></div><div><span className="block text-xs uppercase text-slate-500">N-levels</span><strong>{Number(selectedTargetProfile.distinct_count || 0).toLocaleString()}</strong></div><div><span className="block text-xs uppercase text-slate-500">Unique value sample</span><strong className="text-xs">{(selectedTargetValues.length ? selectedTargetValues : (selectedTargetProfile.sample_values || []).slice(0, 5).map(String)).join(", ") || "Not retained"}</strong></div></div> : <p className="text-sm text-teal-900"><strong>No target selected.</strong> The schema can still be saved and used in Test Lab; target-dependent diagnostics will remain unavailable until a target is confirmed.</p>}<label className="mt-4 flex items-start gap-2 text-sm text-teal-900"><input type="checkbox" checked={metadataConfirmed} onChange={(event) => setMetadataConfirmed(event.target.checked)} />I confirm this target selection (or no target), reporting period, use case, product, and their profiled interpretation for downstream assessment.</label></div></>}
+        </div>{taxonomyError && <div className="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900" role="alert"><span>Use Case and Product choices could not be loaded.</span><Button type="button" size="sm" variant="outline" onClick={loadTaxonomyDimensions} disabled={taxonomyLoading}>Retry</Button></div>}<div className="mt-4 rounded-lg border border-teal-200 bg-emerald-50/50 p-4">{selectedTargetProfile ? <div className="flex flex-wrap items-end gap-x-6 gap-y-3 text-sm"><div><span className="block text-xs uppercase text-slate-500">Target</span><strong>{selectedTargetProfile.column_name}</strong></div><div><span className="block text-xs uppercase text-slate-500">Observed type</span><strong>{selectedTargetProfile.inferred_type || selectedTargetProfile.classification}</strong></div><div className="flex flex-wrap items-center gap-1.5"><span className="text-xs uppercase text-slate-500">Profile</span>{targetProfileFacts(selectedTargetProfile).map(([label, value]) => <span key={label} className="inline-flex items-baseline gap-1 rounded bg-white/70 px-2 py-1 text-xs text-slate-700"><span className="text-slate-500">{label}</span><strong>{value}</strong></span>)}</div></div> : <p className="text-sm text-teal-900"><strong>No target selected.</strong> The schema can still be saved and used in Test Lab; target-dependent diagnostics will remain unavailable until a target is confirmed.</p>}<label className="mt-4 flex items-start gap-2 text-sm text-teal-900"><input type="checkbox" checked={metadataConfirmed} onChange={(event) => setMetadataConfirmed(event.target.checked)} />I confirm this target selection (or no target), reporting period, use case, product, and their profiled interpretation for downstream assessment.</label></div></>}
         {intent === "full_replacement" && supersedePreview?.snapshot_count > 0 && <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm"><p className="font-semibold text-amber-900">This will supersede {supersedePreview.description}.</p><label className="mt-2 flex items-start gap-2"><input type="checkbox" checked={replacementConfirmed} onChange={(e) => setReplacementConfirmed(e.target.checked)} /> <span>I understand this distinct full-replacement action.</span></label></div>}
       </StepCard>}
       {sourceComplete && <StepCard step="5" title="Save and proceed" subtitle="Save normalized definitions and promote the snapshot to Test Lab." testId="upl-step-5"><p className="text-sm text-slate-500">This saves the normalized column definitions and storage decisions together, then makes the snapshot available in Test Lab.</p><div className="mt-4 flex flex-wrap items-center gap-3"><Button disabled={Boolean(completion) || Boolean(processDisabledReasons.length) || processing} onClick={process}>{processing && <Loader2 className="h-4 w-4 animate-spin" />}{processing ? "Saving and proceeding…" : completion ? "Saved and ready" : "Save and Proceed"}</Button>{completion && committedAssetId && <Link to={`/test-lab?asset=${encodeURIComponent(committedAssetId)}`} className="inline-flex h-10 items-center rounded-md bg-dq-purple px-4 text-sm font-medium text-white hover:bg-dq-purple/90">Go to Test Lab</Link>}</div>{!completion && !processing && processDisabledReasons.length > 0 && <p className="mt-2 text-xs text-slate-500">Before you can proceed: {processDisabledReasons.join("; ")}.</p>}{ingest.overlap_warnings?.map((warning) => <p key={warning} className="mt-2 text-sm text-amber-700">{warning}</p>)}</StepCard>}

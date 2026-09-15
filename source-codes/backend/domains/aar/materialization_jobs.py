@@ -18,6 +18,13 @@ from .repository import AnalysisArtifactRepository
 LEASE_SECONDS, HEARTBEAT_SECONDS, JOB_DEADLINE_SECONDS, MAX_ATTEMPTS = 90, 30, 600, 3
 RETRY_DELAYS_SECONDS = (30, 300, 1800)
 WORKER_OWNER = f"dsc-worker-{os.getpid()}-{uuid.uuid4().hex[:10]}"
+MATERIALIZATION_PREDICATES = (
+    "table.physical/schema_column",
+    "table.structure/entity_binding",
+    "table.temporal/temporal_binding",
+    "table.structure/row_grain",
+    "table.temporal/observed_cadence",
+)
 
 
 def _utc() -> str:
@@ -465,7 +472,7 @@ def process_one(*, owner: str = WORKER_OWNER) -> dict[str, Any] | None:
         else:
             repo = AnalysisArtifactRepository(); tables = sorted({r["table_name"] for r in db.query("dq_item_tables", item_id=job["snapshot_id"])}); totals["tables_total"] = len(tables)
             for table in tables:
-                for predicate in sorted(SUPPORTED_OBSERVER_PREDICATES):
+                for predicate in MATERIALIZATION_PREDICATES:
                     totals["predicates_total"] += 1
                     if lost.is_set() or (datetime.now(timezone.utc) - began).total_seconds() >= JOB_DEADLINE_SECONDS:
                         error = "DSC_R_WORKER_LEASE_LOST" if lost.is_set() else "DSC_R_JOB_DEADLINE_EXCEEDED"; break

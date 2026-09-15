@@ -7,12 +7,19 @@ async function checkAll(locator) {
   }
 }
 
-// The assessment fixture has no evidence-backed entity, temporal, or row-grain
-// candidate.  Acknowledge those explicit no-selection decisions (and no
-// intended cadence when applicable), then confirm the real DSC authority.
+// Verify the cadence presentation that follows the materialized candidates,
+// acknowledge any explicit no-selection decisions, then confirm authority.
 export async function confirmDatasetStructure(page) {
   const review = page.getByTestId("upl-step-6");
   await expect(review).toBeVisible({ timeout: 30_000 });
+  await expect(review.getByRole("heading", { name: "Cadence for the Date/Period candidate" })).toBeVisible();
+  const temporalOptions = review.getByRole("combobox", { name: /Date or Period candidate/ }).locator("option");
+  if (await temporalOptions.count() > 1) {
+    await expect(review.getByRole("heading", { name: "Observed", exact: true })).toBeVisible();
+    await expect(review.getByRole("heading", { name: "Expected", exact: true })).toBeVisible();
+  } else {
+    await expect(review.getByText("Not applicable — no supported Date or Period column is available.")).toBeVisible();
+  }
   const confirm = review.getByRole("button", { name: "Confirm dataset structure" });
   await expect(confirm).toBeVisible({ timeout: 30_000 });
   await checkAll(review.locator('input[type="checkbox"]'));
@@ -21,5 +28,6 @@ export async function confirmDatasetStructure(page) {
   await expect(review).toBeVisible();
   await expect(confirm).toBeEnabled({ timeout: 30_000 });
   await confirm.click();
-  await expect(review.getByText("These selections are supported by the dataset evidence.")).toBeVisible();
+  await expect(page).toHaveURL(/\/test-lab\?item=[^&]+$/, { timeout: 30_000 });
+  await expect(page.getByRole("heading", { name: "Test Lab" })).toBeVisible();
 }

@@ -404,6 +404,25 @@ class ConfirmedSpecialValueProfileTests(unittest.TestCase):
         self.assertEqual(sum(row["count"] for row in profile["histogram"]), 2)
 
 
+class TemporalRoleInferenceTests(unittest.TestCase):
+    def test_temporal_looking_numeric_name_is_not_period_without_value_evidence(self):
+        values = pd.Series([0, 1, 2, 3])
+        profile = service._column_profile(values, logical_type="numerical")
+
+        self.assertEqual(
+            service._role_for("Num.Cash.Advances.3.Month", "numerical", None, values, profile),
+            "Feature",
+        )
+
+    def test_non_temporal_name_is_period_when_all_values_have_period_evidence(self):
+        values = pd.Series(["2006q1", "2006q2"])
+        profile = service._column_profile(values, logical_type="categorical")
+
+        self.assertEqual(service._role_for("qt", "categorical", None, values, profile), "Period")
+        self.assertTrue(profile["period_format_evidence_available"])
+        self.assertEqual(profile["period_format_failure_count"], 0)
+
+
 class DictionaryIntegrationTests(unittest.TestCase):
     def test_confirmation_reprofiles_regular_population_before_ready(self):
         dictionary = CLEAN_DICTIONARY_CSV.replace(

@@ -118,6 +118,30 @@ def test_multitable_source_is_ineligible_without_any_write(staged_item):
     assert [row["role"] for row in db.query("dq_item_files", item_id=staged_item)] == ["data"]
 
 
+def test_structural_precheck_explains_duplicate_identifier_and_tests_identifier_period_pair(staged_item):
+    service._write_table(staged_item, "source", pd.DataFrame({
+        "user_id": ["a", "b", "a"], "reporting_period": ["2025-01", "2025-01", "2025-02"],
+    }))
+    precheck = service.staged_structural_precheck(staged_item, [
+        {"table_name": "source", "column_name": "user_id", "role": "Identifier"},
+        {"table_name": "source", "column_name": "reporting_period", "role": "Period"},
+    ])
+    assert precheck["outcome"] == "credible_candidate"
+    single, pair = precheck["tables"][0]["candidates"]
+    assert single["columns"] == ["user_id"] and single["duplicate_excess_rows"] == 1 and not single["is_unique"]
+    assert pair["columns"] == ["user_id", "reporting_period"] and pair["is_unique"]
+    assert not precheck["offer_technical_row_id"]
+
+
+def test_structural_precheck_offers_technical_id_when_selected_identifier_has_duplicates(staged_item):
+    precheck = service.staged_structural_precheck(staged_item, [
+        {"table_name": "source", "column_name": "value", "role": "Identifier"},
+    ])
+    assert precheck["outcome"] == "no_unique_candidate" and precheck["offer_technical_row_id"]
+    candidate = precheck["tables"][0]["candidates"][0]
+    assert candidate["distinct_key_count"] == 2 and candidate["duplicate_excess_rows"] == 1
+
+
 @pytest.mark.parametrize("finalized", ["ready", "processed"])
 def test_ready_or_processed_snapshot_is_immutable(staged_item, finalized):
     if finalized == "ready":
@@ -191,6 +215,16 @@ def test_persisted_source_ordinals_survive_cache_reload_and_unordered_reads(stag
     assert rebuilt_ordinals == ordinals
     assert _create(staged_item)["status"] == "complete"
     assert service.read_snapshot_table(staged_item, "source")["technical_row_id"].tolist() == expected
+
+
+def test_legacy_staged_cache_without_ordinal_rebuilds_from_durable_source(staged_item):
+    with sqlite3.connect(service._item_db(staged_item)) as conn:
+        pd.DataFrame({"value": ["a", "b", "a"]}).to_sql("source", conn, if_exists="replace", index=False)
+    result = _create(staged_item)
+    assert result["status"] == "complete"
+    frame, ordinals = service._read_table_with_technical_row_ordinals(staged_item, "source")
+    assert frame["technical_row_id"].str.startswith("tri_").all()
+    assert ordinals == [0, 1, 2]
 
 
 @pytest.mark.parametrize("after_replacement", [False, True])

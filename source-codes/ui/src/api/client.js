@@ -76,6 +76,10 @@ export const processSnapshotV2 = (snapshotId, body) =>
   });
 export const getTechnicalRowIdSourceRevisionV2 = (snapshotId) =>
   req(`/v2/items/${encodeURIComponent(snapshotId)}/technical-row-id/source-revision`);
+export const getStructuralPrecheckV2 = (snapshotId, inventoryRows) =>
+  req(`/v2/items/${encodeURIComponent(snapshotId)}/structural-precheck`, {
+    method: "POST", body: JSON.stringify({ inventory_rows: inventoryRows }),
+  });
 export const createTechnicalRowIdV2 = (snapshotId, body, idempotencyKey) =>
   req(`/v2/items/${encodeURIComponent(snapshotId)}/technical-row-id`, {
     method: "POST", body: JSON.stringify(body), headers: { "Idempotency-Key": idempotencyKey },

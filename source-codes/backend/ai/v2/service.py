@@ -195,6 +195,86 @@ def technical_row_id_eligibility(item_id: str) -> dict[str, Any]:
     return {"eligible": True, "reason": None}
 
 
+_STRUCTURAL_PRECHECK_MAX_IDENTIFIER_CANDIDATES = 8
+_STRUCTURAL_PRECHECK_MAX_TEMPORAL_CANDIDATES = 8
+_STRUCTURAL_PRECHECK_MAX_COMBINATIONS = 32
+
+
+def staged_structural_precheck(item_id: str, reviewed_rows: list[dict] | None = None) -> dict[str, Any]:
+    """Measure selected identifiers and bounded identifier-period pairs pre-finalization.
+
+    This is a read-only staging aid, not a DSC assertion or a saved decision.
+    It deliberately mirrors DSC's bounded candidate shape so the UI never
+    claims that arbitrary column combinations have been exhaustively tested.
+    """
+    require_item(item_id)
+    eligibility = technical_row_id_eligibility(item_id)
+    source_tables = tables(item_id)
+    rows = reviewed_rows if isinstance(reviewed_rows, list) else get_inventory(item_id)
+    by_table: dict[str, dict[str, dict]] = {}
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("table_name") or not row.get("column_name"):
+            continue
+        by_table.setdefault(str(row["table_name"]), {})[str(row["column_name"])] = row
+
+    results = []
+    capped = False
+    for table_row in source_tables:
+        table = table_row["table_name"]
+        metadata = by_table.get(table, {})
+        identifiers = [row for row in metadata.values()
+                       if str(row.get("role") or "").lower() == "identifier"]
+        temporals = [row for row in metadata.values()
+                     if str(row.get("role") or "").lower() in {"period", "date"}]
+        table_capped = (len(identifiers) > _STRUCTURAL_PRECHECK_MAX_IDENTIFIER_CANDIDATES
+                        or len(temporals) > _STRUCTURAL_PRECHECK_MAX_TEMPORAL_CANDIDATES
+                        or len(identifiers) * len(temporals) > _STRUCTURAL_PRECHECK_MAX_COMBINATIONS)
+        capped = capped or table_capped
+        available = set(table_row.get("columns") or [])
+        identifiers = [row for row in identifiers if row["column_name"] in available]
+        temporals = [row for row in temporals if row["column_name"] in available]
+        candidates: list[dict[str, Any]] = []
+        if not table_capped and identifiers:
+            frame = read_snapshot_table(item_id, table, columns=sorted({row["column_name"] for row in identifiers + temporals}))
+            pairs = [(row,) for row in identifiers] + [(identifier, temporal) for identifier in identifiers for temporal in temporals]
+            for candidate_rows in pairs:
+                columns = [row["column_name"] for row in candidate_rows]
+                selected = frame.loc[:, columns]
+                null_mask = selected.isna().any(axis=1)
+                usable = selected.loc[~null_mask]
+                distinct = int(usable.drop_duplicates().shape[0])
+                usable_count = int(usable.shape[0])
+                candidates.append({
+                    "columns": columns,
+                    "kind": "single" if len(columns) == 1 else "identifier_period",
+                    "total_rows": int(frame.shape[0]), "usable_rows": usable_count,
+                    "null_or_missing_rows": int(null_mask.sum()),
+                    "distinct_key_count": distinct,
+                    "duplicate_excess_rows": usable_count - distinct,
+                    "is_unique": bool(len(frame) and not null_mask.any() and distinct == len(frame)),
+                })
+        results.append({"table": table, "identifier_columns": [row["column_name"] for row in identifiers],
+                        "temporal_columns": [row["column_name"] for row in temporals],
+                        "capped": table_capped, "candidates": candidates})
+
+    unique = [candidate for result in results for candidate in result["candidates"] if candidate["is_unique"]]
+    if capped:
+        outcome = "inconclusive"
+    elif unique:
+        outcome = "credible_candidate"
+    elif any(result["identifier_columns"] for result in results):
+        outcome = "no_unique_candidate"
+    else:
+        outcome = "no_identifier_candidates"
+    return {"outcome": outcome, "tables": results, "candidate_limits": {
+        "identifiers": _STRUCTURAL_PRECHECK_MAX_IDENTIFIER_CANDIDATES,
+        "temporals": _STRUCTURAL_PRECHECK_MAX_TEMPORAL_CANDIDATES,
+        "combinations": _STRUCTURAL_PRECHECK_MAX_COMBINATIONS,
+    }, "technical_row_id_eligible": eligibility["eligible"],
+            "technical_row_id_reason": eligibility["reason"],
+            "offer_technical_row_id": bool(eligibility["eligible"] and outcome in {"no_unique_candidate", "no_identifier_candidates"})}
+
+
 def _technical_row_id_path(item_id: str, table: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_]+", "_", table).strip("_") or "table"
     path = _item_dir(item_id) / "derived" / "technical_row_id"
@@ -251,8 +331,19 @@ def _read_table_with_technical_row_ordinals(item_id: str, table: str) -> tuple[p
         _rebuild_item_db(item_id)
     with closing(sqlite3.connect(item_db)) as conn:
         fields = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
+    if TECHNICAL_ROW_ID_ORDINAL_COLUMN not in fields:
+        # Drafts staged before the ordinal contract was introduced can retain
+        # an old cache without the private witness. Rebuild its tables from the
+        # durable parser source, which replaces them and writes the ordinal in
+        # parser order. Never invent an ordinal from SQLite's row order. An
+        # in-place rebuild also avoids unlinking a briefly locked SQLite file
+        # on Windows.
+        _rebuild_item_db(item_id)
+        with closing(sqlite3.connect(item_db)) as conn:
+            fields = {row[1] for row in conn.execute(f'PRAGMA table_info("{table}")')}
         if TECHNICAL_ROW_ID_ORDINAL_COLUMN not in fields:
-            raise ValueError("The staged source has no persisted technical row ordinal.")
+            raise ValueError("The staged source could not restore its technical row order.")
+    with closing(sqlite3.connect(item_db)) as conn:
         frame = pd.read_sql_query(
             f'SELECT * FROM "{table}" ORDER BY "{TECHNICAL_ROW_ID_ORDINAL_COLUMN}" ASC', conn,
         )
@@ -1219,6 +1310,14 @@ def _column_profile(series: pd.Series, special_values: list[Any] | None = None,
             "skewness", "excess_kurtosis", "zero_count", "negative_count", "non_finite_count",
         )}
         profile["patterns"].update({"percentiles": percentile_values, "histogram": histogram})
+        # Low-cardinality numeric columns can be binary or multiclass targets.
+        # Preserve their exact value frequencies alongside numeric statistics so
+        # target confirmation can show class evidence rather than histogram bins.
+        if profile["cardinality"] <= PROFILE_TOP_K_LIMIT:
+            value_counts = clean.value_counts(dropna=True)
+            profile["top_values"] = {
+                str(value): int(count) for value, count in value_counts.head(PROFILE_TOP_K_LIMIT).items()
+            }
     elif datetime_profile or ing_classify.looks_like_datetime(clean):
         parsed_dates = pd.to_datetime(clean, errors="coerce")
         vals = parsed_dates.dropna()
@@ -1251,14 +1350,29 @@ def _column_profile(series: pd.Series, special_values: list[Any] | None = None,
     return profile
 
 
+def _profile_temporal_evidence(profile: dict[str, Any]) -> str | None:
+    regular = int(profile.get("regular_value_count") or 0)
+    if (regular > 0 and profile.get("period_format_evidence_available") is True
+            and int(profile.get("period_format_checked_regular_count") or 0) == regular
+            and int(profile.get("period_format_failure_count") or 0) == 0
+            and isinstance(profile.get("period_bounds"), dict)):
+        return "period"
+    if (regular > 0 and "date_parse_failure_count" in profile
+            and int(profile.get("date_parse_failure_count") or 0) == 0
+            and profile.get("min") is not None and profile.get("max") is not None):
+        return "date"
+    return None
+
+
 def _role_for(column: str, classification: str, target: str | None,
-              series: pd.Series | None = None) -> str:
+              series: pd.Series | None = None, profile: dict[str, Any] | None = None) -> str:
     unique_text = False
     if series is not None and not pd.api.types.is_numeric_dtype(series):
         non_null = int(series.notna().sum())
         unique_text = non_null >= 20 and int(series.nunique(dropna=True)) == non_null
     return infer_inventory_role(
         column, classification, target, unique_text=unique_text,
+        temporal_evidence=_profile_temporal_evidence(profile or {}),
     )
 
 
@@ -1893,8 +2007,6 @@ def profile_item(item_id: str, progress_callback: Callable[[dict[str, Any]], Non
             # Feedback 2.6: notes start blank for the user; a missing dictionary
             # entry already shows as "No definition" in the description column.
             dictionary_role = str((entry or {}).get("role") or "").strip().lower()
-            inventory_role = INVENTORY_ROLE_BY_DICTIONARY.get(dictionary_role) or _role_for(
-                col, classification, item.get("target_variable"), frame[col])
             missing_codes = _special_value_list((entry or {}).get("missing_value_codes"))
             prior = prior_inventory.get(col) or {}
             technical_row_id = _technical_row_id_is_protected(item_id, table_name, col)
@@ -1903,6 +2015,10 @@ def profile_item(item_id: str, progress_callback: Callable[[dict[str, Any]], Non
                 and prior.get("missing_codes_confirmed")
                 and _special_value_list(prior.get("missing_value_codes_json")) == missing_codes
             )
+            column_profile = _column_profile(
+                frame[col], missing_codes, codes_confirmed, classification)
+            inventory_role = INVENTORY_ROLE_BY_DICTIONARY.get(dictionary_role) or _role_for(
+                col, classification, item.get("target_variable"), frame[col], column_profile)
             row = {
                 "item_id": item_id, "table_name": table_name, "column_name": col,
                 "classification": classification, "data_type": str(frame[col].dtype),
@@ -1916,7 +2032,7 @@ def profile_item(item_id: str, progress_callback: Callable[[dict[str, Any]], Non
                 "missing_value_codes_json": [] if technical_row_id else missing_codes,
                 "missing_codes_confirmed": 1 if technical_row_id else int(codes_confirmed),
                 "profile_json": {
-                    **_column_profile(frame[col], missing_codes, codes_confirmed, classification),
+                    **column_profile,
                     "inferred_type": observed,
                     "sample_values": [_jsonable(value) for value in _regular_values(
                         frame[col], missing_codes, codes_confirmed).head(5).tolist()],

@@ -53,17 +53,45 @@ def source_snapshot(tmp_path, monkeypatch):
     }
     for column, role, data_type in (("facility_id", "Identifier", "string"),
                                     ("period", "Date", "date")):
+        profile = dict(exact)
+        if role == "Date":
+            profile.update({"regular_value_count": 3, "date_parse_failure_count": 0,
+                            "min": "2024-01-01", "max": "2024-03-01"})
         db.insert("variable_inventory", {
             "item_id": snapshot_id, "table_name": "observations", "column_name": column,
             "classification": "categorical", "data_type": data_type, "description": "",
             "discrepancies": [], "notes": "", "role": role, "role_reviewed": 1,
-            "profile_json": exact, "updated_at": now,
+            "profile_json": profile, "updated_at": now,
         })
     return SimpleNamespace(asset_id=asset_id, snapshot_id=snapshot_id)
 
 
 def _active_artifacts(snapshot_id: str, kind: str) -> list:
     return AnalysisArtifactRepository().list(snapshot_id=snapshot_id, artifact_type=kind, status="active")
+
+
+def test_init_schema_adds_snapshot_owner_to_legacy_review_idempotency(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "SYS_DB_PATH", tmp_path / "legacy-system.db")
+    with db.get_conn() as conn:
+        conn.execute("""CREATE TABLE dataset_structure_review_idempotency (
+            tenant_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            method TEXT NOT NULL,
+            path TEXT NOT NULL,
+            request_digest TEXT NOT NULL,
+            response_json TEXT NOT NULL,
+            status_code INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(tenant_id, idempotency_key)
+        )""")
+
+    db.init_schema()
+
+    with db.get_conn() as conn:
+        columns = {row[1] for row in conn.execute(
+            "PRAGMA table_info(dataset_structure_review_idempotency)"
+        )}
+    assert "snapshot_id" in columns
 
 
 def _profile_save_args(source_snapshot):
@@ -105,6 +133,23 @@ def test_complete_profile_publication_enqueues_once_and_exact_generation_reuses(
     same, created = jobs.enqueue(source_snapshot.snapshot_id)
     assert not created and same["job_id"] == rows[0]["job_id"]
     assert len(db.query("dataset_structure_materialization_jobs", snapshot_id=source_snapshot.snapshot_id)) == 1
+
+
+def test_materialization_orders_dependencies_before_cadence(source_snapshot, monkeypatch):
+    persist_snapshot_profile_artifacts(source_snapshot.snapshot_id, actor="test")
+    calls = []
+
+    def record_observation(_repo, _snapshot_id, *, tables, predicates, **_kwargs):
+        calls.append((tables[0], predicates[0]))
+        return ()
+
+    monkeypatch.setattr(jobs, "observe_dataset_structure", record_observation)
+    result = jobs.process_one(owner="ordered-worker")
+
+    assert result and result["status"] == "succeeded"
+    assert {predicate for _table, predicate in calls} == jobs.SUPPORTED_OBSERVER_PREDICATES
+    assert [predicate for _table, predicate in calls] == list(jobs.MATERIALIZATION_PREDICATES)
+    assert calls[-1][1] == "table.temporal/observed_cadence"
 
 
 def test_enqueue_failure_does_not_change_ready_ingest_or_profile_publication(source_snapshot, monkeypatch):

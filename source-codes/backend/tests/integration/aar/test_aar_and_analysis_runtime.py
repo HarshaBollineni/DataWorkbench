@@ -411,7 +411,7 @@ class ArtifactRepositoryTests(unittest.TestCase):
         profile = service._column_profile(
             pd.Series([0, 1, 1]), logical_type="binary")
 
-        self.assertIsNone(profile["top_k"])
+        self.assertEqual(profile["top_k"], {"1": 2, "0": 1})
         self.assertEqual(profile["mean"], 2 / 3)
         self.assertTrue(profile["histogram"])
 
