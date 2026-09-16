@@ -245,7 +245,8 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
                 binning_constraints=manifest["parameters"]["binning_constraints"],
                 separation_thresholds={key: values[key] for key in separation_keys},
                 finding_thresholds={key: values[key] for key in manifest_mod.FINDING_DEFAULTS},
-                actor=actor, run_id=run_id, progress_callback=progress,
+                actor=actor, run_id=run_id, materialize_profiles=False,
+                progress_callback=progress,
                 feature_preview_callback=feature_preview,
             )
             events.put(("outcome", outcome))
@@ -293,10 +294,10 @@ def execute_now(run_id: str, actor: str = "system") -> dict[str, Any]:
     return last
 
 
-def run_results(run_id: str) -> dict[str, Any]:
+def run_results(run_id: str, *, hydrate_evidence: bool = True) -> dict[str, Any]:
     """Use the shared persisted-result projection, then router-level #2 hydration."""
     from domains.test_lab.shared.results import run_results as shared
-    return shared(run_id)
+    return shared(run_id, hydrate_evidence=hydrate_evidence)
 
 
 def _workflow_state(finding: dict[str, Any]) -> str:

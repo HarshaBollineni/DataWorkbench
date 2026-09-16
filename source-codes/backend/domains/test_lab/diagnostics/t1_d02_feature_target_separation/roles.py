@@ -57,6 +57,20 @@ def _profile_warning(row: dict[str, Any]) -> str | None:
     return None
 
 
+def _temporal_evidence(profile: dict[str, Any]) -> str | None:
+    regular = int(profile.get("regular_value_count") or 0)
+    if (regular > 0 and profile.get("period_format_evidence_available") is True
+            and int(profile.get("period_format_checked_regular_count") or 0) == regular
+            and int(profile.get("period_format_failure_count") or 0) == 0
+            and isinstance(profile.get("period_bounds"), dict)):
+        return "period"
+    if (regular > 0 and "date_parse_failure_count" in profile
+            and int(profile.get("date_parse_failure_count") or 0) == 0
+            and profile.get("min") is not None and profile.get("max") is not None):
+        return "date"
+    return None
+
+
 def effective_role(row: dict[str, Any]) -> str:
     """Resolve role from the saved schema, with fallbacks only when unset."""
     role = _normalized(row.get("role"))
@@ -78,6 +92,7 @@ def effective_role(row: dict[str, Any]) -> str:
         )
         inferred = infer_inventory_role(
             row.get("column_name"), row.get("classification"), unique_text=unique_text,
+            temporal_evidence=_temporal_evidence(profile),
         )
         if inferred != "Feature":
             return inferred.lower()

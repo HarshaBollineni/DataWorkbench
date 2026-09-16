@@ -15,6 +15,7 @@ import {
   raiseIssueV2, rcaStreamUrlV2,
 } from "@/api/client";
 import TrackedEditor from "@/features/rca/components/TrackedIssueEditor";
+import { formatDisplayNumber } from "@/lib/numberFormat";
 import { useAgentStream } from "@/pages/testlab/stream";
 import { CritBadge, StatusChip } from "@/pages/IssueManagement";
 
@@ -112,7 +113,7 @@ export default function IssueRca() {
       </div>
 
       {issue.workflow_version !== "rca" && <><section className="mb-5 grid grid-cols-2 gap-3 rounded-lg border border-slate-200 bg-white p-5 sm:grid-cols-4">
-        <Fact label="Metric" value={issue.metric == null ? "—" : Number(issue.metric).toFixed(4)} />
+        <Fact label="Metric" value={formatDisplayNumber(issue.metric)} />
         <Fact label="Threshold" value={issue.thresholds == null ? "—" : typeof issue.thresholds === "object" ? JSON.stringify(issue.thresholds) : String(issue.thresholds)} />
         <Fact label="Violations" value={String(issue.violation_count ?? 0)} />
         <Fact label="Use case" value={issue.use_case || (issue.item_kind === "database" ? "Systemic" : "—")} />
@@ -148,7 +149,7 @@ export default function IssueRca() {
                 {issue.column_details.map((d, i) => (
                   <tr key={i} className="border-t border-slate-100 align-top">
                     <td className="px-3 py-2 font-medium text-slate-900">{(d.columns || []).join(", ") || "combined"}</td>
-                    <td className="px-3 py-2">{d.metric == null ? "—" : Number(d.metric).toFixed(4)}</td>
+                    <td className="px-3 py-2">{formatDisplayNumber(d.metric)}</td>
                     <td className="px-3 py-2 text-xs text-slate-500">
                       {d.threshold == null ? "—" : typeof d.threshold === "object" ? JSON.stringify(d.threshold) : String(d.threshold)}
                     </td>

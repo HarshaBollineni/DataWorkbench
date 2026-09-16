@@ -76,6 +76,12 @@ def _asset_and_snapshot(*, ingest_status: str = "ready",
     return asset_id, snapshot_id
 
 
+def _set_table_membership(snapshot_id: str, columns: list[str], row_count: int) -> None:
+    s.update("dq_item_tables", {"item_id": snapshot_id, "table_name": "portfolio"}, {
+        "row_count": row_count, "col_count": len(columns), "columns": columns,
+    })
+
+
 class ContractTests(unittest.TestCase):
     def test_fingerprints_ignore_dictionary_key_order(self):
         self.assertEqual(stable_fingerprint({"a": 1, "b": 2}),
@@ -175,6 +181,24 @@ class ArtifactRepositoryTests(unittest.TestCase):
         self.assertTrue(audit["bounded"])
         self.assertEqual(audit["status"], "healthy")
 
+    def test_complete_integrity_audit_is_read_only_and_reports_storage_drift(self):
+        metadata, _ = self.repo.save_or_reuse({"rate": 0.2}, **self.base)
+        before = self.repo.get_metadata(metadata.artifact_id).integrity_status
+        (self.root / metadata.payload_path).unlink()
+        (self.root / "orphan.json").write_text("{}", encoding="utf-8")
+
+        audit = self.repo.integrity_audit(complete=True)
+
+        self.assertEqual(audit["status"], "warning")
+        self.assertFalse(audit["bounded"])
+        self.assertEqual(audit["catalogue_total"], audit["checked"])
+        self.assertIn(
+            {"artifact_id": metadata.artifact_id, "reason": "payload_missing"},
+            audit["issues"],
+        )
+        self.assertIn("orphan.json", audit["orphan_payload_files"])
+        self.assertEqual(self.repo.get_metadata(metadata.artifact_id).integrity_status, before)
+
     def test_exact_match_reuses_but_methodology_change_does_not(self):
         first, reused = self.repo.save_or_reuse({"rate": 0.2}, **self.base)
         second, reused_second = self.repo.save_or_reuse({"rate": 0.9}, **self.base)
@@ -205,6 +229,49 @@ class ArtifactRepositoryTests(unittest.TestCase):
         )
         superseded = self.repo.supersede(source.artifact_id, by_artifact_id=derived.artifact_id)
         self.assertEqual(superseded.status, "superseded")
+
+    def test_run_knowledge_pins_are_first_class_aar_references(self):
+        run_id = f"drun_{uuid.uuid4().hex[:8]}"
+        reference = {
+            "knowledge_base_id": "kbdoc_example", "version_id": "kbver_example_v2",
+            "version_label": "2", "content_hash": "abc123",
+            "consumer_id": "diagnostic:example",
+        }
+        s.insert("diag_runs", {
+            "run_id": run_id, "item_id": self.snapshot_id, "diagnostic_id": 6,
+            "manifest_json": {"knowledge_references": [reference]}, "status": "done",
+            "engine_versions_json": {}, "created_at": s.now_ist(),
+            "started_at": None, "finished_at": None,
+        })
+
+        saved = self.repo.save({"rate": 0.2}, **self.base, run_id=run_id).artifact
+
+        self.assertEqual(saved.governed_references[0]["reference_type"], "knowledge_version")
+        self.assertEqual(saved.governed_references[0]["target_id"], "kbver_example_v2")
+        self.assertEqual(saved.governed_references[0]["content_hash"], "abc123")
+        lineage = self.repo.lineage(saved.artifact_id)
+        self.assertEqual(lineage["governed_references"], list(saved.governed_references))
+
+    def test_governed_reference_version_is_identity_bearing(self):
+        first = self.repo.save(
+            {"rate": 0.2}, **self.base,
+            governed_references=({"reference_type": "knowledge_version",
+                                  "target_id": "kbver_v1", "content_hash": "hash-1"},),
+        )
+        second = self.repo.save(
+            {"rate": 0.2}, **self.base,
+            governed_references=({"reference_type": "knowledge_version",
+                                  "target_id": "kbver_v2", "content_hash": "hash-2"},),
+        )
+        self.assertNotEqual(first.artifact.artifact_id, second.artifact.artifact_id)
+
+    def test_knowledge_reference_without_content_hash_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "content_hash"):
+            self.repo.save(
+                {"rate": 0.2}, **self.base,
+                governed_references=({"reference_type": "knowledge_version",
+                                      "target_id": "kbver_unpinned"},),
+            )
 
     def test_governed_identity_conflict_and_synthetic_type_extension(self):
         artifact_type = f"synthetic_test_evidence_{uuid.uuid4().hex[:8]}"
@@ -262,6 +329,37 @@ class ArtifactRepositoryTests(unittest.TestCase):
         self.assertEqual((second["total"], len(second["artifacts"])), (3, 1))
         self.assertEqual([row["feature"] for row in filtered["artifacts"]], ["beta"])
 
+    def test_sql_page_excludes_technical_artifacts_before_pagination(self):
+        visible_args = {
+            **self.base,
+            "feature": "income",
+            "methodology_fingerprint": stable_fingerprint({"version": "visible"}),
+        }
+        self.repo.save_or_reuse({"score": 1}, **visible_args)
+        for index in range(55):
+            self.repo.save_or_reuse(
+                {"score": index},
+                **{
+                    **self.base,
+                    "artifact_type": "technical_test_record",
+                    "feature": f"technical-{index}",
+                    "methodology_fingerprint": stable_fingerprint({"version": index}),
+                },
+            )
+
+        complete = self.repo.page(
+            asset_id=self.asset_id, snapshot_id=self.snapshot_id,
+            limit=50, offset=0,
+        )
+        user_page = self.repo.page(
+            asset_id=self.asset_id, snapshot_id=self.snapshot_id,
+            exclude_artifact_types=("technical_test_record",), limit=50, offset=0,
+        )
+
+        self.assertEqual((complete["total"], len(complete["artifacts"])), (56, 50))
+        self.assertEqual((user_page["total"], len(user_page["artifacts"])), (1, 1))
+        self.assertEqual(user_page["artifacts"][0]["feature"], "income")
+
     def test_registered_identity_and_source_contracts_are_enforced(self):
         source_type = f"contract_source_{uuid.uuid4().hex[:8]}"
         child_type = f"contract_child_{uuid.uuid4().hex[:8]}"
@@ -295,6 +393,7 @@ class ArtifactRepositoryTests(unittest.TestCase):
 
     def test_ready_data_sourcing_profiles_backfill_as_governed_artifacts(self):
         now = s.now_ist()
+        _set_table_membership(self.snapshot_id, ["score"], 10)
         s.insert("variable_inventory", {
             "item_id": self.snapshot_id, "table_name": "portfolio", "column_name": "score",
             "classification": "numerical", "data_type": "float", "description": "",
@@ -317,6 +416,7 @@ class ArtifactRepositoryTests(unittest.TestCase):
     def test_confirmed_exact_core_profile_is_fully_retained_in_aar(self):
         profile = service._column_profile(
             pd.Series([10.0, 20.0, -999.0, None]), ["-999"], True)
+        _set_table_membership(self.snapshot_id, ["amount"], 4)
         s.insert("variable_inventory", {
             "item_id": self.snapshot_id, "table_name": "portfolio", "column_name": "amount",
             "classification": "numerical", "data_type": "float64", "description": "",
@@ -417,6 +517,7 @@ class ArtifactRepositoryTests(unittest.TestCase):
 
     def test_reviewed_schema_change_supersedes_the_old_active_projection(self):
         now = s.now_ist()
+        _set_table_membership(self.snapshot_id, ["score"], 2)
         s.insert("variable_inventory", {
             "item_id": self.snapshot_id, "table_name": "portfolio", "column_name": "score",
             "classification": "numerical", "data_type": "float", "description": "",

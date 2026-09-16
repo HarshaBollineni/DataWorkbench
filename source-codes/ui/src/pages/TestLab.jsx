@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { History, Lock, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import { BarChart3, CheckCircle2, History, ListChecks, Lock, Play, RefreshCw, RotateCcw, Settings2, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -42,6 +42,7 @@ export default function TestLab() {
   const [viewingResults, setViewingResults] = useState(false);
   const [activeRunStatus, setActiveRunStatus] = useState("");
   const [activeDiagnosticId, setActiveDiagnosticId] = useState(null);
+  const [activeInitialManifest, setActiveInitialManifest] = useState(null);
   const [completedRunId, setCompletedRunId] = useState("");
   const [results] = useState([]);
   const [resultsLoading] = useState(false);
@@ -52,6 +53,7 @@ export default function TestLab() {
   const [discardError, setDiscardError] = useState("");
   const [discardedRunIds, setDiscardedRunIds] = useState([]);
   const [launchBusy, setLaunchBusy] = useState(false);
+  const [launchingDiagnosticId, setLaunchingDiagnosticId] = useState(null);
   const [urlReady, setUrlReady] = useState(false);
   const initialNavigation = useRef({
     asset: searchParams.get("asset"),
@@ -62,6 +64,7 @@ export default function TestLab() {
   });
   const initialSelectionDone = useRef(false);
   const boardRequest = useRef(0);
+  const workflowActivationRequest = useRef(0);
 
   // ING-07 — the Test Lab consumes only items that have reached the derived
   // `ready` ingest status; nothing profiling/needs_review/failed appears here.
@@ -127,6 +130,8 @@ export default function TestLab() {
     (card) => card.diagnostic_id === activeDiagnosticId)?.name || "",
   [board, activeDiagnosticId]);
   const locked = !items.length;
+  const boardReady = Boolean(board?.cards?.length)
+    && board.cards.every((card) => card.loading !== true);
 
   // No separate "loading" flag: `board` itself is the loading signal (null
   // until the fetch resolves for THIS item — changeItem clears it up front
@@ -164,6 +169,17 @@ export default function TestLab() {
       if (request !== boardRequest.current) return;
       setBoard(summary);
 
+      try {
+        const complete = await getDiagnosticsBoardV2(targetItemId);
+        if (request !== boardRequest.current) return;
+        setBoard(complete);
+        restoreCompletedRun(targetItemId, complete.cards || []);
+        return;
+      } catch {
+        // A mixed-ownership deployment may refuse the aggregate endpoint for
+        // one governed card. Retain per-card isolation as a compatibility
+        // fallback while using one request for the normal owned-item path.
+      }
       const settled = await Promise.allSettled((summary.cards || []).map(async (shell) => {
         try {
           const card = await getDiagnosticsBoardCardV2(targetItemId, shell.diagnostic_id);
@@ -210,6 +226,7 @@ export default function TestLab() {
     setActiveRunId("");
     setActiveRunStatus("");
     setActiveDiagnosticId(null);
+    setActiveInitialManifest(null);
     setCompletedRunId("");
     setDiscardedRunIds([]);
   };
@@ -217,31 +234,54 @@ export default function TestLab() {
   // No runId -> the item's latest run (backend default), so switching to
   // Findings directly (not via a card's [view] link) still shows something
   // — always re-enterable, per testlab-redesign-0.4.0.md §3's diagram.
-  const activateWorkflow = async (runId, diagnosticId) => {
-    const previous = await getDiagnosticResultsV2(itemId, undefined, diagnosticId).catch(() => null);
+  const activateWorkflow = (runId, diagnosticId, initialManifest = null) => {
+    const request = ++workflowActivationRequest.current;
     setActiveDiagnosticId(diagnosticId);
-    if (previous?.run?.run_id) {
-      setCompletedRunId(previous.run.run_id);
-      rememberCompletedRun(itemId, previous.run.run_id);
-    }
     setActiveRunId(runId);
     setActiveRunStatus("draft");
+    setActiveInitialManifest(diagnosticId === 2 ? initialManifest : null);
     setViewingResults(false);
     setDraftChoice(null);
+    // Prior results support the optional previous-results affordance, but do
+    // not need to delay entry into the newly prepared scope.
+    getDiagnosticResultsV2(
+      itemId, undefined, diagnosticId, { includeEvidence: false },
+    ).then((previous) => {
+      if (request !== workflowActivationRequest.current || !previous?.run?.run_id) return;
+      setCompletedRunId(previous.run.run_id);
+      rememberCompletedRun(itemId, previous.run.run_id);
+    }).catch(() => null);
+  };
+
+  const loadAndActivateWorkflow = async (runId, diagnosticId) => {
+    setLaunchBusy(true);
+    setLaunchingDiagnosticId(diagnosticId);
+    setMessage("");
+    try {
+      const payload = await getDiagnosticManifestV2(runId);
+      activateWorkflow(runId, diagnosticId, payload.manifest);
+    } catch (e) {
+      setMessage(e.message);
+    } finally {
+      setLaunchBusy(false);
+      setLaunchingDiagnosticId(null);
+    }
   };
 
   const createAndOpenScope = async (diagnosticId, startAfresh = false) => {
     setLaunchBusy(true);
+    setLaunchingDiagnosticId(diagnosticId);
     setMessage("");
     try {
       const manifest = await buildDiagnosticManifestV2(itemId, {
         diagnostic_id: diagnosticId, start_afresh: startAfresh,
       });
-      await activateWorkflow(manifest.run_id, diagnosticId);
+      activateWorkflow(manifest.run_id, diagnosticId, manifest);
     } catch (e) {
       setMessage(e.message);
     } finally {
       setLaunchBusy(false);
+      setLaunchingDiagnosticId(null);
     }
   };
 
@@ -252,6 +292,7 @@ export default function TestLab() {
       return;
     }
     setLaunchBusy(true);
+    setLaunchingDiagnosticId(diagnosticId);
     try {
       // Undefined means an older board response did not carry draft state.
       // Null is authoritative and proceeds directly to clean draft creation.
@@ -263,24 +304,18 @@ export default function TestLab() {
         }
       }
       const manifest = await buildDiagnosticManifestV2(itemId, { diagnostic_id: diagnosticId });
-      await activateWorkflow(manifest.run_id, diagnosticId);
+      activateWorkflow(manifest.run_id, diagnosticId, manifest);
     } catch (e) {
       setMessage(e.message);
     } finally {
       setLaunchBusy(false);
+      setLaunchingDiagnosticId(null);
     }
   };
 
   const resumeDraft = async () => {
     if (!draftChoice) return;
-    setLaunchBusy(true);
-    try {
-      await activateWorkflow(draftChoice.draft.run_id, draftChoice.diagnosticId);
-    } catch (e) {
-      setMessage(e.message);
-    } finally {
-      setLaunchBusy(false);
-    }
+    await loadAndActivateWorkflow(draftChoice.draft.run_id, draftChoice.diagnosticId);
   };
 
   const discardDraft = async () => {
@@ -307,6 +342,7 @@ export default function TestLab() {
     rememberCompletedRun(itemId, runId);
     setActiveRunId(runId);
     setActiveRunStatus(status);
+    setActiveInitialManifest(null);
     setViewingResults(status !== "running");
   };
 
@@ -318,8 +354,10 @@ export default function TestLab() {
     rememberCompletedRun(itemId, finishedRunId);
     setActiveRunId(finishedRunId);
     setActiveRunStatus("done");
+    setActiveInitialManifest(null);
     setViewingResults(true);
-    loadBoard(); // refresh Coverage's last_run rollup
+    // Do not make the final results request compete with a full board refresh.
+    // Returning to Test Lab refreshes the rollup through the existing onBack path.
   };
 
   const disposition = async () => {};
@@ -335,7 +373,8 @@ export default function TestLab() {
   if (!locked && item && activeRunId) {
     return <DiagnosticWorkflowPage item={item} runId={activeRunId}
       diagnosticName={activeDiagnosticName}
-      onBack={() => { setActiveRunId(""); loadBoard(); }}
+      initialManifest={activeInitialManifest}
+      onBack={() => { setActiveRunId(""); setActiveInitialManifest(null); loadBoard(); }}
       onRunStarted={() => setActiveRunStatus("running")}
       onDone={onRunDone} onSelectRun={viewRun} viewResults={viewingResults}
       liveRun={activeRunStatus === "running"} />;
@@ -370,12 +409,6 @@ export default function TestLab() {
 
       {!locked && item && (
         <>
-          {!activeRunId && <>
-            <div className="mb-4 grid gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)]">
-              <ArtifactRepositoryCard key={`artifacts-${item.item_id}`} item={item} />
-              <IssueReviewCard key={`issues-${item.item_id}`} item={item} />
-            </div>
-          </>}
           {message && <p className="mb-3 text-sm text-red-600">{message}</p>}
 
           {activeRunId && <div className="mb-6 grid gap-4">
@@ -388,14 +421,21 @@ export default function TestLab() {
 
           <div className="grid gap-6">
             <CoverageBoard board={board} loading={!board && !boardError} error={boardError}
-              onOpenScope={openScope} onResumeDraft={activateWorkflow}
+              onOpenScope={openScope} onResumeDraft={loadAndActivateWorkflow}
               onDiscardDraft={(runId, diagnosticId) => {
                 setDiscardError("");
                 setDiscardChoice({ runId, diagnosticId });
               }}
               discardedRunIds={discardedRunIds}
+              launchingDiagnosticId={launchingDiagnosticId}
               onViewRun={viewRun} />
-            <SupportingInvestigations key={itemId} itemId={itemId} />
+            {!activeRunId && boardReady && <>
+              <div className="grid gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)]">
+                <ArtifactRepositoryCard key={`artifacts-${item.item_id}`} item={item} />
+                <IssueReviewCard key={`issues-${item.item_id}`} item={item} />
+              </div>
+              <SupportingInvestigations key={itemId} itemId={itemId} />
+            </>}
           </div>
 
           {legacyPanes && (
@@ -451,7 +491,7 @@ export default function TestLab() {
               <RotateCcw className="h-4 w-4" /> Discard and start new
             </Button>
             <Button disabled={launchBusy} onClick={resumeDraft}>
-              <History className="h-4 w-4" /> Continue setup
+              <History className="h-4 w-4" /> {launchBusy ? "Preparing workflow…" : "Continue setup"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -486,9 +526,17 @@ export default function TestLab() {
   );
 }
 
-function DiagnosticWorkflowPage({ item, runId, diagnosticName, onBack, onRunStarted, onDone, onSelectRun, viewResults, liveRun }) {
+function DiagnosticWorkflowPage({ item, runId, diagnosticName, initialManifest, onBack, onRunStarted, onDone, onSelectRun, viewResults, liveRun }) {
   const isDirectionality = /directional\s*\/\s*monotonic/i.test(diagnosticName || "");
   const isValueSemantics = /value.?semantics/i.test(diagnosticName || "");
+  const isFeatureTarget = /single-feature target separation/i.test(diagnosticName || "");
+  const featureTargetSteps = [
+    [Settings2, "Review target & defaults"],
+    [ListChecks, "Select variables"],
+    [Play, "Run diagnostic"],
+    [BarChart3, "Monitor progress"],
+    [CheckCircle2, "Review findings"],
+  ];
   return <main className="min-h-screen bg-slate-50 p-8">
     <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
       <div>
@@ -498,13 +546,37 @@ function DiagnosticWorkflowPage({ item, runId, diagnosticName, onBack, onRunStar
         </h1>
         {isDirectionality && <p className="mt-1 text-base text-slate-700">Compare expected economic relationships with observed empirical direction.</p>}
         {isValueSemantics && <p className="mt-1 text-base text-slate-700">Identify censored, stale/frozen, and not-applicable cells before downstream analysis.</p>}
-        <p className="mt-1 text-sm text-slate-500">{item.name} · {isDirectionality ? "review outcomes, escalate anomalies for RCA, and optionally check segment-level behavior for later runs." : isValueSemantics ? "start with intended use, then confirm roles, rule coverage, and treatment evidence." : "review scope and run the selected diagnostic."}</p>
+        {isFeatureTarget
+          ? <p className="mt-1 max-w-4xl text-base text-slate-700" data-testid="feature-target-objective">Find individual variables that predict the target unusually well—or provide very little signal—before modelling.</p>
+          : <p className="mt-1 text-sm text-slate-500">{item.name} · {isDirectionality ? "review outcomes, escalate anomalies for RCA, and optionally check segment-level behavior for later runs." : isValueSemantics ? "start with intended use, then confirm roles, rule coverage, and treatment evidence." : "review scope and run the selected diagnostic."}</p>}
       </div>
       <Button variant="outline" onClick={onBack}>Back to Test Lab</Button>
     </div>
+    {isFeatureTarget && !viewResults && <section className="mb-4 rounded-lg border border-slate-200 bg-white p-4" data-testid="feature-target-guide">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900">How to run this diagnostic</h2>
+          <p className="mt-1 text-xs text-slate-500">Start by expanding <strong className="font-semibold text-slate-700">Target and analysis settings</strong> to check the saved target, event class, and default thresholds.</p>
+        </div>
+        <span className="rounded-full bg-teal-50 px-2.5 py-1 text-[11px] font-semibold text-teal-700">About 5 steps</span>
+      </div>
+      <ol className="mt-3 flex flex-wrap gap-2">
+        {featureTargetSteps.map(([Icon, label], index) => <li key={label} className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700">
+          <span className="text-[10px] font-bold text-slate-400">{index + 1}</span><Icon className="h-3.5 w-3.5 text-teal-700" />{label}
+        </li>)}
+      </ol>
+      <details className="group mt-3 border-t border-slate-100 pt-3" data-testid="feature-target-about">
+        <summary className="cursor-pointer list-none text-xs font-semibold text-slate-700">About this diagnostic</summary>
+        <div className="mt-3 grid gap-3 text-xs leading-5 text-slate-600 md:grid-cols-3">
+          <p><strong className="block text-slate-800">Separation</strong>AUC and Gini show how well each variable separates the selected target on its own.</p>
+          <p><strong className="block text-slate-800">Supporting evidence</strong>WOE, IV, fine and coarse bins help explain where that signal comes from.</p>
+          <p><strong className="block text-slate-800">Interpret with care</strong>A strong result is a review signal, not proof of leakage. A weak result may still add value alongside other variables.</p>
+        </div>
+      </details>
+    </section>}
     {viewResults ? <DiagnosticResults itemId={item.item_id} runId={runId} onSelectRun={onSelectRun} />
       : liveRun ? <RunConsole key={runId} runId={runId} onDone={onDone} />
-        : <RunTab key={runId} runId={runId} onRunStarted={onRunStarted} onDone={onDone} />}
+        : <RunTab key={runId} runId={runId} initialManifest={isFeatureTarget ? initialManifest : null} onRunStarted={onRunStarted} onDone={onDone} />}
   </main>;
 }
 
@@ -512,7 +584,9 @@ function DiagnosticResults({ itemId, runId, onSelectRun }) {
   const [payload, setPayload] = useState(null);
   const [runHistory, setRunHistory] = useState([]);
   const [error, setError] = useState("");
-  const reload = () => getDiagnosticResultsV2(itemId, runId).then(setPayload).catch((e) => setError(e.message));
+  const reload = () => getDiagnosticResultsV2(
+    itemId, runId, undefined, { includeEvidence: false },
+  ).then(setPayload).catch((e) => setError(e.message));
   // reload is intentionally re-created with the current route identifiers.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { reload(); }, [itemId, runId]);
@@ -551,10 +625,10 @@ function DiagnosticResults({ itemId, runId, onSelectRun }) {
 // The Run pane hosts the scope gate until the manifest is frozen, then the
 // SSE run console — same tab, always re-enterable (testlab-redesign-0.4.0.md
 // §3's three-pane diagram: RUN = "scope gate -> execute").
-function RunTab({ runId, onRunStarted, onDone }) {
+function RunTab({ runId, initialManifest, onRunStarted, onDone }) {
   const [running, setRunning] = useState(false);
   return running
     ? <RunConsole runId={runId} onDone={onDone} />
-    : <ScopeGate runId={runId} onRunStarted={() => { setRunning(true); onRunStarted(); }} />;
+    : <ScopeGate runId={runId} initialManifest={initialManifest} onRunStarted={() => { setRunning(true); onRunStarted(); }} />;
 }
 

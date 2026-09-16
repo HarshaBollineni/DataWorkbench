@@ -54,12 +54,12 @@ export default function FeatureTargetScopeGate({ run, manifest, busy, patch, run
           <Badge variant="secondary" className="gap-1"><Lock className="h-3 w-3" /> {run.status}</Badge>
         ) : (
           <Button onClick={runNow} disabled={busy || !runnableSelected.length || changed}>
-            <Play className="h-4 w-4" /> Run diagnostic
+            <Play className="h-4 w-4" /> {busy ? "Preparing execution…" : "Run diagnostic"}
           </Button>
         )}
       </div>
 
-      <details defaultOpen className="group rounded-lg border border-slate-200 bg-white p-4">
+      <details className="group rounded-lg border border-slate-200 bg-white p-4">
         <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
           <span className="flex items-center gap-2 text-sm font-semibold text-slate-800">
             <Target className="h-4 w-4 text-dq-purple" /> Target and analysis settings
@@ -149,7 +149,7 @@ export default function FeatureTargetScopeGate({ run, manifest, busy, patch, run
         <p className="mb-2 text-xs text-slate-500">
           Schema roles set the diagnostic recommendation only. Every variable below remains selectable; hover a non-recommended feature for its reason.
         </p>
-        <div className="grid max-h-72 gap-2 overflow-y-auto rounded-md border border-slate-200 bg-slate-50 p-2 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-2 rounded-md border border-slate-200 bg-slate-50 p-2 sm:grid-cols-2 xl:grid-cols-4" data-testid="feature-target-variable-grid">
           {features.map((feature) => {
             const checked = selected.includes(feature.column);
             const prior = feature.completed_exact;

@@ -115,9 +115,19 @@ directly.
 
 Admin visibility requires the `admin` authorization role. Factory reset is a
 destructive administrative workflow and presents its own confirmation and
-result evidence.
+result evidence. A full operational wipe removes sourced datasets and generated
+DSC, diagnostic, AAR, issue, and RCA work. Governed Knowledge Base documents,
+versions, rules, packages, and source files are preserved so diagnostics remain
+usable; the completion message identifies the protected boundary and shows the
+verified built-in KB baseline fingerprint. Normal production upgrades install
+new built-in versions in place and do not require a historical wipe.
 
-Local mutable state defaults to `backend/system_state.db`; uploaded and working
+The MVP does not yet claim fine-grained AAR RBAC or an untrusted multi-tenant
+security boundary. Deploy it only within the currently controlled application
+boundary. A later product-wide authorization review will add tenant and access
+policy enforcement without changing retained artifact payloads or identities.
+
+Local mutable state defaults to `backend/.runtime/system_state.db`; uploaded and working
 files use configured storage directories. In Azure, the database backup and
 durable artifacts are stored on the configured persistent volume. Do not edit
 SQLite state directly while the service is running.

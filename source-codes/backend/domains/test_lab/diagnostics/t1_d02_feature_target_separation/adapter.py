@@ -67,6 +67,7 @@ def assess_snapshot(
     actor: str = "system",
     run_id: str | None = None,
     artifact_repository: AnalysisArtifactRepository | None = None,
+    materialize_profiles: bool = True,
     progress_callback: Callable[[int, int, str, str], None] | None = None,
     feature_preview_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> FeatureTargetSeparationOutcome:
@@ -130,11 +131,13 @@ def assess_snapshot(
     }
     repo = artifact_repository or AnalysisArtifactRepository()
     execution_identity = run_id or f"adhoc_{uuid.uuid4().hex[:12]}"
-    # Materialize Data Sourcing evidence before resolving diagnostic inputs so
-    # downstream evidence starts from the governed repository when available.
-    persist_snapshot_profile_artifacts(
-        snapshot_id, actor=actor, artifact_repository=repo,
-    )
+    # Ad-hoc callers need to materialize their own profile evidence. Governed
+    # Test Lab runs already reconcile profiles immediately before freezing the
+    # manifest, so repeating that work here only delays execution startup.
+    if materialize_profiles:
+        persist_snapshot_profile_artifacts(
+            snapshot_id, actor=actor, artifact_repository=repo,
+        )
     profile_artifacts = {
         (row.identity.get("table"), row.feature): row.artifact_id
         for row in repo.list(

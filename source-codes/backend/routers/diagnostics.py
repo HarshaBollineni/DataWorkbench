@@ -564,7 +564,12 @@ def get_diagnostic_manifest(
             _diag_err(exc)
     if run["diagnostic_id"] == 2 and run["status"] == manifest_mod.DRAFT:
         from domains.test_lab.diagnostics.t1_d02_feature_target_separation import manifest as feature_manifest
-        run["manifest_json"] = feature_manifest.refresh_draft_scope(run_id)
+        # Viewing an existing setup must remain a lightweight read. Data
+        # Sourcing already owns profile materialization, and the run boundary
+        # performs the authoritative refresh again immediately before freeze.
+        run["manifest_json"] = feature_manifest.refresh_draft_scope(
+            run_id, materialize_profiles=False,
+        )
     if run["diagnostic_id"] == 14 and run["status"] == manifest_mod.DRAFT:
         from domains.test_lab.diagnostics.t4_d14_population_stability import manifest as psi_manifest
         run["manifest_json"] = psi_manifest.refresh_draft_scope(run_id)
@@ -918,7 +923,8 @@ def stream_diagnostic_run(run_id: str, authorization: str | None = Header(defaul
 @_plt04_sanitize
 def diagnostic_results(item_id: str, run_id: str | None = None,
                        diagnostic_id: int | None = None,
-                       authorization: str | None = Header(default=None)):
+                       authorization: str | None = Header(default=None),
+                       include_evidence: bool = True):
     """Decision-type-shaped results + per-rule findings for display."""
     import system_db as _s
     try:
@@ -956,10 +962,38 @@ def diagnostic_results(item_id: str, run_id: str | None = None,
             _require_governed_tenant(source_run, principal)
         runner = adapter(source_run["diagnostic_id"])["runner"]
         from assets.staleness import annotate_payload
-        payload = annotate_payload(runner.run_results(run_id))
+        if source_run["diagnostic_id"] == 2:
+            payload = annotate_payload(runner.run_results(
+                run_id, hydrate_evidence=include_evidence,
+            ))
+        else:
+            payload = annotate_payload(runner.run_results(run_id))
     except Exception as exc:  # noqa: BLE001
         _diag_err(exc)
     return {"item_id": item_id, **payload}
+
+
+@router.get("/diagnostics/results/{result_id}")
+@_plt04_sanitize
+def diagnostic_result_detail(result_id: str,
+                             authorization: str | None = Header(default=None)):
+    """Hydrate retained T1-D02 evidence only when a user opens one result."""
+    import system_db as _s
+    try:
+        result = _s.query_one("diag_results", result_id=result_id)
+        if not result:
+            raise KeyError(f"Unknown diagnostic result: {result_id}")
+        source_run = _s.query_one("diag_runs", run_id=result["run_id"])
+        if not source_run:
+            raise KeyError(f"Unknown diagnostic run: {result['run_id']}")
+        service.require_item(source_run["item_id"])
+        if (source_run["diagnostic_id"] != 2
+                or (result.get("metrics_json") or {}).get("result_kind") != "feature"):
+            raise ValueError("detailed evidence is not available for this result")
+        from domains.test_lab.diagnostics.t1_d02_feature_target_separation.binning_reviews import hydrate_result
+        return hydrate_result(result)
+    except Exception as exc:  # noqa: BLE001
+        _diag_err(exc)
 
 
 @router.post("/diagnostics/findings/{finding_id}/disposition")

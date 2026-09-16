@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   downloadReportV2, getIssueRegisterV2, getItemIssuesV2, getItemsV2, getResultsV2,
 } from "@/api/client";
+import { formatDisplayNumber } from "@/lib/numberFormat";
 
 // Issue Management (spec 9): failed Test Lab output as trackable rows, one per
 // failed test per table. Tracking only — nothing here re-runs a test.
@@ -31,7 +32,7 @@ export function CritBadge({ criticality }) {
 }
 
 function thresholdSummary(row) {
-  const observed = row.metric == null ? "Not available" : Number(row.metric).toFixed(4);
+  const observed = formatDisplayNumber(row.metric, { fallback: "Not available" });
   const threshold = row.thresholds;
   if (threshold == null) return <span><strong>{observed}</strong><small className="block text-slate-400">No applicable boundary retained</small></span>;
   if (typeof threshold !== "object") return <span><strong>{observed}</strong><small className="block text-slate-500">Boundary {String(threshold)}</small></span>;
@@ -242,7 +243,7 @@ export default function IssueManagement() {
                     <tr key={r.result_id} className="border-t border-slate-100">
                       <td className="px-3 py-2">{r.test_name}</td>
                       <td className="px-3 py-2 text-slate-600">{r.table_name}</td>
-                      <td className="px-3 py-2 text-slate-500">{r.metric == null ? "—" : Number(r.metric).toFixed(4)}</td>
+                      <td className="px-3 py-2 text-slate-500">{formatDisplayNumber(r.metric)}</td>
                     </tr>
                   ))}
                 </tbody>

@@ -10,9 +10,14 @@ import PopulationStabilityScopeGate from "@/features/test-lab/diagnostics/t4-d14
 import DirectionalityScopeGate from "@/features/test-lab/diagnostics/t2-d11-directional-monotonic-consistency/DirectionalityScopeGate";
 import ValueSemanticsScopeGate from "@/features/test-lab/diagnostics/t2-d08-value-semantics/ValueSemanticsScopeGate";
 
-export default function ScopeGate({ runId, onRunStarted }) {
-  const [run, setRun] = useState(null);
-  const [manifest, setManifest] = useState(null);
+export default function ScopeGate({ runId, initialManifest = null, onRunStarted }) {
+  const [run, setRun] = useState(() => initialManifest ? {
+    run_id: runId,
+    item_id: initialManifest.item_id,
+    diagnostic_id: initialManifest.diagnostic_id,
+    status: initialManifest.status || "draft",
+  } : null);
+  const [manifest, setManifest] = useState(initialManifest);
   const [decisions, setDecisions] = useState([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -26,7 +31,10 @@ export default function ScopeGate({ runId, onRunStarted }) {
     setError(requestError.message);
     throw requestError;
   }), [runId]);
-  useEffect(() => { reload(); }, [reload]);
+  useEffect(() => {
+    if (initialManifest?.run_id === runId) return;
+    reload();
+  }, [initialManifest, reload, runId]);
 
   if (error && (!manifest || !run)) return <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>;
   if (!manifest || !run) return <div className="rounded-lg border border-slate-200 bg-white p-6 text-sm text-slate-500">Loading scope gate…</div>;

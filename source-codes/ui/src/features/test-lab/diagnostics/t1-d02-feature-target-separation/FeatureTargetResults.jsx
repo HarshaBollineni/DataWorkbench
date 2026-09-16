@@ -1,15 +1,16 @@
 import { useMemo, useState } from "react";
 import { AlertTriangle, BarChart3, Check, ChevronRight, CircleGauge, Download, ExternalLink, FileText, Info, TrendingDown, X } from "lucide-react";
 
-import { diagnosticReportUrlV2, downloadDiagnosticReportV2 } from "@/api/client";
+import { diagnosticReportUrlV2, downloadDiagnosticReportV2, getDiagnosticResultDetailV2 } from "@/api/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatBinRows } from "@/features/test-lab/shared/binning/binLabelDisplay";
+import { formatDisplayNumber } from "@/lib/numberFormat";
 import { FindingStateBadge, IssueLifecycleActions } from "@/pages/testlab/FindingWorkflow";
 import { findingWorkflowState, matchesFindingFilter } from "@/pages/testlab/findingWorkflowState";
 import { formatProfileNumber, primaryTreePerformance, profilePercentiles, promotionRecommendation } from "./featureTargetWorkflow";
 
-const fmt = (value, digits = 4) => value == null ? "—" : Number(value).toFixed(digits);
+const fmt = (value, digits = 3) => formatDisplayNumber(value, { maximumFractionDigits: digits });
 const pct = (value, digits = 2) => value == null ? "—" : `${(Number(value) * 100).toFixed(digits)}%`;
 const readable = (value) => String(value || "—").replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 
@@ -213,12 +214,37 @@ export default function FeatureTargetResults({ results, onDisposition, onPromote
   const features = results.filter((row) => row.metrics_json?.result_kind === "feature");
   const rollup = summary?.metrics_json?.rollup || {};
   const [selectedId, setSelectedId] = useState("");
+  const [evidenceById, setEvidenceById] = useState({});
+  const [evidenceLoadingId, setEvidenceLoadingId] = useState("");
+  const [evidenceError, setEvidenceError] = useState("");
   const [reportError, setReportError] = useState("");
   const visible = useMemo(() => features.filter((row) =>
     (diagnosticFilter === "all" || row.metrics_json?.category === diagnosticFilter)
     && matchesFindingFilter(row, workflowFilter)), [features, diagnosticFilter, workflowFilter]);
   const openCandidates = features.flatMap((row) => row.findings || []).filter((finding) => findingWorkflowState(finding) === "review_needed");
-  const selectedRow = features.find((row) => row.result_id === selectedId);
+  const selectedSummary = features.find((row) => row.result_id === selectedId);
+  const selectedRow = selectedSummary && evidenceById[selectedId]
+    ? { ...selectedSummary, ...evidenceById[selectedId], findings: selectedSummary.findings }
+    : null;
+  const openEvidence = async (row) => {
+    setEvidenceError("");
+    setSelectedId(row.result_id);
+    if (evidenceById[row.result_id]) return;
+    if (row.metrics_json?.roc_detail || row.metrics_json?.binning_detail) {
+      setEvidenceById((current) => ({ ...current, [row.result_id]: row }));
+      return;
+    }
+    setEvidenceLoadingId(row.result_id);
+    try {
+      const detail = await getDiagnosticResultDetailV2(row.result_id);
+      setEvidenceById((current) => ({ ...current, [row.result_id]: detail }));
+    } catch (error) {
+      setSelectedId("");
+      setEvidenceError(error.message);
+    } finally {
+      setEvidenceLoadingId("");
+    }
+  };
   return <section className="grid gap-4" data-testid="feature-target-results">
     <div className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,3fr)_minmax(18rem,1fr)]"><header className="rounded-xl border border-slate-200 bg-white p-4">
       <div><p className="text-xs font-medium uppercase text-slate-400">Single-feature target separation</p><h2 className="mt-1 text-lg font-semibold text-slate-950">Target: {summary?.metrics_json?.target?.target}</h2><p className="text-xs text-slate-500">Review AUC, Gini, IV/WOE, and localized leakage evidence in a concise variable-level view · {summary?.metrics_json?.status || "complete"}</p></div>
@@ -226,8 +252,8 @@ export default function FeatureTargetResults({ results, onDisposition, onPromote
       <div className="mt-3 flex flex-wrap gap-2 text-xs"><Badge className="border-transparent bg-amber-100 text-amber-900">{rollup.target_leakage || 0} leakage candidate(s)</Badge><Badge variant="secondary"><TrendingDown /> {rollup.poor_discrimination || 0} poor-discrimination candidate(s)</Badge><span className="ml-auto text-slate-500">{openCandidates.length} awaiting review</span></div>
       <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3"><Button size="sm" variant="outline" disabled={!runId} onClick={async () => { setReportError(""); try { const blob = await downloadDiagnosticReportV2(runId); const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = `feature-target-separation-${runId}.pdf`; link.click(); URL.revokeObjectURL(url); } catch (error) { setReportError(error.message); } }}><Download className="h-4 w-4" /> Download analysis report</Button><Button size="sm" variant="outline" disabled={!runId} onClick={() => window.open(diagnosticReportUrlV2(runId, "text"), "_blank")}><FileText className="h-4 w-4" /> View text report</Button>{reportError && <span className="text-xs text-red-600">{reportError}</span>}</div>
     </header>{workflowSummary}</div>
-    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"><header className="border-b border-slate-200 bg-slate-50 px-4 py-3"><h3 className="text-sm font-semibold text-slate-800">Variable-level results</h3><p className="mt-1 text-xs text-slate-500">Open a variable to review its retained profile, ROC/lift evidence, bin profile, and issue recommendation.</p></header><div className="max-h-[min(65vh,46rem)] overflow-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead className="sticky top-0 z-10 border-b border-slate-200 bg-white text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Variable</th><th className="px-4 py-3">Population</th><th className="px-4 py-3">AUC</th><th className="px-4 py-3">Gini</th><th className="px-4 py-3">IV</th><th className="px-4 py-3">Category</th><th className="px-4 py-3">Issue workflow</th><th className="px-4 py-3 text-right">Details</th></tr></thead><tbody>
-      {visible.map((row) => { const metrics = row.metrics_json || {}; const finding = (row.findings || [])[0]; const specialRows = Object.values(metrics.roc_detail?.special_value_rows || {}).reduce((sum, count) => sum + count, 0); return <tr key={row.result_id} className="border-b border-slate-100 align-middle hover:bg-slate-50/80"><td className="px-4 py-3"><strong className="block text-slate-900">{metrics.feature}</strong><span className="text-xs text-slate-500">{readable(metrics.roc_detail?.feature_type || metrics.binning_detail?.feature_type || "unavailable")}</span></td><td className="px-4 py-3"><strong className="block text-slate-700">{Number(metrics.rows_evaluated || 0).toLocaleString()}</strong><span className="text-xs text-slate-500">{Number(metrics.missing_rows || 0).toLocaleString()} missing · {Number(specialRows).toLocaleString()} special</span></td><td className="px-4 py-3 font-medium">{fmt(metrics.auc)}</td><td className="px-4 py-3 font-medium">{fmt(metrics.gini)}</td><td className="px-4 py-3 font-medium">{fmt(metrics.iv)}</td><td className="px-4 py-3"><Badge variant={metrics.category === "suspicious" ? "warning" : "secondary"}>{metrics.category}</Badge></td><td className="px-4 py-3"><FindingStateBadge finding={finding} fallback={<span className="text-xs text-slate-400">No review required</span>} /></td><td className="px-4 py-3 text-right"><Button size="sm" variant="outline" onClick={() => setSelectedId(row.result_id)}>View evidence <ChevronRight className="h-4 w-4" /></Button></td></tr>; })}
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"><header className="border-b border-slate-200 bg-slate-50 px-4 py-3"><h3 className="text-sm font-semibold text-slate-800">Variable-level results</h3><p className="mt-1 text-xs text-slate-500">Open a variable to review its retained profile, ROC/lift evidence, bin profile, and issue recommendation.</p>{evidenceError && <p className="mt-2 text-xs text-red-600">{evidenceError}</p>}</header><div className="max-h-[min(65vh,46rem)] overflow-auto"><table className="w-full min-w-[900px] text-left text-sm"><thead className="sticky top-0 z-10 border-b border-slate-200 bg-white text-xs uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Variable</th><th className="px-4 py-3">Population</th><th className="px-4 py-3">AUC</th><th className="px-4 py-3">Gini</th><th className="px-4 py-3">IV</th><th className="px-4 py-3">Category</th><th className="px-4 py-3">Issue workflow</th><th className="px-4 py-3 text-right">Details</th></tr></thead><tbody>
+      {visible.map((row) => { const metrics = row.metrics_json || {}; const finding = (row.findings || [])[0]; return <tr key={row.result_id} className="border-b border-slate-100 align-middle hover:bg-slate-50/80"><td className="px-4 py-3"><strong className="block text-slate-900">{metrics.feature}</strong></td><td className="px-4 py-3"><strong className="block text-slate-700">{Number(metrics.rows_evaluated || 0).toLocaleString()}</strong><span className="text-xs text-slate-500">{Number(metrics.missing_rows || 0).toLocaleString()} missing</span></td><td className="px-4 py-3 font-medium">{fmt(metrics.auc)}</td><td className="px-4 py-3 font-medium">{fmt(metrics.gini)}</td><td className="px-4 py-3 font-medium">{fmt(metrics.iv)}</td><td className="px-4 py-3"><Badge variant={metrics.category === "suspicious" ? "warning" : "secondary"}>{metrics.category}</Badge></td><td className="px-4 py-3"><FindingStateBadge finding={finding} fallback={<span className="text-xs text-slate-400">No review required</span>} /></td><td className="px-4 py-3 text-right"><Button size="sm" variant="outline" disabled={evidenceLoadingId === row.result_id} onClick={() => openEvidence(row)}>{evidenceLoadingId === row.result_id ? "Loading evidence…" : "View evidence"} <ChevronRight className="h-4 w-4" /></Button></td></tr>; })}
       {!visible.length && <tr><td colSpan="8" className="px-4 py-10 text-center text-sm text-slate-500">No variables match the selected category and workflow status.</td></tr>}
     </tbody></table></div></div>
     {selectedRow && <FeatureEvidenceModal row={selectedRow} onClose={() => setSelectedId("")} onDisposition={onDisposition} onPromote={onPromote} onCloseIssue={onCloseIssue} />}

@@ -10,7 +10,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 import system_db as db
-from domains.aar.types import list_artifact_types
+from domains.aar.types import list_artifact_types, non_user_facing_artifact_types
 from domains.aar.repository import AnalysisArtifactRepository, ArtifactIntegrityError
 from domains.aar.data_sourcing import persist_snapshot_profile_artifacts
 from analysis_runtime.capabilities import list_capabilities
@@ -139,6 +139,7 @@ def list_analysis_artifacts(asset_id: str | None = None,
                             scope: str | None = None, feature: str | None = None,
                             feature_query: str | None = None,
                             run_id: str | None = None, workflow_id: str | None = None,
+                            presentation: str = Query(default="all", pattern="^(all|user)$"),
                             limit: int = Query(default=50, ge=1, le=200),
                             offset: int = Query(default=0, ge=0)) -> dict:
     backfill_status = _schedule_profile_artifact_backfill(snapshot_id)
@@ -146,6 +147,8 @@ def list_analysis_artifacts(asset_id: str | None = None,
         asset_id=asset_id, snapshot_id=snapshot_id, artifact_type=artifact_type,
         status=status, scope=scope, feature=feature, run_id=run_id,
         workflow_id=workflow_id, feature_query=feature_query, limit=limit, offset=offset,
+        exclude_artifact_types=(non_user_facing_artifact_types()
+                                if presentation == "user" else ()),
     )
     return {**result, "backfill_status": backfill_status}
 
@@ -162,8 +165,11 @@ def analysis_artifact_types() -> dict:
 
 
 @router.get("/analysis-artifacts/integrity-audit")
-def analysis_artifact_integrity_audit(limit: int = Query(default=200, ge=1, le=1000)) -> dict:
-    return AnalysisArtifactRepository().integrity_audit(limit=limit)
+def analysis_artifact_integrity_audit(
+    limit: int = Query(default=200, ge=1, le=1000),
+    complete: bool = False,
+) -> dict:
+    return AnalysisArtifactRepository().integrity_audit(limit=limit, complete=complete)
 
 
 @router.get("/analysis-artifacts/runs")

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatBinLabels } from "@/features/test-lab/shared/binning/binLabelDisplay";
 import { BinningWorkspace } from "@/features/test-lab/shared/binning/FeatureTargetEvidence";
+import { formatDisplayNumber } from "@/lib/numberFormat";
 import { binningClassification, hasBinningResult, reviewBinCounts } from "./psiWorkflow";
 
 const statusLabel = {
@@ -78,7 +79,7 @@ function ProgressiveDraftResults({ previews }) {
   return <section className="overflow-hidden rounded-lg border border-slate-200 bg-white" data-testid="psi-progressive-drafts">
     <header className="border-b border-slate-200 bg-slate-50 px-4 py-3"><h3 className="text-sm font-semibold text-slate-900">Completed variable definitions · {rows.length}</h3><p className="mt-1 text-xs text-slate-500">Preliminary and read-only until preparation finishes. Bin editing, approval, freezing and promotion are unavailable.</p></header>
     <div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="text-slate-500"><tr><th className="px-4 py-2">Variable</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Type</th><th className="px-3 py-2 text-right">Fine bins</th><th className="px-3 py-2 text-right">Coarse bins</th><th className="px-3 py-2 text-right">Metric</th><th className="px-3 py-2">Method</th></tr></thead>
-      <tbody>{rows.map((row) => <tr key={row.feature} className="border-t border-slate-100"><td className="px-4 py-2 font-medium text-slate-900">{row.feature}</td><td className={`px-3 py-2 ${row.status === "failed" ? "text-red-700" : "text-emerald-700"}`}>{row.status}{row.error ? `: ${row.error}` : ""}</td><td className="px-3 py-2">{row.kind || "—"}</td><td className="px-3 py-2 text-right">{row.fine_bin_count ?? "—"}</td><td className="px-3 py-2 text-right">{row.coarse_bin_count ?? "—"}</td><td className="px-3 py-2 text-right font-mono">{row.metric_value == null ? "—" : Number(row.metric_value).toFixed(4)}</td><td className="px-3 py-2">{row.methodology || "—"}</td></tr>)}</tbody>
+      <tbody>{rows.map((row) => <tr key={row.feature} className="border-t border-slate-100"><td className="px-4 py-2 font-medium text-slate-900">{row.feature}</td><td className={`px-3 py-2 ${row.status === "failed" ? "text-red-700" : "text-emerald-700"}`}>{row.status}{row.error ? `: ${row.error}` : ""}</td><td className="px-3 py-2">{row.kind || "—"}</td><td className="px-3 py-2 text-right">{row.fine_bin_count ?? "—"}</td><td className="px-3 py-2 text-right">{row.coarse_bin_count ?? "—"}</td><td className="px-3 py-2 text-right font-mono">{formatDisplayNumber(row.metric_value)}</td><td className="px-3 py-2">{row.methodology || "—"}</td></tr>)}</tbody>
     </table></div>
   </section>;
 }

@@ -119,6 +119,8 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
   const [technicalRowIdError, setTechnicalRowIdError] = useState("");
   const [structuralPrecheck, setStructuralPrecheck] = useState(null);
   const inventoryRef = useRef(null);
+  const periodSelectionTouchedRef = useRef(false);
+  const automaticSnapshotLabelRef = useRef("");
   const stream = useAgentStream();
 
   const receiveInventoryRows = useCallback((rows) => {
@@ -198,7 +200,7 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
   const targetReady = targetMode === "fresh" ? Boolean(alias) && !aliasError : Boolean(selectedAsset);
   const busy = restoring || stream.running || inspecting || ["uploading", "processing"].includes(progress?.state);
   const basis = targetMode === "fresh" ? timeBasis : selectedAsset?.time_basis;
-  const dateError = basis === "period" && ((!startDate && endDate) || (startDate && !endDate) || (startDate && endDate && startDate > endDate));
+  const dateError = basis === "period" && (!startDate || !endDate || startDate > endDate);
   const schemaMismatch = Boolean(ingest?.schema_check && !ingest.schema_check.is_match);
   const sourceComplete = Boolean(ingest && summaries.length);
   const resumingStaged = Boolean(resumeSnapshotId);
@@ -225,7 +227,6 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
     };
   }, [alias, busy, completion, initialAsset, itemId, kind, onTimeout]);
 
-  const inferredLabel = basis === "period" && startDate && endDate ? `${startDate} → ${endDate}` : snapshotLabel;
   const useCaseOptions = useMemo(() => taxonomyDimensions.find((dimension) => dimension.key === "use_case")?.values || [], [taxonomyDimensions]);
   const productOptions = useMemo(() => taxonomyDimensions.find((dimension) => dimension.key === "product")?.values || [], [taxonomyDimensions]);
   const missingMandatory = kind === "dataset" ? [
@@ -236,7 +237,7 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
     dateError && "start and end dates must be valid",
     schemaMismatch && !schemaConfirmed && "confirm the schema differences above",
     intent === "full_replacement" && supersedePreview?.snapshot_count && !replacementConfirmed && "confirm the full-replacement action above",
-    basis === "none" && !snapshotLabel && "a snapshot label is required",
+    !snapshotLabel.trim() && "a snapshot label is required",
     kind === "dataset" && !inventoryRows.length && "wait for the profiled column definitions",
     kind === "dataset" && inventorySpecialValueIssues.length && `correct ${inventorySpecialValueIssues.length} special-value ${inventorySpecialValueIssues.length === 1 ? "issue" : "issues"} in Step 3`,
     kind === "dataset" && !metadataConfirmed && "confirm the profiled dataset information",
@@ -392,7 +393,7 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
         intent: targetMode === "fresh" || resumingFresh ? "fresh" : intent,
         start_date: basis === "period" ? startDate : null,
         end_date: basis === "period" ? endDate : null,
-        snapshot_label: inferredLabel, period_column: periodColumn || null,
+        snapshot_label: snapshotLabel, period_column: periodColumn || null,
         ...(kind === "dataset" ? {
           target_variable: targetVariable || null, use_case: useCase, product,
           // Step 3 is part of the final commit contract. Sending the reviewed
@@ -432,19 +433,27 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
   ].filter(Boolean);
   const selectedTargetProfile = inventoryRows.find((row) => row.column_name === targetVariable);
   const targetCandidates = inventoryRows.filter((row) => String(row.role || row.dictionary_role || "").toLowerCase() === "target");
-  const periodEvidenceRows = inventoryRows
+  const periodEvidenceRows = useMemo(() => inventoryRows
     .map((row) => ({ row, evidence: temporalProfileEvidence(row) }))
-    .filter(({ row, evidence }) => evidence && ["date", "period"].includes(String(row.role || row.dictionary_role || "").trim().toLowerCase()));
+    .filter(({ row, evidence }) => evidence && ["date", "period"].includes(String(row.role || row.dictionary_role || "").trim().toLowerCase())), [inventoryRows]);
   const unsupportedTemporalRows = inventoryRows.filter((row) =>
     ["date", "period"].includes(String(row.role || row.dictionary_role || "").trim().toLowerCase())
       && !temporalProfileEvidence(row));
   const constantRows = inventoryRows.filter((row) => Number(row.distinct_count || 0) === 1);
-  const periodOptions = periodEvidenceRows.map(({ row }) => row.column_name);
+  const recommendedPeriodColumns = new Set(periodEvidenceRows.map(({ row }) => row.column_name));
+  const periodOptions = [...inventoryRows].sort((left, right) => {
+    const score = (row) => (recommendedPeriodColumns.has(row.column_name) ? 2 : 0)
+      + (["date", "period"].includes(String(row.role || row.dictionary_role || "").trim().toLowerCase()) ? 1 : 0);
+    return score(right) - score(left);
+  });
   const choosePeriodColumn = (column) => {
+    periodSelectionTouchedRef.current = true;
     setPeriodColumn(column);
     if (!column) {
       setStartDate("");
       setEndDate("");
+      setSnapshotLabel((current) => current === automaticSnapshotLabelRef.current ? "" : current);
+      automaticSnapshotLabelRef.current = "";
       return;
     }
     const row = inventoryRows.find((candidate) => candidate.column_name === column);
@@ -452,7 +461,32 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
     const evidence = temporalProfileEvidence(row);
     setStartDate(evidence?.startDate || "");
     setEndDate(evidence?.endDate || "");
+    if (!evidence) {
+      setSnapshotLabel((current) => current === automaticSnapshotLabelRef.current ? "" : current);
+      automaticSnapshotLabelRef.current = "";
+    }
   };
+
+  useEffect(() => {
+    if (periodSelectionTouchedRef.current || periodEvidenceRows.length !== 1) return;
+    const { row, evidence } = periodEvidenceRows[0];
+    periodSelectionTouchedRef.current = true;
+    setPeriodColumn(row.column_name);
+    setStartDate(evidence.startDate);
+    setEndDate(evidence.endDate);
+  }, [periodEvidenceRows]);
+
+  useEffect(() => {
+    if (basis !== "period" || !startDate || !endDate) return;
+    const nextLabel = `${startDate} → ${endDate}`;
+    setSnapshotLabel((current) => {
+      if (!current || current === automaticSnapshotLabelRef.current) {
+        automaticSnapshotLabelRef.current = nextLabel;
+        return nextLabel;
+      }
+      return current;
+    });
+  }, [basis, endDate, startDate]);
 
   const createTechnicalRowId = async () => {
     if (!itemId || !technicalTable || !technicalNonBusinessAcknowledged || !technicalTransformAcknowledged) return;
@@ -551,11 +585,11 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
       {sourceComplete && !completion && technicalRowIdCreated && <StepCard step="3a" title="Structural precheck" subtitle="Technical row identifier created"><div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950"><strong>Technical row identifier created successfully.</strong> `technical_row_id` was added to {technicalRowIdCreated.table} as an Ignore column for deterministic row-level traceability. It does not change the business identifier or row-grain decision.</div></StepCard>}
 
       {sourceComplete && <StepCard step="4" title="Confirm dataset information" subtitle="Dictionary and profiling evidence preloads the target, period and business context." testId="upl-step-4">
-        {kind === "dataset" && <section className="rounded-lg border border-teal-200 bg-emerald-50/40 p-4"><h4 className="font-semibold text-teal-950">Dictionary and profile intelligence</h4><div className="mt-3 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4"><div><span className="block text-xs uppercase text-slate-500">Target candidates</span><strong>{targetCandidates.length ? targetCandidates.map((row) => `${row.column_name} (${Number(row.distinct_count || 0).toLocaleString()} levels)`).join(", ") : "None identified"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Reporting period</span><strong>{periodColumn ? `${periodColumn} · ${startDate || "?"} → ${endDate || "?"}` : periodEvidenceRows.length ? "Profile evidence available; no period selected" : "No reporting period evidenced in this dataset"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Business context</span><strong>{[useCase, product].filter(Boolean).join(" · ") || "No taxonomy match"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Constant features</span><strong>{constantRows.length ? `${constantRows.length} recommended Ignore` : "None"}</strong></div></div><p className="mt-3 text-xs text-teal-800">Temporal suggestions require observed date or period values. Column names and descriptions are supporting context only and cannot establish a reporting period.</p>{unsupportedTemporalRows.length > 0 && <p className="mt-2 text-xs text-amber-800">Not treated as reporting-period columns because their values lack temporal evidence: <strong>{unsupportedTemporalRows.map((row) => row.column_name).join(", ")}</strong>.</p>}</section>}
+        {kind === "dataset" && <section className="rounded-lg border border-teal-200 bg-emerald-50/40 p-4"><h4 className="font-semibold text-teal-950">Dictionary and profile intelligence</h4><div className="mt-3 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4"><div><span className="block text-xs uppercase text-slate-500">Target candidates</span><strong>{targetCandidates.length ? targetCandidates.map((row) => `${row.column_name} (${Number(row.distinct_count || 0).toLocaleString()} levels)`).join(", ") : "None identified"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Reporting period</span><strong>{periodColumn ? `${periodColumn} · ${startDate || "dates to be entered"} → ${endDate || "dates to be entered"}` : "No column selected"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Business context</span><strong>{[useCase, product].filter(Boolean).join(" · ") || "No taxonomy match"}</strong></div><div><span className="block text-xs uppercase text-slate-500">Constant features</span><strong>{constantRows.length ? `${constantRows.length} recommended Ignore` : "None"}</strong></div></div><p className="mt-3 text-xs text-teal-800">A reporting-period column is optional. When its values contain complete dates, years, or year-and-quarter values, the date range is filled in for you.</p>{unsupportedTemporalRows.length > 0 && <p className="mt-2 text-xs text-amber-800">We could not calculate dates automatically from <strong>{unsupportedTemporalRows.map((row) => row.column_name).join(", ")}</strong>. You can still select the column and enter the dates yourself.</p>}</section>}
         {targetMode === "existing" && !resumingFresh && <div className="mt-3"><Label>Intent</Label><div className="mt-1 flex flex-wrap gap-4 text-sm"><label><input type="radio" name="intent" checked={intent === "add_period"} onChange={() => setIntent("add_period")} /> Add period</label><label><input type="radio" name="intent" checked={intent === "full_replacement"} onChange={() => setIntent("full_replacement")} /> Full replacement</label></div></div>}
-        {basis === "period" ? <div className="mt-3 grid gap-3 md:grid-cols-3"><div><Label htmlFor="start-date">Start date</Label><Input id="start-date" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></div><div><Label htmlFor="end-date">End date</Label><Input id="end-date" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></div><div><Label htmlFor="snapshot-label">Snapshot label</Label><Input id="snapshot-label" value={snapshotLabel} onChange={(e) => setSnapshotLabel(e.target.value)} placeholder={startDate && endDate ? `${startDate} → ${endDate}` : "Period label"} /></div></div> : <div className="mt-3 max-w-md"><Label htmlFor="snapshot-label">Snapshot label <span className="text-red-600">*</span><span className="ml-1 text-xs font-normal text-slate-500">Required</span></Label><Input id="snapshot-label" value={snapshotLabel} onChange={(e) => setSnapshotLabel(e.target.value)} placeholder="e.g. Initial model extract" /><p className="mt-1 text-xs text-slate-500">Use a short, unique label to distinguish this immutable snapshot from other uploads in the same asset.</p></div>}
-        {dateError && <p className="mt-2 text-xs text-red-700" role="alert">Start and end dates are required together, and start must not be after end.</p>}
-        <div className="mt-3 max-w-md"><Label htmlFor="period-column">Reporting period column (optional)</Label><select id="period-column" className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={periodColumn} onChange={(e) => choosePeriodColumn(e.target.value)}><option value="">None / Not applicable</option>{periodOptions.map((column) => <option key={column} value={column}>{column}</option>)}</select><p className="mt-1 text-xs text-slate-400">{periodOptions.length ? "Only columns with profiled temporal values are listed; names are supporting context only." : "No column has sufficient profiled date or period evidence. You can continue without one."}</p></div>
+        <div className="mt-3 max-w-md"><Label htmlFor="period-column">Reporting period column (optional)</Label><select id="period-column" className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={periodColumn} onChange={(e) => choosePeriodColumn(e.target.value)}><option value="">None / Not applicable</option>{periodOptions.map((row) => <option key={`${row.table_name}-${row.column_name}`} value={row.column_name}>{row.column_name}{recommendedPeriodColumns.has(row.column_name) ? " — Recommended" : ""}</option>)}</select><p className="mt-1 text-xs text-slate-500">Choose the column that identifies when each record applies. This is optional, and every uploaded column remains available.</p></div>
+        {basis === "period" ? <><div className="mt-4 grid gap-3 md:grid-cols-3"><div><Label htmlFor="start-date">Start date</Label><Input id="start-date" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} /></div><div><Label htmlFor="end-date">End date</Label><Input id="end-date" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} /></div><div><Label htmlFor="snapshot-label">Snapshot label <span aria-hidden="true" className="text-red-600">*</span><span aria-hidden="true" className="ml-1 text-xs font-normal text-slate-500">Required</span></Label><Input id="snapshot-label" required aria-required="true" value={snapshotLabel} onChange={(e) => setSnapshotLabel(e.target.value)} placeholder="e.g. 2024 annual portfolio" /></div></div><p className="mt-1 text-xs text-slate-500">Give this upload a short, unique name. It identifies this immutable snapshot in history, comparisons, and reports.</p></> : <div className="mt-4 max-w-md"><Label htmlFor="snapshot-label">Snapshot label <span aria-hidden="true" className="text-red-600">*</span><span aria-hidden="true" className="ml-1 text-xs font-normal text-slate-500">Required</span></Label><Input id="snapshot-label" required aria-required="true" value={snapshotLabel} onChange={(e) => setSnapshotLabel(e.target.value)} placeholder="e.g. Initial customer master extract" /><p className="mt-1 text-xs text-slate-500">Give this upload a short, unique name. It identifies this immutable snapshot in history, comparisons, and reports.</p></div>}
+        {dateError && <p className="mt-2 text-xs text-red-700" role="alert">Enter both dates, and make sure the start date is not after the end date.</p>}
         {kind === "dataset" && <><div className="mt-4 grid gap-3 md:grid-cols-3">
           <div><Label htmlFor="target-variable">Target variable (optional)</Label><select id="target-variable" className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm" value={targetVariable} onChange={(e) => { setTargetVariable(e.target.value); setTargetSelectionReviewed(true); setMetadataConfirmed(false); }}><option value="">No target selected</option>{inventoryRows.map((row) => <option key={row.column_name} value={row.column_name}>{row.column_name} · {Number(row.distinct_count || 0).toLocaleString()} levels</option>)}</select><p className="mt-1 text-xs text-slate-400">{targetCandidates.length ? `${targetCandidates.length} optional target candidate${targetCandidates.length === 1 ? "" : "s"} identified from normalized roles. Clear the selection if no target should be confirmed.` : "No target role was detected. You can proceed without one and confirm it later if required by a diagnostic."}</p></div>
           <div><Label htmlFor="use-case">Use case</Label><Select value={useCase} onValueChange={(value) => { setUseCase(value); setMetadataConfirmed(false); }} disabled={taxonomyLoading || !useCaseOptions.length}><SelectTrigger id="use-case" className="mt-1 h-10" aria-label="Use case"><SelectValue placeholder={taxonomyLoading ? "Loading use cases…" : "Select a use case…"} /></SelectTrigger><SelectContent>{useCaseOptions.map((value) => <SelectItem key={value.key} value={value.label}>{value.label}</SelectItem>)}</SelectContent></Select></div>
@@ -564,7 +598,7 @@ function UploadFlow({ kind, onBack, onTimeout, onStartFresh, onDraftConflict, on
         {intent === "full_replacement" && supersedePreview?.snapshot_count > 0 && <div className="mt-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm"><p className="font-semibold text-amber-900">This will supersede {supersedePreview.description}.</p><label className="mt-2 flex items-start gap-2"><input type="checkbox" checked={replacementConfirmed} onChange={(e) => setReplacementConfirmed(e.target.checked)} /> <span>I understand this distinct full-replacement action.</span></label></div>}
       </StepCard>}
       {sourceComplete && <StepCard step="5" title="Save and proceed" subtitle="Save normalized definitions and promote the snapshot to Test Lab." testId="upl-step-5"><p className="text-sm text-slate-500">This saves the normalized column definitions and storage decisions together, then makes the snapshot available in Test Lab.</p><div className="mt-4 flex flex-wrap items-center gap-3"><Button disabled={Boolean(completion) || Boolean(processDisabledReasons.length) || processing} onClick={process}>{processing && <Loader2 className="h-4 w-4 animate-spin" />}{processing ? "Saving and proceeding…" : completion ? "Saved and ready" : "Save and Proceed"}</Button>{completion && committedAssetId && <Link to={`/test-lab?asset=${encodeURIComponent(committedAssetId)}`} className="inline-flex h-10 items-center rounded-md bg-dq-purple px-4 text-sm font-medium text-white hover:bg-dq-purple/90">Go to Test Lab</Link>}</div>{!completion && !processing && processDisabledReasons.length > 0 && <p className="mt-2 text-xs text-slate-500">Before you can proceed: {processDisabledReasons.join("; ")}.</p>}{ingest.overlap_warnings?.map((warning) => <p key={warning} className="mt-2 text-sm text-amber-700">{warning}</p>)}</StepCard>}
-      {(completion || ingest?.status === "ready") && itemId && <DatasetStructureReview itemId={itemId} onReturnToColumns={(metadata) => onReturnToColumns?.(itemId, metadata)} />}
+      {(completion || ingest?.status === "ready") && itemId && <DatasetStructureReview itemId={itemId} onReturnToColumns={(metadata) => onReturnToColumns?.(itemId, metadata)} onReturnToSourcingHome={onBack} />}
       {completion && <details data-testid="completion-summary" className="mt-5 overflow-hidden rounded-md border border-emerald-200 bg-emerald-50"><summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4"><h3 className="font-semibold text-emerald-950">Completion summary</h3><span className="text-xs font-medium text-emerald-800">Stored successfully · View details</span></summary><pre className="border-t border-emerald-200 p-4 whitespace-pre-wrap text-xs text-emerald-900">{JSON.stringify(completion, null, 2)}</pre></details>}
       {selectedAsset?.superseded_snapshot_count > 0 && <div className="mt-4 text-sm"><span>View / restore previous version:</span>{(selectedAsset.superseded_versions || []).map((version) => <span key={version} className="ml-2"><button type="button" className="text-dq-purple underline" onClick={() => restore(version)}>Restore v{version}</button><button type="button" className="ml-2 text-dq-purple underline" onClick={() => setRestoreCompareVersion(restoreCompareVersion === version ? null : version)}>Compare</button></span>)}{restoreCompareVersion && <VersionDiff assetId={selectedAsset.asset_id} versionA={restoreCompareVersion} versionB={selectedAsset.current_version_no} />}</div>}
       {error && <div className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
@@ -689,7 +723,8 @@ function SourcingScreen() {
   const backToKinds = () => {
     setKind("");
     setStartAsset(null);
-    updateLocation({ new: null, browse: null, resume: null });
+    setPickerKind("");
+    updateLocation({ structure: null, item: null, table: null, column: null, return: null, new: null, browse: null, resume: null });
     loadDrafts();
   };
   const handleDraftConflict = (conflictingDrafts) => {
@@ -706,7 +741,7 @@ function SourcingScreen() {
   if (structureItemId) return (
     <main className="min-h-screen bg-slate-50 p-5 md:p-6">
       <div className="mb-4"><h1 className="text-2xl font-bold text-slate-950">Data Sourcing</h1><p className="mt-1 text-sm text-slate-500">Continue the governed snapshot review.</p></div>
-      <DatasetStructureReview itemId={structureItemId} onReturnToColumns={(metadata) => returnToColumnDefinitions(structureItemId, metadata)} />
+      <DatasetStructureReview itemId={structureItemId} onReturnToColumns={(metadata) => returnToColumnDefinitions(structureItemId, metadata)} onReturnToSourcingHome={backToKinds} />
     </main>
   );
   return (

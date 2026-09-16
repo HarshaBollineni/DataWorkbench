@@ -41,7 +41,7 @@ def _id() -> str:
     return f"drun_{uuid.uuid4().hex[:12]}"
 
 
-def _scope_rows(item_id: str) -> tuple[str, str, list[dict[str, Any]]]:
+def _scope_rows(item_id: str, *, materialize_profiles: bool = True) -> tuple[str, str, list[dict[str, Any]]]:
     item = db.query_one("dq_items", item_id=item_id)
     if item is None:
         raise KeyError(f"Unknown item: {item_id}")
@@ -61,11 +61,12 @@ def _scope_rows(item_id: str) -> tuple[str, str, list[dict[str, Any]]]:
     # The retained column-profile artifacts are the golden schema projection
     # for diagnostics. They are refreshed after Step 3 saves; prefer their
     # latest active role over any stale compatibility inventory value.
-    try:
-        from domains.aar.data_sourcing import persist_snapshot_profile_artifacts
-        persist_snapshot_profile_artifacts(item_id, actor="system")
-    except Exception:
-        pass
+    if materialize_profiles:
+        try:
+            from domains.aar.data_sourcing import persist_snapshot_profile_artifacts
+            persist_snapshot_profile_artifacts(item_id, actor="system")
+        except Exception:
+            pass
     repo = AnalysisArtifactRepository()
     artifact_roles: dict[str, str] = {}
     for artifact in repo.list(snapshot_id=item_id, artifact_type="column_profile", status="active"):
@@ -260,13 +261,16 @@ def _run(run_id: str) -> dict[str, Any]:
     return run
 
 
-def refresh_draft_scope(run_id: str, actor: str = "system") -> dict[str, Any]:
+def refresh_draft_scope(run_id: str, actor: str = "system", *,
+                        materialize_profiles: bool = True) -> dict[str, Any]:
     """Synchronize an open draft with the latest normalized sourcing roles."""
     run = _run(run_id)
     manifest = run["manifest_json"]
     if run["status"] != DRAFT:
         return manifest
-    table, _target, scope_rows = _scope_rows(run["item_id"])
+    table, _target, scope_rows = _scope_rows(
+        run["item_id"], materialize_profiles=materialize_profiles,
+    )
     before = manifest["scope"]
     refreshed = _scope_contract(table, scope_rows, before.get("selected_features") or [])
     if refreshed == before:

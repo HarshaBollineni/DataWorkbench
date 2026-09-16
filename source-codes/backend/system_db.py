@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from persistence_policy import tables_for_full_wipe
+
 # Mutable-state DB location. Defaults to the ignored local-runtime boundary. In
 # containerized deploys set SYSTEM_DB_PATH to a mounted persistent volume
 # (e.g. /data/system_state.db on an Azure File Share) so state survives restarts.
@@ -109,7 +111,7 @@ _JSON_COLS: dict[str, set[str]] = {
     "dq_asset_events": {"detail_json"},
     "usage_events": {"detail_json"},
     "analysis_artifacts": {"source_artifact_ids_json", "identity_json", "summary_json",
-                           "source_artifacts_json"},
+                           "source_artifacts_json", "governed_references_json"},
     "diag_binning_revisions": {"definition_json", "bins_json", "metrics_json",
                                 "warnings_json", "governance_json"},
     "analysis_manifests": {"manifest_json", "readiness_json", "result_json", "artifact_ids_json"},
@@ -124,6 +126,7 @@ _JSON_COLS: dict[str, set[str]] = {
     "dataset_structure_review_drafts": {"selections_json"},
     "dataset_structure_review_idempotency": {"response_json"},
     "dataset_structure_review_decision_batches": {"decision_assertion_refs_json"},
+    "technical_row_id_transforms": {"parser_options_json", "source_files_json"},
 }
 
 # ---- DDL (F1 table list) ----------------------------------------------------
@@ -761,6 +764,7 @@ CREATE TABLE IF NOT EXISTS analysis_artifacts (
     payload_filename TEXT,
     status TEXT NOT NULL,
     source_artifact_ids_json TEXT,
+    governed_references_json TEXT,
     run_id TEXT,
     created_by TEXT,
     created_at TEXT NOT NULL,
@@ -1069,7 +1073,13 @@ _WORKPRODUCT_TABLES = [
     "dataset_structure_materialization_jobs",
     "dataset_structure_profile_publications",
     "dataset_structure_profile_publication_completions",
+    "dataset_structure_backfill_runs",
+    "technical_row_id_transforms",
     "dataset_structure_materialization_reconcile_cursor",
+    "dataset_structure_review_states",
+    "dataset_structure_review_drafts",
+    "dataset_structure_review_idempotency",
+    "dataset_structure_review_decision_batches",
     "dq_items", "dq_item_files", "dq_item_tables", "variable_inventory",
     "plan_v2", "results_v2", "scores_v2", "issues_v2", "tracked_issues_v2",
     # Phase 4 — ingestion redesign persisted substrate (ING-08).
@@ -1515,6 +1525,7 @@ _MIGRATIONS: dict[str, dict[str, str]] = {
         "summary_adapter_version": "TEXT",
         "owner_id": "TEXT",
         "source_artifacts_json": "TEXT",
+        "governed_references_json": "TEXT",
         "integrity_status": "TEXT NOT NULL DEFAULT 'unknown'",
         "integrity_checked_at": "TEXT",
         "payload_media_type": "TEXT NOT NULL DEFAULT 'application/json'",
@@ -2430,9 +2441,12 @@ _SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 def query_page(table_name: str, *, limit: int, offset: int,
                order_by: tuple[tuple[str, str], ...],
-               contains: dict[str, str] | None = None, **filters) -> tuple[list[dict], int]:
+               contains: dict[str, str] | None = None,
+               exclude_values: dict[str, tuple | list] | None = None,
+               **filters) -> tuple[list[dict], int]:
     """Return one decoded SQL page plus its filtered total."""
-    identifiers = [table_name, *filters, *(contains or {}), *(key for key, _direction in order_by)]
+    identifiers = [table_name, *filters, *(contains or {}), *(exclude_values or {}),
+                   *(key for key, _direction in order_by)]
     if any(not _SQL_IDENTIFIER.fullmatch(value) for value in identifiers):
         raise ValueError("invalid SQL identifier")
     clauses, values = [], []
@@ -2442,6 +2456,11 @@ def query_page(table_name: str, *, limit: int, offset: int,
     for key, value in (contains or {}).items():
         clauses.append(f'LOWER(COALESCE("{key}", \'\')) LIKE ?')
         values.append(f"%{value.lower()}%")
+    for key, excluded in (exclude_values or {}).items():
+        excluded = tuple(excluded)
+        if excluded:
+            clauses.append(f'"{key}" NOT IN ({", ".join("?" for _ in excluded)})')
+            values.extend(excluded)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     ordering = ", ".join(
         f'"{key}" {"DESC" if direction.upper() == "DESC" else "ASC"}'
@@ -2534,6 +2553,23 @@ def _wipe_dir_contents(root: Path) -> None:
             else:
                 child.unlink(missing_ok=True)
     root.mkdir(parents=True, exist_ok=True)
+
+
+def _assert_full_wipe_postconditions(conn: sqlite3.Connection) -> None:
+    """Fail inside the reset transaction if classified clear state survived."""
+    remaining = {
+        table: int(conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
+        for table in tables_for_full_wipe("clear")
+    }
+    remaining = {table: count for table, count in remaining.items() if count}
+    if remaining:
+        detail = ", ".join(f"{table}={count}" for table, count in sorted(remaining.items()))
+        raise RuntimeError(f"full wipe left classified product state: {detail}")
+    non_session_fsm = int(conn.execute(
+        "SELECT COUNT(*) FROM app_fsm WHERE entity_type != 'session'"
+    ).fetchone()[0])
+    if non_session_fsm:
+        raise RuntimeError(f"full wipe left non-session app_fsm state: {non_session_fsm}")
 
 
 def _clear_item_pipeline(conn: sqlite3.Connection) -> dict[str, int]:
@@ -2762,6 +2798,9 @@ def wipe_development_artifacts() -> dict:
         )
         counts["dataset_structure_review_idempotency"] = _delete_ids_any(
             conn, "dataset_structure_review_idempotency", {"snapshot_id": item_ids}
+        )
+        counts["dataset_structure_review_decision_batches"] = _delete_ids_any(
+            conn, "dataset_structure_review_decision_batches", {"snapshot_id": item_ids}
         )
         counts["dataset_structure_review_drafts"] = _delete_ids_any(
             conn, "dataset_structure_review_drafts", {"snapshot_id": item_ids}
@@ -3040,25 +3079,23 @@ if __name__ == "__main__":
 
 
 def wipe_all_items() -> dict:
-    """WSP-08 / D-19 — full factory wipe ("blank slate" grade). Clears
-    everything reset_demo (surgical) clears PLUS every reference/platform
-    table that isn't explicitly preserved: the knowledge base (kb_* rows +
-    kb_storage on disk), tag_assignments entirely, ALL ingested inventory
-    (not just the demo DB), object_contexts/context_links, and the static
-    seed tables (test_library, agent_skills, dq_framework_areas/families,
-    fw_areas/fw_tests/fw_family_weights, tenants, tag_dimensions/values/
-    aliases/taxonomy_versions).
+    """WSP-08 / D-19 — full operational-work wipe.
 
-    PRESERVES ONLY: users + active sessions (the admin's own request must
-    complete, and they must stay logged in), transaction_log (the audit
-    trail must survive its own audit event), feature_flags (an operator's
-    flag flips are never silently reset), and the schema itself.
+    Clears all sourced data and generated work plus explicitly classified
+    platform reference tables. Preserves the governed knowledge plane (KB
+    documents, immutable versions, rules, diagnostic packages, governance
+    evidence, configuration, and durable source bytes), because knowledge is
+    reusable diagnostic input rather than output of the wiped lifecycle.
+
+    Users, active sessions, audit history, feature flags, and the deployed
+    schema also survive.
 
     Platform seed data is then restored by calling the same seeders
     main.py's boot path runs on every boot (seed_agents, seed_dq_framework,
     seed_framework_register — the 0.4.0 register/taxonomy/thresholds —
-    and seed_platform_and_taxonomy), so re-boot equivalence holds (2-T6)
-    and the app is immediately usable — no separate restart required.
+    seed_platform_and_taxonomy, and the built-in knowledge seeders), so re-boot
+    equivalence holds (2-T6) and the app is immediately usable — no separate
+    restart required.
     (Phase 3: the retired Galileo framework seed and seed_test_library are
     gone with the 14-test framework, FWK-13.) Idempotent — a second call
     deletes nothing further (the seeders are themselves idempotent
@@ -3085,11 +3122,11 @@ def wipe_all_items() -> dict:
         counts["table_metadata"] = conn.execute("DELETE FROM table_metadata").rowcount
         counts["object_contexts"] = conn.execute("DELETE FROM object_contexts").rowcount
         counts["context_links"] = conn.execute("DELETE FROM context_links").rowcount
-        # Knowledge base rows (bytes on disk wiped below).
-        for t in ("diagnostic_kb_packages", "kb_retrieval_manifests",
-                  "kb_rule_proposal_evidence", "kb_rules", "kb_sections",
-                  "kb_document_versions", "kb_documents"):
-            counts[t] = conn.execute(f"DELETE FROM {t}").rowcount
+        # Governed KB content is durable diagnostic input. Only retrieval
+        # manifests are execution traces tied to the runs being removed.
+        counts["kb_retrieval_manifests"] = conn.execute(
+            "DELETE FROM kb_retrieval_manifests"
+        ).rowcount
         # Static/reference platform tables — cleared then restored by the
         # seeders below (same idempotent calls main.py's boot path makes).
         # test_library / fw_* hold no seeded content since Phase 3 (FWK-13)
@@ -3105,18 +3142,36 @@ def wipe_all_items() -> dict:
         counts["app_fsm"] = conn.execute(
             "DELETE FROM app_fsm WHERE entity_type != 'session'").rowcount
         # feature_flags, users, transaction_log intentionally untouched.
+        _assert_full_wipe_postconditions(conn)
         conn.commit()
     _wipe_dir_contents(_upload_root())
     _wipe_dir_contents(_analysis_artifact_root())
-    _wipe_dir_contents(_kb_storage_root())
     from seeds import (  # noqa: PLC0415
         seed_agents, seed_dq_framework, seed_framework_register,
-        seed_platform_and_taxonomy,
+        seed_platform_and_taxonomy, seed_row_completeness_knowledge,
+        seed_directionality_knowledge, seed_value_semantics_knowledge,
     )
     reseeded = {
         "agent_skills": seed_agents(),
         "dq_framework": seed_dq_framework(),
         "framework_register": seed_framework_register(),
         "platform_and_taxonomy": seed_platform_and_taxonomy(),
+        "row_completeness_knowledge": seed_row_completeness_knowledge(),
+        "directionality_knowledge": seed_directionality_knowledge(),
+        "value_semantics_knowledge": seed_value_semantics_knowledge(),
     }
-    return {"deleted": counts, "reseeded": reseeded}
+    from kb import audit_knowledge_baseline  # noqa: PLC0415
+    baseline = audit_knowledge_baseline(
+        reason="post_wipe_verification", actor="system-kb-recovery", force=True,
+    )
+    return {
+        "deleted": counts,
+        "reseeded": reseeded,
+        "knowledge_baseline": baseline,
+        "protected": [
+            "governed Knowledge Base content and versions",
+            "Knowledge Base source files",
+            "users and active sessions",
+            "audit history and feature flags",
+        ],
+    }

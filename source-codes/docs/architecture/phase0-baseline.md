@@ -1,8 +1,9 @@
 # Phase 0 baseline
 
-This document records the product boundary that must remain stable while the
-codebase is cleaned and prepared for later capability integration. It describes
-the running code, not the historical plans.
+This document records the product boundary at the Phase 0 checkpoint. It is
+historical release evidence; current ownership and wipe behavior are documented
+in `product-integration-and-persistence-lifecycle.md`, and the seeded diagnostic
+register is authoritative for current executable status.
 
 ## Active user workflow
 

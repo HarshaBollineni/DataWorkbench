@@ -1,3 +1,5 @@
+import { formatDisplayNumber } from "../../../../lib/numberFormat.js";
+
 export const EXPECTED_COLUMNS = [
   ["NEEDS_REVIEW", "Needs review"],
   ["INCREASING", "Increasing"],
@@ -296,5 +298,5 @@ export function suggestedScope(features = [], referenceColumn = null, segmentCol
 }
 
 export function fmt(value, digits = 3) {
-  return value == null || Number.isNaN(Number(value)) ? "—" : Number(value).toFixed(digits);
+  return formatDisplayNumber(value, { maximumFractionDigits: digits });
 }

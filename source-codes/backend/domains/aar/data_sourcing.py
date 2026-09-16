@@ -146,8 +146,44 @@ def persist_snapshot_profile_artifacts(
     dictionary_version = snapshot.get("dictionary_version_id")
     artifacts: list[str] = []
     by_table: dict[str, list[dict[str, Any]]] = {}
-    for row in db.query("variable_inventory", item_id=snapshot_id, order_by="table_name, column_name"):
+    inventory_rows = db.query(
+        "variable_inventory", item_id=snapshot_id, order_by="table_name, column_name"
+    )
+    for row in inventory_rows:
         by_table.setdefault(row["table_name"], []).append(row)
+    # ``dq_item_tables`` is the retained physical membership authority.  A
+    # ready snapshot must never publish a partial profile set merely because
+    # a later-added table or column is absent from variable_inventory: doing
+    # so would create a valid-looking DSC completion fence over incomplete
+    # sourced data.
+    retained_tables = db.query("dq_item_tables", item_id=snapshot_id, order_by="table_name")
+    expected = {
+        str(row["table_name"]): {str(column) for column in (row.get("columns") or [])}
+        for row in retained_tables
+    }
+    actual = {
+        table: {str(row["column_name"]) for row in rows}
+        for table, rows in by_table.items()
+    }
+    gaps: list[str] = []
+    for table, columns in expected.items():
+        if not columns:
+            gaps.append(f"{table}: no retained columns")
+            continue
+        missing = sorted(columns - actual.get(table, set()))
+        unexpected = sorted(actual.get(table, set()) - columns)
+        if missing:
+            gaps.append(f"{table}: missing {','.join(missing)}")
+        if unexpected:
+            gaps.append(f"{table}: unexpected {','.join(unexpected)}")
+    for table in sorted(set(actual) - set(expected)):
+        gaps.append(f"{table}: table missing from retained inventory")
+    if not expected:
+        gaps.append("snapshot has no retained tables")
+    if gaps:
+        raise ValueError(
+            f"{snapshot_id} has incomplete retained inventory profiles: " + "; ".join(gaps)
+        )
     active_columns: dict[tuple[str | None, str | None], list[Any]] = {}
     for item in repo.list(snapshot_id=snapshot_id, artifact_type="column_profile", status="active"):
         active_columns.setdefault((item.identity.get("table"), item.feature), []).append(item)

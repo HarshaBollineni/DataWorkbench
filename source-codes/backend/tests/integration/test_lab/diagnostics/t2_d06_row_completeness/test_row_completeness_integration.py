@@ -11,6 +11,7 @@ from fastapi import HTTPException
 import system_db as db
 from ai.v2 import service
 from domains.aar.repository import AnalysisArtifactRepository
+from domains.rca import service as rca_service
 from dq_diagnostics import manifest_row_completeness, runner_row_completeness
 from dq_diagnostics.dispatch import adapter
 from dq_diagnostics.register import require_executable, seed_register
@@ -420,6 +421,23 @@ def test_findings_require_explicit_idempotent_review_before_issue_creation(snaps
     replay = runner_row_completeness.execute_now(manifest["run_id"])
     assert replay["review_required"] == len(violations) - 2
     assert replay["issues_created"] == 1
+
+    # Golden product seam: the same governed run carries KB provenance into a
+    # human-confirmed issue, and RCA opens from that issue while retaining an
+    # immutable AAR case-context link to the original snapshot/run evidence.
+    summary = next(
+        result for result in db.query("diag_results", run_id=manifest["run_id"])
+        if (result.get("metrics_json") or {}).get("knowledge_provenance")
+    )
+    assert summary["metrics_json"]["knowledge_provenance"]["version_id"] == \
+        manifest["kb"]["version_id"]
+    case = rca_service.create_case_from_issue(
+        promoted["issue_row_id"], "owner", tenant_id="tenant-d06"
+    )
+    bundle = rca_service.get_case(case["case_id"], tenant_id="tenant-d06")
+    assert bundle["item_id"] == snapshot
+    assert bundle["aar_evidence"]
+    assert bundle["aar_evidence"][0]["artifact_type"] == "rca_case_context"
 
 
 def test_d06_finding_disposition_and_result_promotion_require_owner(snapshot, monkeypatch):

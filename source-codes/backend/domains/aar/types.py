@@ -385,6 +385,9 @@ class ArtifactTypeDescriptor:
     allowed_source_types: tuple[str, ...] = ()
     sensitivity: str = "internal"
     status: str = "active"
+    # Technical audit records remain retained and directly addressable, but
+    # are omitted from the repository's default user evidence projection.
+    user_facing: bool = True
     summary_adapter_version: str = "1"
     # JSON-only descriptors can forbid the binary save path generically.
     allows_blob_payload: bool = True
@@ -402,7 +405,7 @@ class ArtifactTypeDescriptor:
             "comparison_snapshot_applicability": self.comparison_snapshot_applicability,
             "metric_definitions": list(self.metric_definitions), "sensitivity": self.sensitivity,
             "status": self.status, "summary_adapter_version": self.summary_adapter_version,
-            "allows_blob_payload": self.allows_blob_payload,
+            "allows_blob_payload": self.allows_blob_payload, "user_facing": self.user_facing,
         }
 
 
@@ -429,6 +432,13 @@ def get_artifact_type(artifact_type: str) -> ArtifactTypeDescriptor | None:
 
 def list_artifact_types() -> list[dict[str, Any]]:
     return [descriptor.catalog() for descriptor in sorted(_TYPES.values(), key=lambda item: item.artifact_type)]
+
+
+def non_user_facing_artifact_types() -> tuple[str, ...]:
+    return tuple(sorted(
+        descriptor.artifact_type for descriptor in _TYPES.values()
+        if not descriptor.user_facing
+    ))
 
 
 def validate_payload(artifact_type: str, payload: Any, schema_version: int) -> None:
@@ -515,6 +525,7 @@ def _register_defaults() -> None:
                 "roc_feature", "fine_bins", "coarse_bins", "iv", "gini"
             } else "optional"),
             allowed_source_types=source_contracts.get(artifact_type, ()),
+            user_facing=artifact_type != "governance_reference",
         ))
     # RCA accepts lineage from any governed diagnostic artifact because its
     # source diagnostic is dynamic. An empty allowed_source_types contract is
@@ -570,6 +581,7 @@ def _register_defaults() -> None:
         sensitivity="confidential",
         status="active",
         allows_blob_payload=False,
+        user_facing=False,
         write_validator=validate_assertion_write,
     ))
     register_artifact_type(ArtifactTypeDescriptor(
@@ -588,6 +600,7 @@ def _register_defaults() -> None:
         sensitivity="confidential",
         status="active",
         allows_blob_payload=False,
+        user_facing=False,
         write_validator=validate_context_write,
     ))
     register_artifact_type(ArtifactTypeDescriptor(

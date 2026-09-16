@@ -68,6 +68,24 @@ class ForbiddenError(KbError):
     pass
 
 
+def _audit(event: str, *, actor: str, tenant_id: str, object_type: str,
+           object_id: str, conn=None, **detail) -> None:
+    """Write the stable KB lifecycle audit envelope.
+
+    Event-specific fields remain available at the top level for existing
+    consumers, while the common envelope makes lifecycle history queryable
+    across documents, versions, rules, and diagnostic packages.
+    """
+    payload = {
+        "audit_schema_version": 1, "tenant_id": tenant_id,
+        "object_type": object_type, "object_id": object_id,
+        **{key: value for key, value in detail.items() if value is not None},
+    }
+    s.insert("transaction_log", {
+        "ts": s.now_ist(), "actor": actor, "event": event, "payload": payload,
+    }, conn=conn)
+
+
 # --- Original-bytes storage (content-addressed, dedup by sha256) ------------
 
 def _storage_path(tenant_id: str, sha256: str) -> Path:
@@ -106,6 +124,13 @@ def upload_document(tenant_id: str, filename: str, media_type: str, content: byt
     })
     version = _insert_version(document_id, 1, filename, media_type, sha256, bytes_ref,
                               len(content), conv, actor)
+    _audit("knowledge_document_uploaded", actor=actor, tenant_id=tenant_id,
+           object_type="knowledge_document", object_id=document_id,
+           document_id=document_id, version_id=version["version_id"],
+           original_sha256=sha256,
+           converted_markdown_sha256=version["converted_markdown_sha256"],
+           filename=filename, media_type=media_type, size=len(content),
+           origin="user_upload")
     return {"document_id": document_id, "version": version}
 
 
@@ -118,6 +143,13 @@ def upload_new_version(tenant_id: str, document_id: str, filename: str, media_ty
     next_seq = (versions[0]["version_seq"] + 1) if versions else 1
     version = _insert_version(document_id, next_seq, filename, media_type, sha256, bytes_ref,
                               len(content), conv, actor)
+    _audit("knowledge_version_uploaded", actor=actor, tenant_id=tenant_id,
+           object_type="knowledge_version", object_id=version["version_id"],
+           document_id=document_id, version_id=version["version_id"],
+           version_seq=next_seq, original_sha256=sha256,
+           converted_markdown_sha256=version["converted_markdown_sha256"],
+           filename=filename, media_type=media_type, size=len(content),
+           origin="user_upload")
     return {"document_id": document_id, "version": version}
 
 
@@ -594,6 +626,14 @@ def submit_for_review(tenant_id: str, version_id: str, actor: str,
             "created_at": s.now_ist(), "updated_at": s.now_ist(),
         })
     s.update("kb_document_versions", {"version_id": version_id}, {"review_state": "pending_review"})
+    rules, _ = _rules_for_version(version_id)
+    _audit("knowledge_review_submitted", actor=actor, tenant_id=tenant_id,
+           object_type="knowledge_version", object_id=version_id,
+           document_id=version["document_id"], version_id=version_id,
+           previous_state=version.get("review_state"), new_state="pending_review",
+           original_sha256=version.get("original_sha256"),
+           converted_markdown_sha256=version.get("converted_markdown_sha256"),
+           extracted_rule_count=len(rules))
     return get_version_preview(tenant_id, version_id)
 
 
@@ -661,10 +701,11 @@ def publish_rule(tenant_id: str, rule_id: str, actor: str, roles: list[str],
         }, conn=conn)
         if changed != 1:
             raise KbError("Knowledge rule lifecycle changed while it was being published.")
-        s.insert("transaction_log", {
-            "ts": now, "actor": actor, "event": "knowledge_publish",
-            "payload": {"rule_id": rule_id, "tenant_id": tenant_id},
-        }, conn=conn)
+        _audit("knowledge_publish", actor=actor, tenant_id=tenant_id,
+               object_type="knowledge_rule", object_id=rule_id, conn=conn,
+               rule_id=rule_id, document_id=rule.get("document_id"),
+               version_id=rule.get("version_id"), rule_hash=rule.get("rule_hash"),
+               previous_state=rule["lifecycle_state"], new_state="published")
 
         if predecessor and predecessor["lifecycle_state"] == "published":
             changed = s.update("kb_rules", {
@@ -677,12 +718,12 @@ def publish_rule(tenant_id: str, rule_id: str, actor: str, roles: list[str],
                 raise KbError(
                     "Linked predecessor changed while the revision was being published."
                 )
-            s.insert("transaction_log", {
-                "ts": now, "actor": actor, "event": "knowledge_superseded",
-                "payload": {"rule_id": predecessor["rule_id"],
-                            "superseded_by_rule_id": rule_id,
-                            "tenant_id": tenant_id},
-            }, conn=conn)
+            _audit("knowledge_superseded", actor=actor, tenant_id=tenant_id,
+                   object_type="knowledge_rule", object_id=predecessor["rule_id"], conn=conn,
+                   rule_id=predecessor["rule_id"], document_id=predecessor.get("document_id"),
+                   version_id=predecessor.get("version_id"), rule_hash=predecessor.get("rule_hash"),
+                   previous_state="published", new_state="superseded",
+                   superseded_by_rule_id=rule_id)
         conn.commit()
     _attempt_binding(rule_id, actor)
     return s.query_one("kb_rules", rule_id=rule_id)
@@ -729,16 +770,18 @@ def archive_rule(tenant_id: str, rule_id: str, actor: str, roles: list[str], rea
         )
         if changed != 1:
             raise KbError("Knowledge rule lifecycle changed while it was being archived.")
-        s.insert("transaction_log", {
-            "ts": now, "actor": actor, "event": "knowledge_archive",
-            "payload": {"rule_id": rule_id, "tenant_id": tenant_id,
-                        "reason": reason.strip()},
-        }, conn=conn)
+        _audit("knowledge_archive", actor=actor, tenant_id=tenant_id,
+               object_type="knowledge_rule", object_id=rule_id, conn=conn,
+               rule_id=rule_id, document_id=rule.get("document_id"),
+               version_id=rule.get("version_id"), rule_hash=rule.get("rule_hash"),
+               previous_state=rule["lifecycle_state"], new_state="archived",
+               reason=reason.strip())
         conn.commit()
     return s.query_one("kb_rules", rule_id=rule_id)
 
 
-def mark_under_suspicion(tenant_id: str, rule_id: str, reason: str) -> dict:
+def mark_under_suspicion(tenant_id: str, rule_id: str, reason: str,
+                         actor: str = "system") -> dict:
     """Blame-back primitive (contracts.md §6.5) — triggered by Stage 5 closure
     outcomes; the primitive itself is deterministic code, callable by any
     internal service, never by an LLM directly."""
@@ -748,6 +791,11 @@ def mark_under_suspicion(tenant_id: str, rule_id: str, reason: str) -> dict:
     s.update("kb_rules", {"rule_id": rule_id}, {
         "lifecycle_state": "under_suspicion", "under_suspicion_reason": reason, "updated_at": s.now_ist(),
     })
+    _audit("knowledge_under_suspicion", actor=actor, tenant_id=tenant_id,
+           object_type="knowledge_rule", object_id=rule_id, rule_id=rule_id,
+           document_id=rule.get("document_id"), version_id=rule.get("version_id"),
+           rule_hash=rule.get("rule_hash"), previous_state=rule.get("lifecycle_state"),
+           new_state="under_suspicion", reason=reason)
     return s.query_one("kb_rules", rule_id=rule_id)
 
 
@@ -771,6 +819,12 @@ def check_shelf_life(tenant_id: str) -> int:
             continue
         if _months_between(rule["last_confirmed_date"], now) >= rule["shelf_life_months"]:
             s.update("kb_rules", {"rule_id": rule["rule_id"]}, {"trust_level": "inferred", "updated_at": now})
+            _audit("knowledge_trust_expired", actor="system-kb-governance",
+                   tenant_id=tenant_id, object_type="knowledge_rule",
+                   object_id=rule["rule_id"], rule_id=rule["rule_id"],
+                   document_id=rule.get("document_id"), version_id=rule.get("version_id"),
+                   rule_hash=rule.get("rule_hash"), previous_state="human_confirmed",
+                   new_state="inferred", reason="shelf_life_expired")
             flipped += 1
     return flipped
 
@@ -800,6 +854,13 @@ def check_schema_invalidation(tenant_id: str) -> int:
                 "trust_level": "inferred", "related_tables_schema_hash_json": current,
                 "updated_at": s.now_ist(),
             })
+            _audit("knowledge_schema_invalidated", actor="system-kb-governance",
+                   tenant_id=tenant_id, object_type="knowledge_rule",
+                   object_id=rule["rule_id"], rule_id=rule["rule_id"],
+                   document_id=rule.get("document_id"), version_id=rule.get("version_id"),
+                   rule_hash=rule.get("rule_hash"), previous_state="human_confirmed",
+                   new_state="inferred", reason="related_schema_changed",
+                   previous_schema_hashes=stored_hashes, new_schema_hashes=current)
             flipped += 1
     return flipped
 
@@ -902,6 +963,12 @@ def _insert_case_closure_hierarchy(conn, tenant_id: str, category: str,
             "created_at": now, "updated_at": now,
         }, conn=conn)
         result = s.query_one("kb_rules", conn=conn, rule_id=rule_id)
+        _audit("knowledge_proposal_created", actor=actor, tenant_id=tenant_id,
+               object_type="knowledge_rule", object_id=rule_id, conn=conn,
+               rule_id=rule_id, document_id=document_id, version_id=version_id,
+               rule_hash=text_hash, new_state="draft", source_case_id=source_case_id,
+               origin=("diagnostic_proposal" if (proposal_metadata or {}).get("proposal_kind")
+                       else "case_closure"))
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         return result
     except Exception:
@@ -1093,6 +1160,52 @@ def ensure_system_reference_document(*, tenant_id: str, document_id: str,
         conn.commit()
     return {"document_id": document_id, "version_id": version_id,
             "source_hash": source_hash, "inserted": True}
+
+
+def audit_knowledge_baseline(*, reason: str, actor: str = "system-kb-seed",
+                             tenant_id: str = "bootstrap", force: bool = False) -> dict:
+    """Fingerprint and audit the installed source-controlled KB baseline."""
+    document_ids = {row["document_id"] for row in s.query("kb_documents", tenant_id=tenant_id)}
+    versions = []
+    for row in s.query("kb_document_versions", order_by="version_id"):
+        if row["document_id"] not in document_ids:
+            continue
+        report = row.get("conversion_report_json") or {}
+        if not str(report.get("source") or "").startswith("source_controlled"):
+            continue
+        versions.append({
+            "document_id": row["document_id"], "version_id": row["version_id"],
+            "version_seq": row["version_seq"],
+            "content_hash": row.get("original_sha256"),
+            "converted_markdown_sha256": row.get("converted_markdown_sha256"),
+        })
+    packages = [{
+        "package_id": row["package_id"], "diagnostic_id": row["diagnostic_id"],
+        "version_id": row["version_id"], "version_seq": row["version_seq"],
+        "package_hash": row["package_hash"],
+        "lifecycle_state": row["lifecycle_state"],
+    } for row in s.query("diagnostic_kb_packages", tenant_id=tenant_id,
+                         order_by="package_id") if row.get("lifecycle_state") == "active"]
+    basis = {"tenant_id": tenant_id, "versions": versions, "packages": packages}
+    counts = {"document_count": len({row["document_id"] for row in versions}),
+              "version_count": len(versions), "package_count": len(packages)}
+    fingerprint = hashlib.sha256(json.dumps(
+        basis, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
+    if not force:
+        for event in reversed(s.query("transaction_log", order_by="ts")):
+            if event.get("event") != "knowledge_baseline_verified":
+                continue
+            payload = event.get("payload") or {}
+            if payload.get("tenant_id") == tenant_id and payload.get("baseline_fingerprint") == fingerprint:
+                return {**basis, **counts, "baseline_fingerprint": fingerprint, "audited": False}
+            break
+    _audit("knowledge_baseline_verified", actor=actor, tenant_id=tenant_id,
+           object_type="knowledge_baseline", object_id=fingerprint,
+           baseline_fingerprint=fingerprint, reason=reason,
+           versions=versions, packages=packages,
+           **counts)
+    return {**basis, **counts, "baseline_fingerprint": fingerprint, "audited": True}
 
 
 def ensure_system_diagnostic_package(package: dict, tenant_id: str = "bootstrap",

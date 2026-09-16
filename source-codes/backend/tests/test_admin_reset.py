@@ -39,9 +39,11 @@ os.environ.pop("SYSTEM_DB_BACKUP_PATH", None)
 from fastapi import HTTPException  # noqa: E402
 
 import kb  # noqa: E402
+from persistence_policy import PERSISTENCE_TABLE_POLICY  # noqa: E402
 import system_db as s  # noqa: E402
 import taxonomy  # noqa: E402
 from routers import admin, auth  # noqa: E402
+from seeds import seed_row_completeness_knowledge  # noqa: E402
 from seeds.taxonomy_seed import BOOTSTRAP_TENANT, seed_platform, seed_taxonomy  # noqa: E402
 
 TENANT = BOOTSTRAP_TENANT
@@ -149,6 +151,60 @@ def _build_item_fixture(item_id: str, table_name: str = "t1") -> dict:
             "issue_row_id": issue_row_id, "case_id": case_id, "upload_dir": upload_dir}
 
 
+def _build_dsc_lifecycle_fixture(item_id: str) -> tuple[str, ...]:
+    """Populate every post-foundation DSC control/review table for reset tests."""
+    now = s.now_ist()
+    draft_id = f"draft_{item_id}"
+    rows = (
+        ("dataset_structure_backfill_runs", {
+            "run_id": f"backfill_{item_id}", "migration_version": "test-v1",
+            "tenant_id": TENANT, "snapshot_id": item_id, "status": "scheduled",
+            "source_fingerprint": "source", "proof_source": "test",
+            "created_at": now, "updated_at": now,
+        }),
+        ("technical_row_id_transforms", {
+            "transform_id": f"transform_{item_id}", "tenant_id": TENANT,
+            "snapshot_id": item_id, "table_name": "t1",
+            "idempotency_key": f"transform-key-{item_id}", "request_digest": "request",
+            "source_revision": "source", "parser_options_json": {},
+            "source_files_json": [], "status": "complete", "created_at": now,
+            "updated_at": now,
+        }),
+        ("dataset_structure_materialization_reconcile_cursor", {
+            "cursor_name": f"cursor_{item_id}", "last_snapshot_id": item_id,
+            "updated_at": now,
+        }),
+        ("dataset_structure_review_states", {
+            "snapshot_id": item_id, "tenant_id": TENANT, "asset_id": "asset_test",
+            "state": "confirmed", "current_generation": 1,
+            "current_evidence_fingerprint": "evidence", "current_draft_id": draft_id,
+            "updated_at": now,
+        }),
+        ("dataset_structure_review_drafts", {
+            "draft_id": draft_id, "tenant_id": TENANT, "snapshot_id": item_id,
+            "revision": 1, "base_evidence_fingerprint": "evidence",
+            "selections_json": {"tables": []}, "state": "active", "created_by": "tester",
+            "created_at": now, "updated_at": now,
+        }),
+        ("dataset_structure_review_idempotency", {
+            "tenant_id": TENANT, "snapshot_id": item_id,
+            "idempotency_key": f"draft-key-{item_id}", "method": "PATCH",
+            "path": f"/items/{item_id}/dataset-structure", "request_digest": "request",
+            "response_json": {}, "status_code": 200, "created_at": now,
+        }),
+        ("dataset_structure_review_decision_batches", {
+            "batch_id": f"batch_{item_id}", "tenant_id": TENANT,
+            "snapshot_id": item_id, "draft_id": draft_id, "draft_revision": 1,
+            "idempotency_key": f"decision-key-{item_id}", "request_digest": "request",
+            "outcome": "confirmed", "decision_assertion_refs_json": [],
+            "actor": "tester", "created_at": now,
+        }),
+    )
+    for table, row in rows:
+        s.insert(table, row)
+    return tuple(table for table, _row in rows)
+
+
 class SurgicalResetTests(unittest.TestCase):
     """2-T5 — surgical reset clears the item + every derived artefact
     (plan/result/score/issue/RCA case/item-keyed tag/uploaded file);
@@ -230,11 +286,11 @@ class SurgicalResetTests(unittest.TestCase):
 
 
 class WipeResetTests(unittest.TestCase):
-    """2-T6 — full wipe blanks every product/reference table except
-    users+sessions/transaction_log/feature_flags/schema, then restores
-    platform seed data (diagnostic_register/agent_skills non-empty —
-    "re-boot equivalence"); the audit row is written after the wipe so it
-    survives; a second run ends in the same stable state."""
+    """Full wipe clears operational work while preserving governed knowledge.
+
+    Platform and built-in knowledge seeds are verified immediately so the
+    product remains executable without a process restart.
+    """
 
     @classmethod
     def setUpClass(cls):
@@ -252,8 +308,24 @@ class WipeResetTests(unittest.TestCase):
     def test_wipe_blanks_platform_reseeds_and_preserves_users_and_audit(self):
         item_id = f"itm_wipe_{uuid.uuid4().hex[:8]}"
         _build_item_fixture(item_id)
-        kb.upload_document(TENANT, f"{item_id}.md", "text/markdown",
-                           b"## Rule\nBody.", "domain_fact", "tester")
+        dsc_tables = _build_dsc_lifecycle_fixture(item_id)
+        kb_upload = kb.upload_document(
+            TENANT, f"{item_id}.md", "text/markdown",
+            b"## Rule\nBody.", "domain_fact", "tester",
+        )
+        kb_version = kb_upload["version"]
+        seed_row_completeness_knowledge()
+        package_before = s.query_one(
+            "diagnostic_kb_packages", tenant_id=TENANT,
+            diagnostic_id=6, lifecycle_state="active",
+        )
+        s.insert("kb_retrieval_manifests", {
+            "manifest_id": f"kbret_{item_id}", "tenant_id": TENANT,
+            "requesting_agent": "reset-test", "case_id": None,
+            "rule_ids_json": [], "eligibility_reasons_json": {},
+            "ranked": 0, "created_at": s.now_ist(),
+        })
+        s.insert("kb_shelf_life_defaults", {"category": "test-only", "months": 3})
         s.insert("ingested_databases", {
             "logical_db": f"db_{item_id}", "display_name": "x", "description": "",
             "access_role": "", "dictionary": {}, "ai_summary": "", "metadata": {},
@@ -288,12 +360,17 @@ class WipeResetTests(unittest.TestCase):
 
         self.assertTrue(res["ok"])
         self.assertEqual(res["grade"], "wipe")
+        self.assertIn(
+            "governed Knowledge Base content and versions", res["protected"]
+        )
+        self.assertEqual(res["knowledge_baseline"]["document_count"], 4)
+        self.assertEqual(res["knowledge_baseline"]["version_count"], 6)
+        self.assertEqual(len(res["knowledge_baseline"]["baseline_fingerprint"]), 64)
 
         blanked = _ITEM_TABLES + (
-            "kb_documents", "kb_document_versions", "kb_sections", "kb_rules",
             "ingested_databases", "table_metadata", "object_contexts", "context_links",
-            "analysis_artifacts", "analysis_artifact_events",
-        )
+            "analysis_artifacts", "analysis_artifact_events", "kb_retrieval_manifests",
+        ) + dsc_tables
         for t in blanked:
             self.assertEqual(len(s.query(t)), 0, f"{t} must be empty after a full wipe")
         self.assertEqual(list(_TMP_ARTIFACT_DIR.iterdir()), [])
@@ -305,6 +382,29 @@ class WipeResetTests(unittest.TestCase):
         self.assertEqual(len(s.query("framework_taxonomy")), 11)
         self.assertGreater(len(s.query("agent_skills")), 0)
         self.assertGreater(len(s.query("tag_dimensions")), 0)
+
+        # Knowledge is a durable product input, not an operational output.
+        self.assertIsNotNone(s.query_one(
+            "kb_documents", document_id=kb_upload["document_id"]
+        ))
+        self.assertIsNotNone(s.query_one(
+            "kb_document_versions", version_id=kb_version["version_id"]
+        ))
+        self.assertEqual(kb.read_original(kb_version["original_bytes_ref"]), b"## Rule\nBody.")
+        self.assertEqual(
+            s.query_one("kb_shelf_life_defaults", category="test-only")["months"], 3
+        )
+        active_package = s.query_one(
+            "diagnostic_kb_packages", tenant_id=TENANT,
+            diagnostic_id=6, lifecycle_state="active",
+        )
+        self.assertIsNotNone(active_package)
+        self.assertEqual(active_package["package_id"], package_before["package_id"])
+        for document_id in (
+            "kbdoc_t2d6_row_completeness", "kbdoc_t2d08_value_semantics",
+            "kbdoc_t2d11_directionality", "kbdoc_credit_risk_terminology",
+        ):
+            self.assertIsNotNone(s.query_one("kb_documents", document_id=document_id))
 
         # Preserved: users, feature_flags (values untouched — no silent flag reset).
         self.assertEqual(len(s.query("users")), before_users)
@@ -320,6 +420,12 @@ class WipeResetTests(unittest.TestCase):
                      if r["event"] == "factory_reset" and r["payload"].get("grade") == "wipe"]
         self.assertTrue(audit_rows, "a factory_reset audit row must survive the wipe")
         self.assertEqual(audit_rows[-1]["actor"], "wipe_admin")
+        baseline_rows = [r for r in s.query("transaction_log", order_by="id")
+                         if r["event"] == "knowledge_baseline_verified"
+                         and r["payload"].get("reason") == "post_wipe_verification"]
+        self.assertTrue(baseline_rows, "the recovered KB baseline must be audited")
+        self.assertEqual(baseline_rows[-1]["payload"]["baseline_fingerprint"],
+                         res["knowledge_baseline"]["baseline_fingerprint"])
 
         # Idempotent: a second wipe succeeds and ends in the same stable state.
         res2 = admin.factory_reset(
@@ -334,6 +440,20 @@ class WipeResetTests(unittest.TestCase):
         self.assertEqual(len(s.query("framework_taxonomy")), 11)
         self.assertGreater(len(s.query("agent_skills")), 0)
         self.assertEqual(len(s.query("users")), before_users)
+        self.assertIsNotNone(s.query_one(
+            "kb_documents", document_id=kb_upload["document_id"]
+        ))
+        self.assertEqual(kb.read_original(kb_version["original_bytes_ref"]), b"## Rule\nBody.")
+
+    def test_every_sqlite_table_has_one_lifecycle_policy(self):
+        with s.get_conn() as conn:
+            actual = {
+                row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name NOT LIKE 'sqlite_%'"
+                )
+            }
+        self.assertEqual(set(PERSISTENCE_TABLE_POLICY), actual)
 
 
 class DevelopmentCleanupTests(unittest.TestCase):

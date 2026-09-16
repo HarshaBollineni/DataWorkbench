@@ -12,6 +12,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 import pandas as pd
 
@@ -68,24 +69,32 @@ def _snapshot(frame: pd.DataFrame, *, target: str = "target") -> tuple[str, str]
     }
     for column in frame.columns:
         distinct = int(frame[column].nunique(dropna=True))
+        profile = {
+            "calculation_method": "exact",
+            "total_count": int(len(frame)),
+            "non_null_count": int(frame[column].notna().sum()),
+            "null_count": int(frame[column].isna().sum()),
+            "physical_null_count": int(frame[column].isna().sum()),
+            "regular_value_count": int(frame[column].notna().sum()),
+            "cardinality": distinct,
+            "n_levels": distinct,
+            "summary": {"count": int(frame[column].notna().sum()),
+                        "missing": int(frame[column].isna().sum())},
+        }
+        if column == "period":
+            profile.update({
+                "period_format_evidence_available": True,
+                "period_format_checked_regular_count": int(frame[column].notna().sum()),
+                "period_format_failure_count": 0,
+                "period_bounds": {"start_date": "2026-01-01", "end_date": "2026-03-31"},
+            })
         s.upsert("variable_inventory", {
             "item_id": snapshot_id, "table_name": "portfolio", "column_name": column,
             "classification": "numerical", "data_type": str(frame[column].dtype),
             "description": f"Definition for {column}", "discrepancies": [],
             "notes": "", "role": roles.get(column, "Feature"),
             "dictionary_role": roles.get(column, "").lower(),
-            "profile_json": {
-                "calculation_method": "exact",
-                "total_count": int(len(frame)),
-                "non_null_count": int(frame[column].notna().sum()),
-                "null_count": int(frame[column].isna().sum()),
-                "physical_null_count": int(frame[column].isna().sum()),
-                "regular_value_count": int(frame[column].notna().sum()),
-                "cardinality": distinct,
-                "n_levels": distinct,
-                "summary": {"count": int(frame[column].notna().sum()),
-                            "missing": int(frame[column].isna().sum())},
-            },
+            "profile_json": profile,
             "provisional": 0, "updated_at": now,
         })
     return asset_id, snapshot_id
@@ -128,7 +137,14 @@ class FeatureTargetSeparationAdapterTests(unittest.TestCase):
             "weight": "Weight", "group": "Group", "ignore": "Ignore",
         })
         self.assertEqual(service._role_for("facility_id", "text", None), "Identifier")
-        self.assertEqual(service._role_for("reporting_quarter", "text", None), "Period")
+        self.assertEqual(service._role_for("reporting_quarter", "text", None), "Feature")
+        self.assertEqual(service._role_for("reporting_quarter", "text", None, profile={
+            "regular_value_count": 2,
+            "period_format_evidence_available": True,
+            "period_format_checked_regular_count": 2,
+            "period_format_failure_count": 0,
+            "period_bounds": {"start_date": "2026-01-01", "end_date": "2026-06-30"},
+        }), "Period")
         self.assertEqual(service._role_for("origination_date", "datetime", None), "Date")
         self.assertEqual(service._role_for("rating", "numerical", None), "Score")
         unique = pd.Series([f"value-{index}" for index in range(20)])
@@ -273,6 +289,7 @@ class FeatureTargetSeparationAdapterTests(unittest.TestCase):
         self.assertTrue(metadata["period"]["eligible"])
         self.assertFalse(metadata["period"]["recommended"])
         self.assertFalse(metadata["constant"]["recommended"])
+
         self.assertIn("1 observed level", metadata["constant"]["recommendation_reason"])
         self.assertEqual(metadata["noisy"]["role"], "Feature")
         self.assertEqual(metadata["noisy"]["role_source"],
@@ -288,6 +305,24 @@ class FeatureTargetSeparationAdapterTests(unittest.TestCase):
             manifest_feature_target.patch_manifest(manifest["run_id"], {
                 "kind": "feature_selection", "features": ["perfect"],
             })
+
+    def test_viewing_draft_refreshes_scope_without_rematerializing_profiles(self):
+        _asset_id, snapshot_id = _snapshot(_frame())
+        manifest = manifest_feature_target.build_manifest(
+            snapshot_id, actor="test", enforce_register=False,
+        )
+
+        with mock.patch(
+            "domains.aar.data_sourcing.persist_snapshot_profile_artifacts",
+        ) as persist_profiles:
+            refreshed = manifest_feature_target.refresh_draft_scope(
+                manifest["run_id"], materialize_profiles=False,
+            )
+
+        persist_profiles.assert_not_called()
+        self.assertEqual(refreshed["run_id"], manifest["run_id"])
+        self.assertEqual(refreshed["scope"]["selected_features"],
+                         manifest["scope"]["selected_features"])
 
     def test_runner_persists_partial_feature_results_and_review_candidates(self):
         _asset_id, snapshot_id = _snapshot(_frame())
@@ -341,10 +376,14 @@ class FeatureTargetSeparationAdapterTests(unittest.TestCase):
 
         manifest_feature_target.build_manifest(
             snapshot_id, actor="test", enforce_register=False)
-        board = v2.diagnostics_board(snapshot_id)
+        principal = {"username": "test", "tenant_id": "tenant-a", "authz_roles": []}
+        with mock.patch("routers.diagnostics.tenancy.resolve_principal", return_value=principal):
+            board = v2.diagnostics_board(snapshot_id, authorization="Bearer test")
+            read_back = v2.diagnostic_results(
+                snapshot_id, diagnostic_id=2, authorization="Bearer test",
+            )
         card = next(row for row in board["cards"] if row["diagnostic_id"] == 2)
         self.assertEqual(card["last_run"]["run_id"], manifest["run_id"])
-        read_back = v2.diagnostic_results(snapshot_id, diagnostic_id=2)
         self.assertEqual(read_back["run"]["run_id"], manifest["run_id"])
         self.assertTrue(any(
             (row.get("metrics_json") or {}).get("auc") is not None
@@ -365,8 +404,12 @@ class FeatureTargetSeparationAdapterTests(unittest.TestCase):
             kind="parameter_tune", key="binning_constraints",
             value={"execution_mode": "quick", "max_workers": 1}))
 
-        completed = v2.run_diagnostic_manifest(
-            manifest["run_id"], v2.RunIn(stream=False))
+        with mock.patch(
+            "domains.test_lab.diagnostics.t1_d02_feature_target_separation.adapter.persist_snapshot_profile_artifacts"
+        ) as repeated_profile_materialization:
+            completed = v2.run_diagnostic_manifest(
+                manifest["run_id"], v2.RunIn(stream=False))
+        repeated_profile_materialization.assert_not_called()
         self.assertEqual(completed["phase"], "done")
         payload = v2.diagnostic_results(snapshot_id, manifest["run_id"])
         feature = next(row for row in payload["results"]
@@ -457,6 +500,18 @@ class FeatureTargetSeparationAdapterTests(unittest.TestCase):
         ):
             manifest_feature_target.patch_manifest(run_id, patch)
         runner_feature_target.execute_now(run_id, actor="test")
+
+        lightweight = v2.diagnostic_results(
+            snapshot_id, run_id, include_evidence=False,
+        )
+        lightweight_feature = next(row for row in lightweight["results"]
+                                   if (row.get("metrics_json") or {}).get("result_kind") == "feature")
+        self.assertNotIn("roc_detail", lightweight_feature["metrics_json"])
+        self.assertNotIn("binning_detail", lightweight_feature["metrics_json"])
+        self.assertNotIn("coarse_bins", lightweight_feature["metrics_json"])
+        detail = v2.diagnostic_result_detail(lightweight_feature["result_id"])
+        self.assertTrue(detail["metrics_json"]["roc_detail"]["primary_tree"])
+        self.assertTrue(detail["metrics_json"]["binning_detail"]["fine_bins"])
 
         payload = v2.diagnostic_results(snapshot_id, run_id)
         feature = next(row for row in payload["results"]

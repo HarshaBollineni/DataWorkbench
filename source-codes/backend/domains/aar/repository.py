@@ -78,6 +78,7 @@ class AnalysisArtifactRepository:
             schema_version=row.get("schema_version") or 1, summary=row.get("summary_json") or {},
             summary_adapter_version=row.get("summary_adapter_version"), owner_id=row.get("owner_id"),
             source_artifacts=tuple(refs), integrity_status=row.get("integrity_status") or "unknown",
+            governed_references=tuple(row.get("governed_references_json") or ()),
             integrity_checked_at=row.get("integrity_checked_at"),
             payload_media_type=row.get("payload_media_type") or "application/json",
             payload_filename=row.get("payload_filename"),
@@ -101,18 +102,76 @@ class AnalysisArtifactRepository:
             seen.add(artifact_id); out.append({"artifact_id": artifact_id, "role": role})
         return tuple(sorted(out, key=lambda item: (item["role"], item["artifact_id"])))
 
+    @staticmethod
+    def _governed_refs(refs: Iterable[dict[str, Any]] | None, run_id: str | None = None) -> tuple[dict[str, Any], ...]:
+        """Normalize immutable references to governed objects outside AAR.
+
+        Diagnostic producers already pin KB versions in their frozen run
+        manifests.  AAR carries those pins forward automatically so evidence
+        never becomes detached from the knowledge that produced it.  Explicit
+        references use the same generic contract for future governed types.
+        """
+        values = refs
+        if values is None and run_id:
+            run = db.query_one("diag_runs", run_id=run_id)
+            values = ((run or {}).get("manifest_json") or {}).get("knowledge_references")
+        out: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+        for raw in values or ():
+            if not isinstance(raw, dict):
+                raise ValueError("governed references must be dictionaries")
+            reference_type = str(raw.get("reference_type") or (
+                "knowledge_version" if raw.get("version_id") else "")).strip()
+            target_id = str(raw.get("target_id") or raw.get("version_id") or "").strip()
+            role = str(raw.get("role") or "supporting_knowledge").strip()
+            if not reference_type or not target_id or not role:
+                raise ValueError("governed references require reference_type, target_id, and role")
+            if reference_type == "knowledge_version" and not raw.get("content_hash"):
+                raise ValueError("knowledge-version references require content_hash")
+            item = {
+                "reference_type": reference_type, "target_id": target_id, "role": role,
+                "target_version": raw.get("target_version") or raw.get("version_label"),
+                "content_hash": raw.get("content_hash"),
+                "namespace_id": raw.get("namespace_id") or raw.get("knowledge_base_id"),
+                "consumer_id": raw.get("consumer_id"),
+            }
+            extra = {key: value for key, value in raw.items() if key not in {
+                "reference_type", "target_id", "role", "target_version", "version_id",
+                "version_label", "content_hash", "namespace_id", "knowledge_base_id", "consumer_id",
+            }}
+            if extra:
+                item["metadata"] = extra
+            key = (reference_type, target_id, role)
+            if key in seen:
+                raise ValueError("duplicate governed reference")
+            seen.add(key); out.append({key: value for key, value in item.items() if value is not None})
+        return tuple(sorted(out, key=lambda item: (item["reference_type"], item["target_id"], item["role"])))
+
     def _identity(self, *, artifact_type: str, asset_id: str, snapshot_id: str, comparison_snapshot_id: str | None,
                   population_fingerprint: str, target_fingerprint: str | None, feature: str | None,
                   methodology_fingerprint: str, scope: str, workflow_id: str | None, owner_id: str | None,
                   table: str | None, features: tuple[str, ...], refs: tuple[dict[str, str], ...],
-                  identity_inputs: dict[str, Any] | None) -> dict[str, Any]:
+                  identity_inputs: dict[str, Any] | None,
+                  governed_refs: tuple[dict[str, Any], ...] = ()) -> dict[str, Any]:
         value = {"artifact_type": artifact_type, "asset_id": asset_id, "snapshot_id": snapshot_id,
                  "comparison_snapshot_id": comparison_snapshot_id, "table": table, "feature": feature,
                  "features": list(features), "population_fingerprint": population_fingerprint,
                  "target_fingerprint": target_fingerprint, "methodology_fingerprint": methodology_fingerprint,
                  "scope": scope, "owner_id": owner_id, "workflow_id": workflow_id,
                  "source_artifacts": list(refs), "identity_inputs": identity_inputs or {}}
-        return {key: value[key] for key in _IDENTITY_FIELDS}
+        identity = {key: value[key] for key in _IDENTITY_FIELDS}
+        # Keep historical fingerprints stable when no external governed
+        # dependency exists; pinned dependencies are identity-bearing.
+        if governed_refs:
+            # Usage-instance details (for example a retrieval-manifest ID)
+            # remain in provenance metadata but do not defeat exact reuse.
+            identity["governed_references"] = [{
+                key: ref[key] for key in (
+                    "reference_type", "target_id", "role", "target_version",
+                    "content_hash", "namespace_id",
+                ) if key in ref
+            } for ref in governed_refs]
+        return identity
 
     @staticmethod
     def _validate_identity(value: dict[str, Any]) -> None:
@@ -141,13 +200,15 @@ class AnalysisArtifactRepository:
                    methodology_fingerprint: str, scope: str, workflow_id: str | None,
                    source_artifact_ids: tuple[str, ...] = (), owner_id: str | None = None, table: str | None = None,
                    features: tuple[str, ...] = (), source_artifacts: tuple[dict[str, Any], ...] | None = None,
-                   identity_inputs: dict[str, Any] | None = None) -> AnalysisArtifactMetadata | None:
+                   identity_inputs: dict[str, Any] | None = None,
+                   governed_references: tuple[dict[str, Any], ...] | None = None) -> AnalysisArtifactMetadata | None:
         refs = self._source_refs(source_artifact_ids, source_artifacts)
+        governed_refs = self._governed_refs(governed_references)
         identity = self._identity(artifact_type=artifact_type, asset_id=asset_id, snapshot_id=snapshot_id,
             comparison_snapshot_id=comparison_snapshot_id, population_fingerprint=population_fingerprint,
             target_fingerprint=target_fingerprint, feature=feature, methodology_fingerprint=methodology_fingerprint,
             scope=scope, workflow_id=workflow_id, owner_id=owner_id, table=table, features=features, refs=refs,
-            identity_inputs=identity_inputs)
+            identity_inputs=identity_inputs, governed_refs=governed_refs)
         row = db.query_one("analysis_artifacts", identity_fingerprint=stable_fingerprint(identity), status="active")
         if row:
             return self._metadata(row)
@@ -209,7 +270,7 @@ class AnalysisArtifactRepository:
             "version", "artifact_schema_version", "comparison_snapshot_id",
             "target_fingerprint", "feature", "workflow_id", "owner_id", "table",
             "features", "source_artifact_ids", "source_artifacts", "identity_inputs",
-            "run_id", "created_by",
+            "run_id", "created_by", "governed_references",
         }
         unknown = set(values) - allowed
         if unknown:
@@ -217,6 +278,8 @@ class AnalysisArtifactRepository:
         version = bool(values.get("version", False))
         schema_version = int(values.get("artifact_schema_version", 1))
         refs = self._source_refs(values.get("source_artifact_ids", ()), values.get("source_artifacts"))
+        governed_refs = self._governed_refs(values.get("governed_references"), values.get("run_id"))
+        identity_governed_refs = governed_refs if "governed_references" in values else ()
         identity = self._identity(
             artifact_type=values["artifact_type"], asset_id=values["asset_id"],
             snapshot_id=values["snapshot_id"],
@@ -226,7 +289,7 @@ class AnalysisArtifactRepository:
             methodology_fingerprint=values["methodology_fingerprint"], scope=values["scope"],
             workflow_id=values.get("workflow_id"), owner_id=values.get("owner_id"),
             table=values.get("table"), features=tuple(values.get("features", ())), refs=refs,
-            identity_inputs=values.get("identity_inputs"),
+            identity_inputs=values.get("identity_inputs"), governed_refs=identity_governed_refs,
         )
         self._validate_identity(identity)
         source_rows: dict[str, dict[str, Any]] = {}
@@ -261,6 +324,8 @@ class AnalysisArtifactRepository:
                     methodology_fingerprint=values["methodology_fingerprint"], scope=values["scope"],
                     workflow_id=values.get("workflow_id"),
                     source_artifact_ids=tuple(values.get("source_artifact_ids", ())),
+                    governed_references=(governed_refs
+                                           if "governed_references" in values else None),
                 )
                 existing = None if existing_metadata is None else {
                     "_metadata": existing_metadata,
@@ -287,6 +352,7 @@ class AnalysisArtifactRepository:
             "payload_media_type": "application/json", "payload_filename": relative_path,
             "status": "active", "source_artifact_ids_json": [ref["artifact_id"] for ref in refs],
             "source_artifacts_json": list(refs),
+            "governed_references_json": list(governed_refs),
             "identity_fingerprint": None if version else fingerprint, "identity_json": identity,
             "schema_version": schema_version, "summary_json": summary,
             "summary_adapter_version": adapter_version, "integrity_status": "verified",
@@ -438,6 +504,7 @@ class AnalysisArtifactRepository:
              owner_id: str | None = None, table: str | None = None, features: tuple[str, ...] = (),
              source_artifact_ids: tuple[str, ...] = (), source_artifacts: tuple[dict[str, Any], ...] | None = None,
              identity_inputs: dict[str, Any] | None = None, run_id: str | None = None,
+             governed_references: tuple[dict[str, Any], ...] | None = None,
              created_by: str | None = None,
              precommit_guard: Callable[[], None] | None = None) -> ArtifactSaveOutcome:
         # A fenced worker must be checked even when this is an exact-reuse
@@ -445,11 +512,13 @@ class AnalysisArtifactRepository:
         # repeated immediately before the durable write below.
         _run_precommit_guard(precommit_guard)
         refs = self._source_refs(source_artifact_ids, source_artifacts)
+        governed_refs = self._governed_refs(governed_references, run_id)
+        identity_governed_refs = governed_refs if governed_references is not None else ()
         identity = self._identity(artifact_type=artifact_type, asset_id=asset_id, snapshot_id=snapshot_id,
             comparison_snapshot_id=comparison_snapshot_id, population_fingerprint=population_fingerprint,
             target_fingerprint=target_fingerprint, feature=feature, methodology_fingerprint=methodology_fingerprint,
             scope=scope, workflow_id=workflow_id, owner_id=owner_id, table=table, features=features, refs=refs,
-            identity_inputs=identity_inputs)
+            identity_inputs=identity_inputs, governed_refs=identity_governed_refs)
         self._validate_identity(identity)
         source_types = self._validate_sources(refs)
         validate_identity_contract(
@@ -475,7 +544,9 @@ class AnalysisArtifactRepository:
             legacy = self.find_exact(artifact_type=artifact_type, asset_id=asset_id, snapshot_id=snapshot_id,
                 comparison_snapshot_id=comparison_snapshot_id, population_fingerprint=population_fingerprint,
                 target_fingerprint=target_fingerprint, feature=feature, methodology_fingerprint=methodology_fingerprint,
-                scope=scope, workflow_id=workflow_id, source_artifact_ids=source_artifact_ids)
+                scope=scope, workflow_id=workflow_id, source_artifact_ids=source_artifact_ids,
+                governed_references=(governed_refs
+                                      if governed_references is not None else None))
             if legacy:
                 if legacy.payload_hash != payload_hash:
                     raise ArtifactConflictError("identical legacy artifact identity has a different payload hash")
@@ -494,6 +565,7 @@ class AnalysisArtifactRepository:
             "payload_filename": relative_path, "status": "active",
             "source_artifact_ids_json": [ref["artifact_id"] for ref in refs],
             "source_artifacts_json": list(refs), "identity_fingerprint": None if version else fingerprint,
+            "governed_references_json": list(governed_refs),
             "identity_json": identity, "schema_version": artifact_schema_version, "summary_json": summary,
             "summary_adapter_version": adapter_version, "integrity_status": "verified", "integrity_checked_at": db.now_ist(),
             "run_id": run_id, "created_by": created_by, "created_at": db.now_ist(), "superseded_at": None,
@@ -533,6 +605,7 @@ class AnalysisArtifactRepository:
                   source_artifacts: tuple[dict[str, Any], ...] | None = None,
                   identity_inputs: dict[str, Any] | None = None,
                   run_id: str | None = None,
+                  governed_references: tuple[dict[str, Any], ...] | None = None,
                   created_by: str | None = None) -> ArtifactSaveOutcome:
         """Persist an immutable non-JSON payload with a governed JSON summary.
 
@@ -551,6 +624,8 @@ class AnalysisArtifactRepository:
         if descriptor is not None and not descriptor.allows_blob_payload:
             raise ValueError(f"artifact type {artifact_type!r} does not allow blob payloads")
         refs = self._source_refs(source_artifact_ids, source_artifacts)
+        governed_refs = self._governed_refs(governed_references, run_id)
+        identity_governed_refs = governed_refs if governed_references is not None else ()
         identity = self._identity(
             artifact_type=artifact_type, asset_id=asset_id, snapshot_id=snapshot_id,
             comparison_snapshot_id=comparison_snapshot_id,
@@ -559,6 +634,7 @@ class AnalysisArtifactRepository:
             methodology_fingerprint=methodology_fingerprint, scope=scope,
             workflow_id=workflow_id, owner_id=owner_id, table=table,
             features=features, refs=refs, identity_inputs=identity_inputs,
+            governed_refs=identity_governed_refs,
         )
         self._validate_identity(identity)
         source_types = self._validate_sources(refs)
@@ -603,6 +679,7 @@ class AnalysisArtifactRepository:
             "payload_filename": safe_filename, "status": "active",
             "source_artifact_ids_json": [ref["artifact_id"] for ref in refs],
             "source_artifacts_json": list(refs),
+            "governed_references_json": list(governed_refs),
             "identity_fingerprint": None if version else fingerprint,
             "identity_json": identity, "schema_version": artifact_schema_version,
             "summary_json": summary, "summary_adapter_version": adapter_version,
@@ -647,7 +724,8 @@ class AnalysisArtifactRepository:
                 "artifact_type", "asset_id", "snapshot_id", "comparison_snapshot_id",
                 "population_fingerprint", "target_fingerprint", "feature",
                 "methodology_fingerprint", "scope", "workflow_id",
-            )}, source_artifact_ids=kwargs.get("source_artifact_ids", ()))
+            )}, source_artifact_ids=kwargs.get("source_artifact_ids", ()),
+                governed_references=kwargs.get("governed_references"))
             if existing is None:
                 raise
             return existing, True
@@ -716,7 +794,9 @@ class AnalysisArtifactRepository:
         needle = (feature_query or "").strip().lower()
         return [row for row in rows if needle in (row.feature or "").lower()] if needle else rows
 
-    def page(self, *, limit: int = 50, offset: int = 0, **filters: Any) -> dict[str, Any]:
+    def page(self, *, limit: int = 50, offset: int = 0,
+             exclude_artifact_types: Iterable[str] | None = None,
+             **filters: Any) -> dict[str, Any]:
         limit, offset = max(1, min(int(limit), 200)), max(0, int(offset))
         feature_query = str(filters.pop("feature_query", "") or "").strip()
         values = {key: value for key, value in filters.items() if value is not None}
@@ -724,6 +804,7 @@ class AnalysisArtifactRepository:
             "analysis_artifacts", limit=limit, offset=offset,
             order_by=(("created_at", "DESC"), ("artifact_id", "DESC")),
             contains={"feature": feature_query} if feature_query else None,
+            exclude_values={"artifact_type": tuple(exclude_artifact_types or ())},
             **values,
         )
         return {"artifacts": [self._metadata(row).to_dict() for row in rows],
@@ -759,7 +840,11 @@ class AnalysisArtifactRepository:
     def impact(self, artifact_id: str) -> list[AnalysisArtifactMetadata]: return self.dependants(artifact_id)
 
     def lineage(self, artifact_id: str, *, limit: int = 200) -> dict[str, Any]:
-        return {"artifact": self.get_metadata(artifact_id).to_dict(), "ancestors": [r.to_dict() for r in self.ancestors(artifact_id, limit=limit)], "dependants": [r.to_dict() for r in self.dependants(artifact_id, transitive=True, limit=limit)]}
+        artifact = self.get_metadata(artifact_id)
+        return {"artifact": artifact.to_dict(),
+                "governed_references": list(artifact.governed_references),
+                "ancestors": [r.to_dict() for r in self.ancestors(artifact_id, limit=limit)],
+                "dependants": [r.to_dict() for r in self.dependants(artifact_id, transitive=True, limit=limit)]}
 
     def overview(self, *, asset_id: str | None = None, snapshot_id: str | None = None) -> dict[str, Any]:
         rows = self.list(asset_id=asset_id, snapshot_id=snapshot_id); active = [r for r in rows if r.status == "active"]
@@ -767,21 +852,65 @@ class AnalysisArtifactRepository:
         warnings = [r for r in rows if r.integrity_status not in {"verified", "unknown"}]
         return {"active_artifacts": len(active), "universal_artifacts": sum(r.scope == "universal" for r in active), "diagnostic_local_artifacts": sum(r.scope == "diagnostic_local" for r in active), "workflow_local_artifacts": sum(r.scope == "workflow_local" for r in active), "superseded_artifacts": sum(r.status == "superseded" for r in rows), "retained_runs": len(runs), "represented_features": len({r.feature for r in rows if r.feature}), "artifact_types": len({r.artifact_type for r in rows}), "represented_snapshots": len({r.snapshot_id for r in rows}), "latest_creation_time": rows[0].created_at if rows else None, "integrity_status": "warning" if warnings else "healthy", "integrity_warnings": len(warnings)}
 
-    def integrity_audit(self, *, limit: int = 200) -> dict[str, Any]:
+    def integrity_audit(self, *, limit: int = 200, complete: bool = False) -> dict[str, Any]:
+        """Read-only catalogue, payload, and lineage consistency check.
+
+        ``get()`` deliberately updates an artifact's last integrity state, so
+        this audit does not call it.  That keeps pre-wipe and operator health
+        checks observational while still validating bytes and JSON content.
+        """
         all_rows = self.list()
         audit_limit = max(1, min(limit, 1000))
-        rows, issues = all_rows[:audit_limit], []
+        rows = all_rows if complete else all_rows[:audit_limit]
+        issues: list[dict[str, str]] = []
         for row in rows:
-            try: self.get(row.artifact_id)
-            except ArtifactIntegrityError as exc: issues.append({"artifact_id": row.artifact_id, "reason": str(exc)})
+            try:
+                payload_path = self._payload_path(row)
+                payload_bytes = payload_path.read_bytes()
+                if hashlib.sha256(payload_bytes).hexdigest() != row.payload_hash:
+                    raise ArtifactIntegrityError(
+                        f"Artifact {row.artifact_id!r} payload hash does not match metadata"
+                    )
+                if row.payload_media_type == "application/json":
+                    json.loads(payload_bytes)
+            except FileNotFoundError:
+                issues.append({"artifact_id": row.artifact_id, "reason": "payload_missing"})
+            except json.JSONDecodeError:
+                issues.append({"artifact_id": row.artifact_id, "reason": "payload_invalid_json"})
+            except ArtifactIntegrityError as exc:
+                issues.append({"artifact_id": row.artifact_id, "reason": str(exc)})
         # Orphan detection must compare against the complete catalogue even
         # when payload verification itself is bounded. Otherwise every valid
         # payload after the audit window is reported as an orphan.
         referenced = {r.payload_path for r in all_rows}
-        orphans = [p.name for p in self.root.resolve().glob("*.json") if p.name not in referenced][:audit_limit]
-        return {"checked": len(rows), "issues": issues, "orphan_payload_files": orphans,
-                "status": "warning" if issues or orphans else "healthy",
-                "bounded": len(all_rows) > audit_limit}
+        actual_files = [
+            path for path in self.root.resolve().rglob("*")
+            if path.is_file() and not path.name.startswith(".")
+        ]
+        orphans = [
+            str(path.relative_to(self.root.resolve())).replace("\\", "/")
+            for path in actual_files
+            if str(path.relative_to(self.root.resolve())).replace("\\", "/") not in referenced
+        ][:audit_limit]
+
+        artifact_ids = {row.artifact_id for row in all_rows}
+        source_edges = db.query("analysis_artifact_sources")
+        lineage_issues = [
+            {"artifact_id": edge["artifact_id"], "source_artifact_id": edge["source_artifact_id"],
+             "reason": "artifact_missing" if edge["artifact_id"] not in artifact_ids
+             else "source_artifact_missing"}
+            for edge in source_edges
+            if edge["artifact_id"] not in artifact_ids or edge["source_artifact_id"] not in artifact_ids
+        ][:audit_limit]
+        result = {
+            "catalogue_total": len(all_rows), "checked": len(rows), "issues": issues,
+            "lineage_issues": lineage_issues, "orphan_payload_files": orphans,
+            "status": "warning" if issues or orphans else "healthy",
+            "bounded": not complete and len(all_rows) > audit_limit,
+        }
+        if lineage_issues:
+            result["status"] = "warning"
+        return result
 
     def _supersede_in_transaction(self, conn: Any, artifact_id: str, *, by_artifact_id: str | None = None,
                                    actor: str | None = None) -> None:

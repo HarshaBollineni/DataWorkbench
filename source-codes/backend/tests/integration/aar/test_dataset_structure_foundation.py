@@ -70,6 +70,29 @@ def _active_artifacts(snapshot_id: str, kind: str) -> list:
     return AnalysisArtifactRepository().list(snapshot_id=snapshot_id, artifact_type=kind, status="active")
 
 
+def _add_profiled_table(source_snapshot, table: str, columns: tuple[str, ...]) -> None:
+    now = db.now_ist()
+    db.insert("dq_item_tables", {
+        "item_id": source_snapshot.snapshot_id, "table_name": table, "row_count": 3,
+        "col_count": len(columns), "columns": list(columns),
+    })
+    for column in columns:
+        role = "Identifier" if column.endswith("_id") else "Feature"
+        db.insert("variable_inventory", {
+            "item_id": source_snapshot.snapshot_id, "table_name": table,
+            "column_name": column, "classification": "categorical",
+            "data_type": "string", "description": "", "discrepancies": [],
+            "notes": "", "role": role, "role_reviewed": 1,
+            "profile_json": {
+                "calculation_method": "exact",
+                "profile_basis": "confirmed_regular_values",
+                "total_count": 3, "non_null_count": 3, "null_count": 0,
+                "cardinality": 3, "top_k": {"a": 1},
+            },
+            "updated_at": now,
+        })
+
+
 def test_init_schema_adds_snapshot_owner_to_legacy_review_idempotency(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "SYS_DB_PATH", tmp_path / "legacy-system.db")
     with db.get_conn() as conn:
@@ -133,6 +156,48 @@ def test_complete_profile_publication_enqueues_once_and_exact_generation_reuses(
     same, created = jobs.enqueue(source_snapshot.snapshot_id)
     assert not created and same["job_id"] == rows[0]["job_id"]
     assert len(db.query("dataset_structure_materialization_jobs", snapshot_id=source_snapshot.snapshot_id)) == 1
+
+
+def test_profile_publication_rejects_incomplete_multitable_inventory(source_snapshot):
+    db.insert("dq_item_tables", {
+        "item_id": source_snapshot.snapshot_id, "table_name": "customers",
+        "row_count": 3, "col_count": 2, "columns": ["customer_id", "segment"],
+    })
+    with pytest.raises(ValueError, match="customers: missing customer_id,segment"):
+        persist_snapshot_profile_artifacts(source_snapshot.snapshot_id, actor="test")
+    assert not _active_artifacts(source_snapshot.snapshot_id, "column_profile")
+    assert db.query_one(
+        "dataset_structure_profile_publications", snapshot_id=source_snapshot.snapshot_id
+    ) is None
+
+
+def test_multitable_publication_and_schema_materialization_cover_every_sourced_column(source_snapshot):
+    _add_profiled_table(source_snapshot, "customers", ("customer_id", "segment"))
+    persist_snapshot_profile_artifacts(source_snapshot.snapshot_id, actor="test")
+    repo = AnalysisArtifactRepository()
+    columns = {
+        (artifact.identity.get("table"), artifact.feature)
+        for artifact in _active_artifacts(source_snapshot.snapshot_id, "column_profile")
+    }
+    assert columns == {
+        ("observations", "facility_id"), ("observations", "period"),
+        ("customers", "customer_id"), ("customers", "segment"),
+    }
+    assert {artifact.identity.get("table") for artifact in _active_artifacts(
+        source_snapshot.snapshot_id, "table_profile"
+    )} == {"observations", "customers"}
+
+    observe_dataset_structure(
+        repo, source_snapshot.snapshot_id, tables=["observations", "customers"],
+        predicates=["table.physical/schema_column"], created_by="multitable-test",
+    )
+    assertions = []
+    for artifact in _active_artifacts(source_snapshot.snapshot_id, "dataset_structure_assertion"):
+        _metadata, payload = repo.get(artifact.artifact_id)
+        if payload["predicate"] == "table.physical/schema_column":
+            column = payload["claims"][0]["value"]["column"]
+            assertions.append((column["table"], column["column"]))
+    assert set(assertions) == columns
 
 
 def test_materialization_orders_dependencies_before_cadence(source_snapshot, monkeypatch):

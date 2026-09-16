@@ -45,6 +45,9 @@
     "kb_sections": { "label": "knowledge-base documents", "group": "yourWork" },
     "kb_rules": { "label": "knowledge-base documents", "group": "yourWork" },
     "kb_retrieval_manifests": { "label": "knowledge-base documents", "group": "yourWork" },
+    "row_completeness_knowledge": { "label": "knowledge-base documents", "group": "platform" },
+    "directionality_knowledge": { "label": "knowledge-base documents", "group": "platform" },
+    "value_semantics_knowledge": { "label": "knowledge-base documents", "group": "platform" },
 
     "plan_v2": { "label": "test results and findings", "group": "yourWork" },
     "results_v2": { "label": "test results and findings", "group": "yourWork" },
@@ -80,6 +83,7 @@
     "dataset_structure_review_idempotency": { "label": "saved workflow context", "group": "yourWork" },
     "dataset_structure_review_drafts": { "label": "saved workflow context", "group": "yourWork" },
     "dataset_structure_review_states": { "label": "saved workflow context", "group": "yourWork" },
+    "dataset_structure_review_decision_batches": { "label": "saved workflow context", "group": "yourWork" },
 
     "schedules": { "label": "scheduled tasks and alerts", "group": "yourWork" },
     "notifications": { "label": "scheduled tasks and alerts", "group": "yourWork" },

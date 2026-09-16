@@ -98,8 +98,7 @@ def _real_reset_keys() -> set[str]:
     # wipe_all_items() — full-wipe grade's extra static lists
     # (system_db.py:1340-1353).
     keys.update({
-        "kb_retrieval_manifests", "kb_rules", "kb_sections",
-        "kb_document_versions", "kb_documents",
+        "kb_retrieval_manifests",
         "test_library", "agent_skills", "dq_framework_areas",
         "dq_framework_families", "fw_areas", "fw_tests", "fw_family_weights",
         "diagnostic_register", "framework_taxonomy", "framework_test_areas",
@@ -109,7 +108,8 @@ def _real_reset_keys() -> set[str]:
     })
     # wipe_all_items()'s own reseed dict (system_db.py:1365-1370).
     keys.update({"agent_skills", "dq_framework", "framework_register",
-                 "platform_and_taxonomy"})
+                 "platform_and_taxonomy", "row_completeness_knowledge",
+                 "directionality_knowledge", "value_semantics_knowledge"})
     return keys
 
 

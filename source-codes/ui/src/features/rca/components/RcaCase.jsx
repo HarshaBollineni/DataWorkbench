@@ -8,6 +8,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import RcaSourceEvidence from "@/features/rca/components/RcaSourceEvidence";
+import { formatDisplayNumber } from "@/lib/numberFormat";
 import {
   approveRcaConclusion, composeRcaHypothesis, continueRcaFromInitialReview, createRcaCase, getRcaCase,
   proposeRcaReusableKnowledge,
@@ -65,7 +66,7 @@ function StagePath({ current, complete, onSelect }) {
 function displayValue(value) {
   if (value == null || value === "") return "Not available";
   if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (typeof value === "number") return Number.isInteger(value) ? value.toLocaleString() : value.toFixed(4);
+  if (typeof value === "number") return formatDisplayNumber(value, { fallback: "Not available" });
   if (Array.isArray(value)) return value.join(", ");
   return String(value).replaceAll("_", " ");
 }

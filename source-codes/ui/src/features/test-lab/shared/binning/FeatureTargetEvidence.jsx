@@ -4,8 +4,9 @@ import { AlertTriangle, Check, ChevronDown, ChevronRight, Minus, Plus, Redo2, Ro
 import { createNumericDiagnosticBinningOverrideV2, getDiagnosticBinningImpactV2, previewDiagnosticBinningV2, reviewDiagnosticBinningV2 } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { formatBinRows } from "@/features/test-lab/shared/binning/binLabelDisplay";
+import { formatDisplayNumber } from "@/lib/numberFormat";
 
-const fmt = (value, digits = 4) => value == null ? "—" : Number(value).toFixed(digits);
+const fmt = (value, digits = 3) => formatDisplayNumber(value, { maximumFractionDigits: digits });
 const pct = (value) => value == null ? "—" : `${(Number(value) * 100).toFixed(2)}%`;
 const partitionKey = (definition) => JSON.stringify([
   definition?.numeric_splits || [], definition?.categorical_groups || [],

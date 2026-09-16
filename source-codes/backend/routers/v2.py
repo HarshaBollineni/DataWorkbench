@@ -15,6 +15,7 @@ from routers.diagnostics import (
     build_diagnostic_manifest,
     diagnostic_binning_impact,
     create_numeric_diagnostic_binning_override,
+    diagnostic_result_detail,
     diagnostic_results,
     diagnostic_run_history,
     diagnostic_run_report,

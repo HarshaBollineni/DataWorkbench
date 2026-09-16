@@ -25,7 +25,7 @@ function ResetAction({ grade, phrase, title, description, actionLabel, completeL
   return <div className="space-y-3 rounded-lg border border-red-200 bg-white p-4">
     <h3 className="text-sm font-semibold text-slate-800">{title}</h3><p className="text-sm text-slate-600">{description}</p>
     {error && <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>}
-    {result && <div className="rounded border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">{completeLabel} {summarizeReset(result.deleted).sentence}</div>}
+    {result && <div className="rounded border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700"><p>{completeLabel} {summarizeReset(result.deleted).sentence}</p>{result.protected?.length > 0 && <p className="mt-1 text-xs"><strong>Preserved:</strong> {result.protected.join(", ")}.</p>}{result.knowledge_baseline?.baseline_fingerprint && <p className="mt-1 text-xs"><strong>KB baseline verified:</strong> {result.knowledge_baseline.document_count} documents, {result.knowledge_baseline.version_count} versions, fingerprint <span className="font-mono">{result.knowledge_baseline.baseline_fingerprint.slice(0, 12)}</span>.</p>}</div>}
     <div className="flex items-end gap-3"><div className="space-y-1.5"><Label htmlFor={`${grade}-confirm-input`} className="text-xs font-semibold text-slate-600">Type {phrase} to confirm</Label><Input id={`${grade}-confirm-input`} value={confirmText} onChange={(event) => setConfirmText(event.target.value)} placeholder={phrase} className="max-w-xs" /></div><Button variant="destructive" disabled={confirmText !== phrase || busy || !ready} onClick={run}>{busy ? (grade === "wipe" ? "Wiping…" : "Resetting…") : actionLabel}</Button></div>
   </div>;
 }
@@ -124,6 +124,6 @@ export default function DangerZone() {
     <DevelopmentResetAction />
     <DiagnosticsResetAction />
     <ResetAction grade="surgical" phrase="RESET" title="Surgical reset" actionLabel="Surgical reset" completeLabel="Surgical reset complete." description="Removes every assessment item and everything derived from it — test plans, results, scores, issues, RCA cases, item-level tags, and uploaded files. Preserves user accounts, the taxonomy, and the knowledge base." />
-    <ResetAction grade="wipe" phrase="WIPE EVERYTHING" title="Full wipe" actionLabel="Full wipe" completeLabel="Full wipe complete." description="Blank slate: everything the surgical reset removes, plus the knowledge base, every ingested data source, and every platform reference table (immediately re-seeded, so the app stays usable). Only user accounts, active sessions, the audit trail, and feature flags survive." />
+    <ResetAction grade="wipe" phrase="WIPE EVERYTHING" title="Full operational wipe" actionLabel="Full operational wipe" completeLabel="Full operational wipe complete." description="Removes all sourced datasets and generated work: DSC state, diagnostic runs and results, AAR evidence, issues, RCA cases, uploads, and run-specific KB retrieval history. Governed Knowledge Base documents, versions, rules, packages, and source files are preserved so diagnostics remain executable. Platform reference data is immediately re-seeded; users, active sessions, the audit trail, and feature flags also survive." />
   </CardContent></Card>;
 }

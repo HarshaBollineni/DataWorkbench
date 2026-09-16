@@ -109,8 +109,13 @@ def _display(value: dict[str, Any], kind: str) -> str:
     return "Observed cadence: " + cadence.replace("_", " ")
 
 
-def _aggregate(payload: dict[str, Any]) -> dict[str, Any]:
+def _aggregate(payload: dict[str, Any], claim: dict[str, Any] | None = None) -> dict[str, Any]:
     evidence = payload.get("evidence") if isinstance(payload.get("evidence"), list) else []
+    evidence_ids = claim.get("evidence_ids") if isinstance(claim, dict) else None
+    if isinstance(evidence_ids, list):
+        referenced = {value for value in evidence_ids if isinstance(value, str)}
+        evidence = [item for item in evidence
+                    if isinstance(item, dict) and item.get("evidence_id") in referenced]
     usable = total = 0
     measurements: dict[str, int] = {}
     for item in evidence[:8]:
@@ -141,7 +146,7 @@ def _candidate(metadata: Any, payload: dict[str, Any], kind: str) -> dict[str, A
     warnings = sorted(code for code in (resolution.get("reason_codes") or []) if code in _WARNING_CODES)
     identity = {"artifact": metadata.artifact_id, "assertion": payload.get("assertion_id"),
                 "payload": metadata.payload_hash, "dependency": payload.get("dependency_fingerprint"), "kind": kind}
-    label, summary = _display(value, kind), _aggregate(payload)
+    label, summary = _display(value, kind), _aggregate(payload, claim)
     result = {"candidate_id": _token("cand_", identity), "display_label": label, "safe_label": label,
               "predicate": payload["predicate"], "instance_key": payload.get("instance_key", ""),
               "resolution_status": status, "evidence_summary": summary, "evidence": summary,
@@ -299,6 +304,14 @@ def _compatible_row_grain(entity: dict[str, Any] | None, temporal: dict[str, Any
     if not required:
         return None
     return next((grain for grain in grains if required <= _column_refs(grain, "key_columns")), None)
+
+
+def _candidate_sort_key(kind: str, candidate: dict[str, Any]) -> tuple[int, int, str]:
+    temporal_type = str((candidate.get("_value") or {}).get("temporal_type") or "").lower()
+    temporal_rank = ({"period": 0, "date": 1}.get(temporal_type, 2)
+                     if kind == "temporals" else 0)
+    usable = int((candidate.get("evidence") or {}).get("usable_observations") or 0)
+    return temporal_rank, -usable, str(candidate.get("candidate_id") or "")
 
 
 def _upsert_state(item: dict[str, Any], *, state: str, generation: int | None, fingerprint: str,
@@ -522,7 +535,7 @@ def review(item: dict[str, Any]) -> dict[str, Any]:
         public_groups, recommendations = {}, {}
         candidate_limits = {}
         ordered_groups = {kind: sorted(groups.get(kind, []),
-                                       key=lambda c: (-c["evidence"]["usable_observations"], c["candidate_id"]))
+                                       key=lambda candidate: _candidate_sort_key(kind, candidate))
                           for kind in _PREDICATES.values()}
         recommended = {
             "entities": next(iter(ordered_groups["entities"]), None),
@@ -600,13 +613,14 @@ def review_facet(item: dict[str, Any], *, table_id: str, facet: str, q: str | No
         raise DraftInputError("table_id is invalid")
     needle = (q or "").casefold().strip()
     candidates = _artifacts(item).get(table_id, {}).get(facet, [])
-    ordered = sorted(candidates, key=lambda candidate: (-candidate["evidence"]["usable_observations"], candidate["candidate_id"]))
+    ordered = sorted(candidates, key=lambda candidate: _candidate_sort_key(facet, candidate))
+    recommended_id = (ordered[0].get("candidate_id") if ordered and facet in _SELECTABLE else None)
     if needle:
         ordered = [candidate for candidate in ordered if needle in candidate["safe_label"].casefold()]
     total, values = len(ordered), ordered[start:start + limit]
     next_offset = start + len(values)
     return {"table_id": table_id, "facet": facet, "q": q or "", "candidates": [
-                _public_candidate(value, recommended=(start + index == 0 and facet in _SELECTABLE), rank=start + index + 1)
+                _public_candidate(value, recommended=(value.get("candidate_id") == recommended_id), rank=start + index + 1)
                 for index, value in enumerate(values)],
             "page": {"offset": start, "limit": limit, "returned": len(values), "total": total,
                      "next_offset": next_offset if next_offset < total else None,

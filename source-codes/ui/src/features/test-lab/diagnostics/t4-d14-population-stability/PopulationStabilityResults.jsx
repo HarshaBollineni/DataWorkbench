@@ -5,10 +5,11 @@ import { diagnosticReportUrlV2, downloadDiagnosticReportV2 } from "@/api/client"
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatBinLabels, sortPsiBins } from "@/features/test-lab/shared/binning/binLabelDisplay";
+import { formatDisplayNumber } from "@/lib/numberFormat";
 import { FindingStateBadge, IssueLifecycleActions } from "@/pages/testlab/FindingWorkflow";
 import { findingWorkflowState, matchesFindingFilter } from "@/pages/testlab/findingWorkflowState";
 
-const number = (value, digits = 4) => value == null ? "—" : Number(value).toFixed(digits);
+const number = (value, digits = 3) => formatDisplayNumber(value, { maximumFractionDigits: digits });
 const count = (value) => value == null ? "—" : Number(value).toLocaleString();
 const percent = (value) => value == null ? "—" : `${(Number(value) * 100).toFixed(2)}%`;
 
@@ -18,7 +19,7 @@ const categoryStyle = {
   stable: "border-emerald-200 bg-emerald-50 text-emerald-800",
 };
 
-const profileNumber = (value) => value == null ? "—" : Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
+const profileNumber = (value) => formatDisplayNumber(value);
 const readable = (value) => String(value || "—").replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase());
 
 function MetricTile({ icon: Icon, label, value, detail, active, onClick }) {

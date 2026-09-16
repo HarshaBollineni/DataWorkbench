@@ -115,7 +115,7 @@ function TableReview({ itemId, table, selections, onSelection }) {
   </section>;
 }
 
-export default function DatasetStructureReview({ itemId, onReturnToColumns }) {
+export default function DatasetStructureReview({ itemId, onReturnToColumns, onReturnToSourcingHome }) {
   const navigate = useNavigate();
   const [review, setReview] = useState(null);
   const [selections, setSelections] = useState({});
@@ -240,8 +240,8 @@ export default function DatasetStructureReview({ itemId, onReturnToColumns }) {
         {(review.tables || []).map((table) => <TableReview key={table.table} itemId={itemId} table={table} selections={selections[table.table] || {}} onSelection={(key, candidateId) => changeSelection(table.table, key, candidateId)} />)}
         <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-slate-600">{saving ? <><Loader2 className="h-4 w-4 animate-spin" />Saving draft…</> : dirty ? "Draft changes are queued to save." : <><CheckCircle2 className="h-4 w-4 text-emerald-700" />Draft saved. These choices are not confirmed decisions.</>}{saveError && <span className="w-full rounded-md border border-red-200 bg-red-50 p-2 text-red-800" role="alert">{saveError} <Button size="sm" variant="outline" disabled={saving} onClick={() => setSaveAttempt((currentAttempt) => currentAttempt + 1)}>{saving ? "Retrying…" : "Retry save"}</Button></span>}</div>
         <div className="mt-4 rounded-md border border-indigo-200 bg-indigo-50 p-3">
-          <p className="text-sm text-indigo-950">{review.structure_review_state === "confirmed" ? "Dataset structure is confirmed. Open Test Lab to review diagnostic coverage for this sourced snapshot." : "Confirming records these selections as Dataset Structure decisions. It does not run a diagnostic."}</p>
-          {review.structure_review_state === "confirmed" ? <Button className="mt-3" onClick={() => navigate(`/test-lab?item=${encodeURIComponent(itemId)}`)}>Open in Test Lab</Button> : <><Button className="mt-3" disabled={!confirmEnabled} onClick={confirmStructure}>{confirming ? <><Loader2 className="h-4 w-4 animate-spin" />Confirming…</> : "Confirm dataset structure"}</Button>{!confirmEnabled && <p className="mt-2 text-xs text-slate-600">Save pending changes and resolve required selections or metadata warnings before confirmation.</p>}</>}
+          <p className="text-sm text-indigo-950">{review.structure_review_state === "confirmed" ? "Dataset structure is confirmed. Return to Data Sourcing to start another source, or open Test Lab to review this snapshot." : "Confirming records these selections as Dataset Structure decisions. It does not run a diagnostic."}</p>
+          {review.structure_review_state === "confirmed" ? <div className="mt-3 flex flex-wrap gap-2"><Button type="button" onClick={onReturnToSourcingHome}>Return to Data Sourcing home</Button><Button type="button" variant="outline" onClick={() => navigate(`/test-lab?item=${encodeURIComponent(itemId)}`)}>Open in Test Lab</Button></div> : <><Button className="mt-3" disabled={!confirmEnabled} onClick={confirmStructure}>{confirming ? <><Loader2 className="h-4 w-4 animate-spin" />Confirming…</> : "Confirm dataset structure"}</Button>{!confirmEnabled && <p className="mt-2 text-xs text-slate-600">Save pending changes and resolve required selections or metadata warnings before confirmation.</p>}</>}
         </div>
       </>}
       {metadataIncompatible && <div className="mt-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950"><p>Source metadata is incompatible. Your draft is retained while column definitions are corrected.</p><Button className="mt-2" size="sm" variant="outline" onClick={() => onReturnToColumns?.(review.return_to_column_definitions || review.metadata_return || {})}>Return to column definitions</Button></div>}

@@ -193,6 +193,34 @@ and snapshots, ingestion inventory, diagnostic manifests/results/findings,
 issues, RCA cases and audit records, knowledge documents/rules, taxonomy,
 analysis artifacts, usage events, and context memory.
 
+[`backend/persistence_policy.py`](backend/persistence_policy.py) assigns every
+application table one owner and one full-wipe disposition. Full reset validates
+that all sourced/generated work tables are empty before committing, preserves
+the governed Knowledge Base plus the documented identity/audit boundary, and
+reseeds reference and built-in knowledge through the same boot seeders. KB
+versions remain canonical in the knowledge plane; AAR and diagnostic manifests
+pin the exact knowledge version and hashes used by an execution through the
+generic `governed_references` contract. KB lifecycle changes share a versioned
+audit envelope, while boot upgrades and post-wipe recovery record a deterministic
+`knowledge_baseline_verified` fingerprint. The complete
+product lifecycle and compatibility-table boundary are documented in
+[`docs/architecture/product-integration-and-persistence-lifecycle.md`](docs/architecture/product-integration-and-persistence-lifecycle.md).
+
+AAR RBAC is not implemented as part of the MVP integration pass. Its future
+contract keeps mutable users, roles, and grants outside immutable artifact
+identity; `created_by` is provenance and `owner_id` is not authorization.
+Tenant and access enforcement will later be introduced through an additive,
+product-wide policy seam rooted in the authoritative asset/snapshot ownership,
+without changing historical artifact IDs, payload hashes, or lineage. Until
+that review is completed, AAR APIs are not an approved security boundary for
+untrusted multi-tenant exposure.
+
+Ready profile publication is all-or-nothing across the retained physical
+inventory: `dq_item_tables` and `variable_inventory` must agree for every table
+and column before AAR publication can create the DSC completion fence. AAR's
+`GET /api/v2/analysis-artifacts/integrity-audit` endpoint supports bounded
+routine checks and a read-only `complete=true` full-catalogue preflight.
+
 The local SQLite database is snapshotted to `SYSTEM_DB_BACKUP_PATH` when that
 setting is present. Per-item working databases remain on local storage because
 SMB-backed SQLite locking is unsafe; they can be rebuilt from durable uploads.

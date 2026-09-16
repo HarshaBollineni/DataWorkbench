@@ -4,13 +4,14 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import {
   downloadAnalysisArtifactV2, getAnalysisArtifactLineageV2, getAnalysisArtifactOverviewV2, getAnalysisArtifactPayloadV2,
-  getAnalysisArtifactRunsV2, getAnalysisArtifactsV2,
+  getAnalysisArtifactRunsV2, getAnalysisArtifactsV2, getAnalysisArtifactTypesV2,
 } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { ARTIFACT_PAGE_SIZE, ARTIFACT_REPOSITORY_TABS } from "./constants";
 import {
   ArtifactLineage, ArtifactList, RepositoryOverview, RetainedRuns, SavedSchema,
 } from "./ArtifactRepositoryViews";
+import { artifactTypeMap } from "./artifactPresentation";
 
 export default function AnalyticsArtifactRepository() {
   const [params] = useSearchParams();
@@ -22,20 +23,30 @@ export default function AnalyticsArtifactRepository() {
   const [schemaRows, setSchemaRows] = useState([]);
   const [schemaLoading, setSchemaLoading] = useState(false);
   const [artifactsLoading, setArtifactsLoading] = useState(false);
-  const [artifactPage, setArtifactPage] = useState({ offset: 0, total: 0, snapshotId: "", query: "" });
+  const [artifactPage, setArtifactPage] = useState({ offset: 0, total: 0, snapshotId: "", query: "", technical: false });
   const [schemaPage, setSchemaPage] = useState({ offset: 0, total: 0, snapshotId: "" });
   const [runs, setRuns] = useState([]);
   const [selected, setSelected] = useState(null);
   const [lineage, setLineage] = useState(null);
   const [detail, setDetail] = useState(null);
   const [detailPayload, setDetailPayload] = useState(null);
+  const [artifactTypes, setArtifactTypes] = useState({});
+  const [showTechnicalAudit, setShowTechnicalAudit] = useState(false);
   const [error, setError] = useState("");
   const [featureQuery, setFeatureQuery] = useState("");
   const [summaryRefresh, setSummaryRefresh] = useState(0);
   const deferredFeatureQuery = useDeferredValue(featureQuery);
-  const artifactOffset = artifactPage.snapshotId === snapshotId && artifactPage.query === deferredFeatureQuery
+  const artifactOffset = artifactPage.snapshotId === snapshotId
+    && artifactPage.query === deferredFeatureQuery
+    && artifactPage.technical === showTechnicalAudit
     ? artifactPage.offset : 0;
   const schemaOffset = schemaPage.snapshotId === snapshotId ? schemaPage.offset : 0;
+
+  useEffect(() => {
+    getAnalysisArtifactTypesV2()
+      .then((value) => setArtifactTypes(artifactTypeMap(value.artifact_types || [])))
+      .catch((reason) => setError(reason.message));
+  }, []);
 
   useEffect(() => {
     if (!snapshotId) return undefined;
@@ -53,19 +64,23 @@ export default function AnalyticsArtifactRepository() {
   }, [assetId, snapshotId, summaryRefresh]);
 
   useEffect(() => {
-    if (!snapshotId || tab !== "Artifacts") return;
+    if (!snapshotId || tab !== "Evidence & Results") return;
     getAnalysisArtifactsV2({
       asset_id: assetId, snapshot_id: snapshotId, status: "active",
+      presentation: showTechnicalAudit ? "all" : "user",
       feature_query: deferredFeatureQuery, limit: ARTIFACT_PAGE_SIZE, offset: artifactOffset,
     })
       .then((value) => {
         setRows(value.artifacts || []);
-        setArtifactPage({ offset: artifactOffset, total: value.total || 0, snapshotId, query: deferredFeatureQuery });
+        setArtifactPage({
+          offset: artifactOffset, total: value.total || 0, snapshotId,
+          query: deferredFeatureQuery, technical: showTechnicalAudit,
+        });
         setError("");
       })
       .catch((reason) => setError(reason.message))
       .finally(() => setArtifactsLoading(false));
-  }, [artifactOffset, assetId, deferredFeatureQuery, snapshotId, summaryRefresh, tab]);
+  }, [artifactOffset, assetId, deferredFeatureQuery, showTechnicalAudit, snapshotId, summaryRefresh, tab]);
 
   useEffect(() => {
     if (!snapshotId || tab !== "Saved Schema") return;
@@ -130,7 +145,7 @@ export default function AnalyticsArtifactRepository() {
 
   const selectTab = (name) => {
     if (name === "Saved Schema") setSchemaLoading(true);
-    if (name === "Artifacts") setArtifactsLoading(true);
+    if (name === "Evidence & Results") setArtifactsLoading(true);
     setTab(name);
   };
 
@@ -144,8 +159,8 @@ export default function AnalyticsArtifactRepository() {
     <div className="mb-5 flex flex-wrap gap-2">{ARTIFACT_REPOSITORY_TABS.map((name) => <button key={name} type="button" onClick={() => selectTab(name)} className={`rounded-full border px-3 py-1.5 text-sm font-medium ${tab === name ? "border-dq-purple bg-dq-purple text-dq-dark" : "border-slate-200 bg-white text-slate-600"}`}>{name}</button>)}</div>
     {tab === "Overview" && <RepositoryOverview overview={overview} />}
     {tab === "Saved Schema" && <SavedSchema rows={schemaRows} loading={schemaLoading} page={{ ...schemaPage, offset: schemaOffset }} onPageChange={(offset) => { setSchemaLoading(true); setSchemaPage((current) => ({ ...current, offset, snapshotId })); }} />}
-    {tab === "Artifacts" && <ArtifactList rows={rows} loading={artifactsLoading} featureQuery={featureQuery} onFeatureQueryChange={(value) => { setArtifactsLoading(true); setFeatureQuery(value); }} onOpen={openLineage} onDetails={showDetails} onDownload={downloadArtifact} detail={detail} detailPayload={detailPayload} onCloseDetails={hideDetails} page={{ ...artifactPage, offset: artifactOffset }} onPageChange={(offset) => { setArtifactsLoading(true); setArtifactPage((current) => ({ ...current, offset, snapshotId, query: deferredFeatureQuery })); }} />}
+    {tab === "Evidence & Results" && <ArtifactList rows={rows} loading={artifactsLoading} featureQuery={featureQuery} onFeatureQueryChange={(value) => { setArtifactsLoading(true); setFeatureQuery(value); }} showTechnicalAudit={showTechnicalAudit} onShowTechnicalAuditChange={(value) => { setArtifactsLoading(true); setShowTechnicalAudit(value); hideDetails(); }} artifactTypes={artifactTypes} onOpen={openLineage} onDetails={showDetails} onDownload={downloadArtifact} detail={detail} detailPayload={detailPayload} onCloseDetails={hideDetails} page={{ ...artifactPage, offset: artifactOffset }} onPageChange={(offset) => { setArtifactsLoading(true); setArtifactPage((current) => ({ ...current, offset, snapshotId, query: deferredFeatureQuery, technical: showTechnicalAudit })); }} />}
     {tab === "Analytical Runs" && <RetainedRuns rows={runs} />}
-    {tab === "Lineage & Impact" && <ArtifactLineage selected={selected} lineage={lineage} onOpen={openLineage} />}
+    {tab === "Lineage & Impact" && <ArtifactLineage selected={selected} lineage={lineage} artifactTypes={artifactTypes} onOpen={openLineage} />}
   </main>;
 }

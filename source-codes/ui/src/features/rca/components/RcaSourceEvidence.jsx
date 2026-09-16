@@ -2,13 +2,14 @@ import { BarChart3, ChevronDown } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { buildRaincloudModel, scaleRaincloudValue } from "@/lib/raincloud";
+import { formatDisplayNumber } from "@/lib/numberFormat";
 import FeatureTargetEvidence from "@/features/test-lab/shared/binning/FeatureTargetEvidence";
 import { PsiPopulationProfile } from "@/features/test-lab/diagnostics/t4-d14-population-stability/PopulationStabilityResults";
 
-const value = (input, digits = 4) => {
+const value = (input) => {
   if (input == null || input === "") return "Not available";
   if (typeof input === "boolean") return input ? "Yes" : "No";
-  if (typeof input === "number") return Number.isInteger(input) ? input.toLocaleString() : input.toLocaleString(undefined, { maximumFractionDigits: digits });
+  if (typeof input === "number") return formatDisplayNumber(input, { fallback: "Not available" });
   if (Array.isArray(input)) return input.join(", ");
   return String(input).replaceAll("_", " ");
 };

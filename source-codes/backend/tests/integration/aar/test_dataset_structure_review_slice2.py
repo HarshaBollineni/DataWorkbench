@@ -163,6 +163,46 @@ def test_row_grain_recommendation_is_compatible_with_entity_and_temporal_default
     assert review._compatible_row_grain(entity, temporal, [entity_only]) is None
 
 
+def test_period_is_preferred_and_drives_a_compatible_row_grain(item, monkeypatch):
+    def candidate(candidate_id, kind, columns, *, temporal_type=None, usable=30_252):
+        predicate = {"entity": "table.structure/entity_binding", "temporal": "table.temporal/temporal_binding",
+                     "grain": "table.structure/row_grain"}[kind]
+        value = {"kind": kind, "key_columns" if kind == "grain" else "columns": [
+            {"table": "observations", "column": column} for column in columns
+        ]}
+        if temporal_type:
+            value["temporal_type"] = temporal_type
+        summary = {"evidence_count": 1, "aggregate_basis": "materialized",
+                   "usable_observations": usable, "total_observations": usable}
+        return {"candidate_id": candidate_id, "display_label": candidate_id, "safe_label": candidate_id,
+                "predicate": predicate, "instance_key": candidate_id, "resolution_status": "proposed",
+                "evidence_summary": summary, "evidence": summary, "warnings": [], "_value": value,
+                "_pin": {"artifact": f"art-{candidate_id}", "payload": f"hash-{candidate_id}",
+                         "dependency": f"dep-{candidate_id}", "kind": kind}}
+
+    entity = candidate("entity", "entity", ["facility_id"])
+    date = candidate("a-date", "temporal", ["maturity_date"], temporal_type="date")
+    period = candidate("z-period", "temporal", ["reporting_quarter"], temporal_type="period")
+    date_grain = candidate("a-date-grain", "grain", ["facility_id", "maturity_date"])
+    period_grain = candidate("z-period-grain", "grain", ["facility_id", "reporting_quarter"])
+    candidates = {"observations": {"entities": [entity], "temporals": [date, period],
+                                    "row_grains": [date_grain, period_grain], "observed_cadences": []}}
+    monkeypatch.setattr(review, "_artifacts", lambda _item: candidates)
+
+    projected = review.review(item)
+    table = projected["tables"][0]
+    assert [row["candidate_id"] for row in table["candidates"]["temporals"]] == ["z-period", "a-date"]
+    assert table["recommendations"]["default_temporal"] == "z-period"
+    assert table["recommendations"]["row_grain"] == "z-period-grain"
+
+    page = review.review_facet(item, table_id="observations", facet="temporals")
+    assert [row["candidate_id"] for row in page["candidates"]] == ["z-period", "a-date"]
+    assert page["candidates"][0]["recommended"] is True
+    date_only = review.review_facet(item, table_id="observations", facet="temporals", q="date")
+    assert [row["candidate_id"] for row in date_only["candidates"]] == ["a-date"]
+    assert date_only["candidates"][0]["recommended"] is False
+
+
 def test_slice2_projection_is_private_idempotent_and_preserves_stale_draft(item, monkeypatch):
     current = {"value": _candidates()}
     monkeypatch.setattr(review, "_artifacts", lambda _item: current["value"])
@@ -311,6 +351,40 @@ def test_candidate_aggregate_exposes_safe_entity_distinctness_counts():
         "evidence_count": 1, "aggregate_basis": "materialized",
         "usable_observations": 4816, "total_observations": 4816,
         "distinct_key_count": 4787, "duplicate_excess_rows": 29,
+    }
+
+
+def test_candidate_summary_uses_only_the_effective_claim_evidence():
+    evidence = [{
+        "evidence_id": f"evidence-{index}",
+        "basis": {"total_count": 30_252, "usable_count": 30_252},
+        "measurements": [
+            {"name": "distinct_key_count", "count": 30_252},
+            {"name": "duplicate_excess_rows", "count": 0},
+        ],
+    } for index in range(8)]
+    payload = {
+        "assertion_id": "assertion-row-grain", "predicate": "table.structure/row_grain",
+        "instance_key": "primary", "dependency_fingerprint": "dependency-row-grain",
+        "resolution": {"status": "observed", "effective_claim_ids": ["claim-period-grain"]},
+        "claims": [{
+            "claim_id": "claim-period-grain",
+            "value": {"kind": "row_grain", "key_columns": [
+                {"table": "observations", "column": "facility_id"},
+                {"table": "observations", "column": "reporting_quarter"},
+            ]},
+            "evidence_ids": ["evidence-7"],
+        }],
+        "evidence": evidence,
+    }
+    metadata = SimpleNamespace(artifact_id="artifact-row-grain", payload_hash="payload-row-grain")
+
+    candidate = review._candidate(metadata, payload, "row_grains")
+
+    assert candidate["evidence_summary"] == {
+        "evidence_count": 1, "aggregate_basis": "materialized",
+        "usable_observations": 30_252, "total_observations": 30_252,
+        "distinct_key_count": 30_252, "duplicate_excess_rows": 0,
     }
 
 

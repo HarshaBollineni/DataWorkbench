@@ -34,7 +34,7 @@ export const deleteUser = (username) =>
 
 // --- Admin factory reset (WSP-08 / D-19, plan Phase 2.9) ---------------------
 // grade: "surgical" (items + derived artefacts; users/taxonomy/KB survive) or
-// "wipe" (blank slate; only users/sessions/audit trail/feature flags survive).
+// "wipe" (operational clean slate; governed knowledge and platform identity survive).
 // confirm must exactly match the phrase the server expects for that grade
 // ("RESET" / "WIPE EVERYTHING") — enforced server-side regardless of the UI.
 export const factoryReset = (grade, confirm, legacyAssetIds = [], legacyRunIds = [], diagnostics = {}) =>
@@ -294,13 +294,16 @@ export const diagnosticRunStreamUrlV2 = (runId) =>
   `${API_BASE}/v2/diagnostics/runs/${encodeURIComponent(runId)}/stream`;
 // Decision-type-shaped results + findings. With no runId, diagnosticId can
 // select that diagnostic's latest completed run rather than the item's latest.
-export const getDiagnosticResultsV2 = (itemId, runId, diagnosticId) => {
+export const getDiagnosticResultsV2 = (itemId, runId, diagnosticId, { includeEvidence = true } = {}) => {
   const params = new URLSearchParams();
   if (runId) params.set("run_id", runId);
   if (diagnosticId != null) params.set("diagnostic_id", diagnosticId);
+  if (!includeEvidence) params.set("include_evidence", "false");
   const query = params.toString();
   return req(`/v2/items/${encodeURIComponent(itemId)}/diagnostics/results${query ? `?${query}` : ""}`);
 };
+export const getDiagnosticResultDetailV2 = (resultId) =>
+  req(`/v2/diagnostics/results/${encodeURIComponent(resultId)}`);
 export const getDiagnosticRunHistoryV2 = (itemId, diagnosticId) =>
   req(`/v2/items/${encodeURIComponent(itemId)}/diagnostics/${encodeURIComponent(diagnosticId)}/runs`);
 // SME disposition (human decision #2): confirm_issue | dismiss. The backend

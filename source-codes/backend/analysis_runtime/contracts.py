@@ -185,6 +185,7 @@ class AnalysisArtifactMetadata:
     summary_adapter_version: str | None = None
     owner_id: str | None = None
     source_artifacts: tuple[dict[str, Any], ...] = ()
+    governed_references: tuple[dict[str, Any], ...] = ()
     integrity_status: str = "unknown"
     integrity_checked_at: str | None = None
     payload_media_type: str = "application/json"
@@ -194,6 +195,7 @@ class AnalysisArtifactMetadata:
         value = asdict(self)
         value["source_artifact_ids"] = list(self.source_artifact_ids)
         value["source_artifacts"] = list(self.source_artifacts)
+        value["governed_references"] = list(self.governed_references)
         return value
 
 

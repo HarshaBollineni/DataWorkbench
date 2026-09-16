@@ -1,3 +1,5 @@
+import { formatDisplayNumber } from "../../lib/numberFormat.js";
+
 export const highConfidenceHeaderMapping = (inspection) => Object.fromEntries(
   (inspection?.fields || [])
     .filter((field) => field.confidence === "high" && field.source_column)
@@ -49,11 +51,12 @@ export function targetProfileFacts(row) {
   const numeric = ["numerical", "numeric", "number", "ordinal", "continuous"].includes(type);
   if (numeric && levels > 2) {
     const range = profile.min != null && profile.max != null
-      ? `${profile.min} → ${profile.max}` : "Not retained";
+      ? `${formatDisplayNumber(profile.min)} → ${formatDisplayNumber(profile.max)}` : "Not retained";
     const p5 = profile.percentiles?.p05 ?? profile.percentiles?.p5;
     const p95 = profile.percentiles?.p95;
-    const span = p5 != null && p95 != null ? `${p5} → ${p95}` : "Not retained";
-    return [["Range", range], ["P5–P95", span], ["Mean", profile.mean != null ? String(profile.mean) : "Not retained"]];
+    const span = p5 != null && p95 != null
+      ? `${formatDisplayNumber(p5)} → ${formatDisplayNumber(p95)}` : "Not retained";
+    return [["Range", range], ["P5–P95", span], ["Mean", formatDisplayNumber(profile.mean, { fallback: "Not retained" })]];
   }
   if (levels === 2) {
     const counts = valueCounts.length ? Object.fromEntries(valueCounts) : (numericZeroOneCounts || {});
@@ -81,6 +84,22 @@ export function temporalProfileEvidence(row) {
       && Number(profile.date_parse_failure_count) === 0
       && profile.min != null && profile.max != null) {
     return { kind: "date", startDate: periodDate(profile.min), endDate: periodDate(profile.max, true) };
+  }
+  const role = String(row?.role || row?.dictionary_role || "").trim().toLowerCase();
+  const values = Object.entries(profile.top_values || profile.top_k || {});
+  const distinct = Number(row?.distinct_count ?? profile.cardinality ?? profile.unique_count ?? 0);
+  const yearMatches = values.map(([value]) => value.match(/^(\d{4})(?:\.0+)?$/));
+  const completeYearSet = role === "period" && Number(row?.role_reviewed) === 1
+    && regular > 0 && distinct > 0 && values.length === distinct
+    && values.reduce((sum, [, count]) => sum + Number(count || 0), 0) === regular
+    && yearMatches.every(Boolean);
+  if (completeYearSet) {
+    const years = yearMatches.map((match) => Number(match[1]));
+    return {
+      kind: "period",
+      startDate: `${Math.min(...years)}-01-01`,
+      endDate: `${Math.max(...years)}-12-31`,
+    };
   }
   return null;
 }

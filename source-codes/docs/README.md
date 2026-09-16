@@ -13,6 +13,7 @@ Current user and technical entry points remain at
 - [`architecture/phase1b-missingness.md`](architecture/phase1b-missingness.md) — missingness investigation design.
 - [`architecture/governed-analytics-artifact-repository.md`](architecture/governed-analytics-artifact-repository.md) — reusable analysis-artifact design.
 - [`architecture/data-sourcing-profiling-aar.md`](architecture/data-sourcing-profiling-aar.md) — end-to-end sourcing, confirmed-special-value profiling, Mermaid flows, and hybrid AAR storage.
+- [`architecture/product-integration-and-persistence-lifecycle.md`](architecture/product-integration-and-persistence-lifecycle.md) — current cross-product ownership, SQLite lifecycle/reset policy, compatibility boundary, and wipe acceptance gates.
 - [`architecture/dataset-structure-context-data-sourcing-review.md`](architecture/dataset-structure-context-data-sourcing-review.md) — planned integrated DSC materialization and resumable Data Sourcing structure review.
 - [`architecture/dataset-structure-context.md`](architecture/dataset-structure-context.md) — shared, evidence-backed dataset structure context and reuse contract.
 - [`architecture/dataset-structure-context-readiness.md`](architecture/dataset-structure-context-readiness.md) — Step 1-b implementation-readiness, reuse assessment, and pre-schema decision gate for DSC.

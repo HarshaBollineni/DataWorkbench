@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CheckCircle2, CircleDot, Clock, Eye, History, Lock, MinusCircle, RotateCw, Trash2 } from "lucide-react";
+import { CheckCircle2, CircleDot, Clock, Eye, History, LoaderCircle, Lock, MinusCircle, RotateCw, Trash2 } from "lucide-react";
 
 import { getDiagnosticRunHistoryV2 } from "@/api/client";
 import { Badge } from "@/components/ui/badge";
@@ -68,7 +68,7 @@ function RunStatus({ status }) {
   return <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase ${style}`}>{status}</span>;
 }
 
-function DiagnosticCard({ card, itemId, onOpenScope, onResumeDraft, onDiscardDraft, discardedRunIds, onViewRun }) {
+function DiagnosticCard({ card, itemId, onOpenScope, onResumeDraft, onDiscardDraft, discardedRunIds, onViewRun, launching }) {
   const hasResults = Boolean(card.last_run);
   const activeRun = (card.recent_runs || []).find((run) => run.status === "running");
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -122,9 +122,11 @@ function DiagnosticCard({ card, itemId, onOpenScope, onResumeDraft, onDiscardDra
           onClick={() => onOpenScope(card.diagnostic_id, card.open_draft)}>
           <RotateCw className="h-4 w-4" /> Re-run
         </Button>}
-        {card.can_run && !hasResults && <Button size="sm" className="w-full"
+        {card.can_run && !hasResults && <Button size="sm" className="w-full" disabled={launching}
+          aria-busy={launching}
           onClick={() => onOpenScope(card.diagnostic_id, card.open_draft)}>
-          Launch workflow
+          {launching && <LoaderCircle className="h-4 w-4 animate-spin" />}
+          {launching ? "Preparing workflow…" : "Launch workflow"}
         </Button>}
         {card.run_count > 0 && <Button size="sm" variant="ghost" className="rounded-full" onClick={toggleHistory}>
           <History className="h-4 w-4" /> {historyOpen ? "Hide history" : "Run history"}
@@ -138,7 +140,10 @@ function DiagnosticCard({ card, itemId, onOpenScope, onResumeDraft, onDiscardDra
           {run.rollup && <p className="mt-1 text-[11px] font-medium text-slate-700">{rollupText(run.rollup)}</p>}
           {(run.status === "running" || run.has_results) && <Button size="sm" variant="outline" className="mt-2" onClick={() => onViewRun(run.run_id, card.diagnostic_id, run.status)}><Eye className="h-3.5 w-3.5" /> {run.status === "running" ? "View progress" : `View ${run.status === "done" ? "results" : "available evidence"}`}</Button>}
           {run.status === "draft" && card.can_run && <div className="mt-2 flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => onResumeDraft(run.run_id, card.diagnostic_id)}><History className="h-3.5 w-3.5" /> Continue setup</Button>
+            <Button size="sm" disabled={launching} onClick={() => onResumeDraft(run.run_id, card.diagnostic_id)}>
+              {launching ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <History className="h-3.5 w-3.5" />}
+              {launching ? "Preparing workflow…" : "Continue setup"}
+            </Button>
             <Button size="sm" variant="outline" onClick={() => onOpenScope(card.diagnostic_id, { ...run, last_saved_at: run.created_at })}><RotateCw className="h-3.5 w-3.5" /> Start new…</Button>
             <Button size="sm" variant="ghost" className="text-red-700 hover:text-red-800" onClick={() => onDiscardDraft(run.run_id, card.diagnostic_id)}><Trash2 className="h-3.5 w-3.5" /> Discard draft</Button>
           </div>}
@@ -176,7 +181,7 @@ function DiagnosticCardError({ card }) {
   </div>;
 }
 
-export default function CoverageBoard({ board, loading, error, onOpenScope, onResumeDraft, onDiscardDraft, discardedRunIds = [], onViewRun }) {
+export default function CoverageBoard({ board, loading, error, onOpenScope, onResumeDraft, onDiscardDraft, discardedRunIds = [], onViewRun, launchingDiagnosticId = null }) {
   if (error) return <div className="rounded-lg border border-red-200 bg-red-50 p-6 text-sm text-red-700">{error}</div>;
   const displayBoard = board || (loading ? {
     item_id: "", cards: BOARD_SKELETON, gap_areas: [],
@@ -225,6 +230,7 @@ export default function CoverageBoard({ board, loading, error, onOpenScope, onRe
                   : <DiagnosticCard key={card.diagnostic_id} card={card} itemId={displayBoard.item_id}
                     onOpenScope={onOpenScope} onResumeDraft={onResumeDraft}
                     onDiscardDraft={onDiscardDraft} discardedRunIds={discardedRunIds}
+                    launching={launchingDiagnosticId === card.diagnostic_id}
                     onViewRun={onViewRun} />)}
             </div>
           </section>

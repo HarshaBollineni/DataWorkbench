@@ -200,6 +200,44 @@ class KbLifecycleTests(unittest.TestCase):
         import hashlib
         self.assertEqual(version["original_sha256"], hashlib.sha256(content).hexdigest())
 
+    def test_kb_lifecycle_writes_versioned_audit_envelopes(self):
+        upload, preview = self._upload_and_submit(
+            filename=f"audit-{uuid.uuid4().hex}.md", body="## Audit rule\nAudited body.\n",
+        )
+        rule = kb.publish_rule(
+            TENANT, preview["rules"][0]["rule_id"], "tester",
+            roles=EDITOR_ROLES, category="domain_fact",
+        )
+        events = [row for row in s.query("transaction_log")
+                  if (row.get("payload") or {}).get("document_id") == upload["document_id"]]
+        by_name = {row["event"]: row["payload"] for row in events}
+        self.assertIn("knowledge_document_uploaded", by_name)
+        self.assertIn("knowledge_review_submitted", by_name)
+        self.assertIn("knowledge_publish", by_name)
+        published = by_name["knowledge_publish"]
+        self.assertEqual(published["audit_schema_version"], 1)
+        self.assertEqual(published["version_id"], upload["version"]["version_id"])
+        self.assertEqual(published["rule_hash"], rule["rule_hash"])
+        self.assertEqual((published["previous_state"], published["new_state"]),
+                         ("draft", "published"))
+
+    def test_system_kb_baseline_audit_pins_installed_hashes(self):
+        seed_row_completeness_knowledge()
+        seed_directionality_knowledge()
+        seed_value_semantics_knowledge()
+
+        result = kb.audit_knowledge_baseline(
+            reason="test_post_wipe_verification", actor="test", force=True,
+        )
+
+        self.assertTrue(result["audited"])
+        self.assertGreaterEqual(len(result["versions"]), 4)
+        event = s.query("transaction_log", event="knowledge_baseline_verified")[-1]
+        self.assertEqual(event["payload"]["baseline_fingerprint"],
+                         result["baseline_fingerprint"])
+        self.assertEqual(event["payload"]["reason"], "test_post_wipe_verification")
+        self.assertTrue(all(row["content_hash"] for row in event["payload"]["versions"]))
+
     def test_upload_storage_is_content_addressed_dedup(self):
         content = b"## Heading\nIdentical body for dedup test."
         u1 = kb.upload_document(TENANT, "a.md", "text/markdown", content, "domain_fact", "tester")

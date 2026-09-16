@@ -32,6 +32,8 @@ resolver's 0.92 synonym tier (DX-04).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any
 
@@ -451,9 +453,21 @@ def bind_registered_rule(rule_id: str, primitive: str, params: dict[str, Any], a
         "binding_status": "bound", "binding_primitive": primitive,
         "binding_params_json": params, "updated_at": now,
     })
+    params_hash = hashlib.sha256(json.dumps(
+        params, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")).hexdigest()
     s.insert("transaction_log", {"ts": now, "actor": actor, "event": "kb_rule_bound",
-                                 "payload": {"rule_id": rule_id, "primitive": primitive,
-                                             "matched_pattern": params.get("matched_pattern")}})
+                                 "payload": {
+                                     "audit_schema_version": 1,
+                                     "tenant_id": rule.get("tenant_id"),
+                                     "object_type": "knowledge_rule", "object_id": rule_id,
+                                     "rule_id": rule_id, "document_id": rule.get("document_id"),
+                                     "version_id": rule.get("version_id"),
+                                     "rule_hash": rule.get("rule_hash"),
+                                     "previous_state": rule.get("binding_status"),
+                                     "new_state": "bound", "primitive": primitive,
+                                     "binding_params_hash": params_hash,
+                                     "matched_pattern": params.get("matched_pattern")}})
     return s.query_one("kb_rules", rule_id=rule_id)
 
 

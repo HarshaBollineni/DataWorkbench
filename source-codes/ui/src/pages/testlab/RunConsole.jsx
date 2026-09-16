@@ -4,6 +4,7 @@ import { AlertTriangle, ArrowRight, CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import AgentConsole from "@/components/AgentConsole";
 import { diagnosticRunStreamUrlV2 } from "@/api/client";
+import { formatDisplayNumber } from "@/lib/numberFormat";
 import { useAgentStream } from "./stream";
 
 const FEATURE_STAGES = [
@@ -97,7 +98,7 @@ function ProgressPills({ state }) {
   );
 }
 
-const metric = (value, digits = 4) => value == null ? "—" : Number(value).toFixed(digits);
+const metric = (value) => formatDisplayNumber(value);
 
 function ProgressiveFeatureResults({ events, done }) {
   const previews = useMemo(() => {

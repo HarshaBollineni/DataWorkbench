@@ -66,9 +66,14 @@ from seeds import (  # noqa: E402
 )
 
 seed_platform_and_taxonomy()
-seed_row_completeness_knowledge()
-seed_directionality_knowledge()
-seed_value_semantics_knowledge()
+_knowledge_seed_changes = (
+    seed_row_completeness_knowledge()
+    + seed_directionality_knowledge()
+    + seed_value_semantics_knowledge()
+)
+if _knowledge_seed_changes:
+    from kb import audit_knowledge_baseline  # noqa: E402
+    audit_knowledge_baseline(reason="startup_install_or_upgrade")
 # Repair confirmed supporting-analysis observations whose issue rows were
 # removed by the pre-fix retirement migration on an earlier restart.
 from analysis_runtime.runs import repair_confirmed_observation_issues  # noqa: E402

@@ -147,16 +147,37 @@ test("dictionary-backed quarter sourcing infers full calendar bounds and context
   await page.getByRole("button", { name: "Start sourcing" }).click();
   await expect(page.getByText(/Variable inventory is ready/)).toBeVisible();
 
+  const periodColumn = page.getByLabel("Reporting period column (optional)");
+  await expect(periodColumn.locator("option")).toHaveCount(4);
+  expect(await periodColumn.evaluate((element, startId) => Boolean(
+    element.compareDocumentPosition(document.getElementById(startId)) & Node.DOCUMENT_POSITION_FOLLOWING
+  ), "start-date")).toBe(true);
   await expect(page.getByLabel("Start date")).toHaveValue("2006-01-01");
   await expect(page.getByLabel("End date")).toHaveValue("2007-12-31");
-  await expect(page.getByLabel("Reporting period column (optional)")).toHaveValue("reporting_period");
+  await expect(periodColumn).toHaveValue("reporting_period");
+  await expect(periodColumn.locator('option[value="reporting_period"]')).toContainText("Recommended");
+  await expect(page.locator("#snapshot-label")).toHaveValue("2006-01-01 → 2007-12-31");
+  await expect(page.locator("#snapshot-label")).toHaveAttribute("required", "");
   await expect(page.getByLabel("Target variable")).toHaveValue("default_flag");
   await expect(page.getByLabel("Use case", { exact: true })).toContainText("IFRS 9");
   await expect(page.getByLabel("Product", { exact: true })).toContainText("CRE");
 
+  await page.getByLabel("Target variable").selectOption("exposure");
+  const profile = page.getByText("Profile", { exact: true }).locator("..");
+  await expect(profile).toContainText("Range0.822 → 4.437");
+  await expect(profile).toContainText("Mean2.558");
+  await expect(profile).not.toContainText(/\d+\.\d{4,}/);
+
   await page.getByLabel(/I confirm this target/).check();
   await page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" }).click();
   await confirmDatasetStructure(page);
+  await page.goBack();
+  const completedReview = page.getByTestId("upl-step-6");
+  await expect(completedReview.getByText("Dataset structure is confirmed.")).toBeVisible();
+  await completedReview.getByRole("button", { name: "Return to Data Sourcing home" }).click();
+  await expect(page).toHaveURL(/\/data-sourcing$/);
+  await expect(page.getByRole("button", { name: "Create New Database" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Create New Dataset" })).toBeVisible();
 });
 
 test("partially completed sourcing resumes from retained profiling", async ({ page }) => {

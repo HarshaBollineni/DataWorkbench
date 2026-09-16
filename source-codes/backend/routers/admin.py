@@ -195,11 +195,11 @@ def factory_reset(body: FactoryResetRequest, authorization: str | None = Header(
     - ``surgical`` (system_db.reset_demo): items + every derived artefact
       (plans/results/scores/issues/RCA cases/item-keyed tags/uploads) are
       removed; users, taxonomy, and the knowledge base survive.
-    - ``wipe`` (system_db.wipe_all_items): blank slate — everything surgical
-      clears PLUS the knowledge base, all ingested inventory, and every
-      platform seed table (immediately re-seeded so the app stays usable).
-      Only users/sessions, transaction_log, feature_flags, and the schema
-      itself survive a wipe.
+    - ``wipe`` (system_db.wipe_all_items): operational clean slate — everything
+      surgical clears PLUS all ingested inventory and every platform seed
+      table (immediately re-seeded so the app stays usable). Governed KB
+      content and source bytes survive because they are reusable diagnostic
+      inputs, not generated work products.
 
     Requires typing the exact confirm phrase for the requested grade
     (``RESET`` / ``WIPE EVERYTHING``) — a wrong or missing phrase is a 400
@@ -324,10 +324,12 @@ def factory_reset(body: FactoryResetRequest, authorization: str | None = Header(
     s.insert("transaction_log", {
         "ts": _now(), "actor": actor["username"], "event": "factory_reset",
         "payload": {"grade": grade, "deleted": counts, "id_epoch": id_epoch,
-                    "protected": result.get("protected")},
+                    "protected": result.get("protected"),
+                    "knowledge_baseline": result.get("knowledge_baseline")},
     })
     return {"ok": True, "grade": grade, "deleted": counts,
-            "protected": result.get("protected")}
+            "protected": result.get("protected"),
+            "knowledge_baseline": result.get("knowledge_baseline")}
 
 
 # --- 0.5.0 Step 3c (ADM-06/07): asset version history -----------------------
