@@ -2,7 +2,7 @@ import { expect, test } from "./support/test-fixture";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { E2E_API_ORIGIN } from "./support/endpoints";
-import { confirmDatasetStructure } from "./support/dataset-structure";
+import { confirmDatasetStructure, saveStagedStructure } from "./support/dataset-structure";
 import { selectPopoverOption } from "./support/select";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -40,7 +40,8 @@ async function uploadFresh(page, alias, kindButton) {
     await selectPopoverOption(page, "Product");
     await page.getByLabel(/I confirm this target/).check();
   }
-  await page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" }).click();
+  await saveStagedStructure(page);
+  await page.getByTestId("upl-step-6").getByRole("button", { name: "Save and Proceed" }).click();
   await confirmDatasetStructure(page);
 }
 
@@ -85,7 +86,8 @@ test.skip("a full replacement creates a new version on the same asset and retain
   await expect(page.getByText(/This will supersede/)).toBeVisible();
   await page.getByLabel("Snapshot label").fill(`replacement-${Date.now()}`);
   await page.getByText("I understand this distinct full-replacement action.").locator("..").locator('input[type="checkbox"]').check();
-  await page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" }).click();
+  await saveStagedStructure(page);
+  await page.getByTestId("upl-step-6").getByRole("button", { name: "Save and Proceed" }).click();
   await expect(page.getByRole("heading", { name: "Completion summary" })).toBeVisible();
 
   const itemsAfter = await (await request.get(`${API_ORIGIN}/api/v2/items`)).json();
@@ -109,12 +111,13 @@ test("dataset upload can proceed without a target after context confirmation", a
   await page.getByLabel("Target variable").selectOption("");
   await expect(page.getByLabel("Target variable")).toHaveValue("");
   await page.getByLabel("Snapshot label").fill(`snapshot-${alias}`);
-  await expect(page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" })).toBeDisabled();
+  await expect(page.getByTestId("upl-step-6").getByRole("button", { name: "Save and Proceed" })).toBeDisabled();
   await selectPopoverOption(page, "Use case");
   await selectPopoverOption(page, "Product");
   await page.getByLabel(/I confirm this target/).check();
-  await expect(page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" })).toBeEnabled();
-  await page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" }).click();
+  await saveStagedStructure(page);
+  await expect(page.getByTestId("upl-step-6").getByRole("button", { name: "Save and Proceed" })).toBeEnabled();
+  await page.getByTestId("upl-step-6").getByRole("button", { name: "Save and Proceed" }).click();
   await confirmDatasetStructure(page);
   const items = await (await request.get(`${API_ORIGIN}/api/v2/items`)).json();
   const saved = items.find((item) => item.name.endsWith(`-${alias}`));
@@ -169,10 +172,11 @@ test("dictionary-backed quarter sourcing infers full calendar bounds and context
   await expect(profile).not.toContainText(/\d+\.\d{4,}/);
 
   await page.getByLabel(/I confirm this target/).check();
-  await page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" }).click();
+  await saveStagedStructure(page);
+  await page.getByTestId("upl-step-6").getByRole("button", { name: "Save and Proceed" }).click();
   await confirmDatasetStructure(page);
   await page.goBack();
-  const completedReview = page.getByTestId("upl-step-6");
+  const completedReview = page.getByTestId("upl-step-7");
   await expect(completedReview.getByText("Dataset structure is confirmed.")).toBeVisible();
   await completedReview.getByRole("button", { name: "Return to Data Sourcing home" }).click();
   await expect(page).toHaveURL(/\/data-sourcing$/);
@@ -202,7 +206,8 @@ test("partially completed sourcing resumes from retained profiling", async ({ pa
   await selectPopoverOption(page, "Use case", "IFRS 9");
   await selectPopoverOption(page, "Product", "CRE");
   await page.getByLabel(/I confirm this target/).check();
-  await page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" }).click();
+  await saveStagedStructure(page);
+  await page.getByTestId("upl-step-6").getByRole("button", { name: "Save and Proceed" }).click();
   await confirmDatasetStructure(page);
 });
 

@@ -161,12 +161,11 @@ def readiness(item_id: str, diagnostic_id: int, tenant_id: str = "bootstrap") ->
                 "blocked", "confirmed target does not resolve to exactly one profiled table",
                 {"target": target, "tables": target_tables},
             )
-        from domains.test_lab.diagnostics.t1_d02_feature_target_separation.roles import is_eligible_feature
         eligible = [
             row["column_name"] for row in inventory
             if row.get("table_name") == target_tables[0]
             and row.get("column_name") != target
-            and is_eligible_feature(row)
+            and str(row.get("column_name") or "").strip()
         ]
         if not eligible:
             return Readiness(

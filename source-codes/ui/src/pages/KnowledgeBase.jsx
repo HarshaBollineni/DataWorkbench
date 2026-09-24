@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   Archive, BookOpen, Check, FileText, Send, UploadCloud,
@@ -13,9 +13,14 @@ import {
 } from "@/api/client";
 import KbDocumentTagPicker from "@/pages/knowledge-base/KbDocumentTagPicker";
 import DiagnosticPackagesPanel from "@/pages/knowledge-base/DiagnosticPackagesPanel";
-import LearningCandidatesPanel from "@/pages/knowledge-base/LearningCandidatesPanel";
-import KnowledgeBasesPanel from "@/pages/knowledge-base/KnowledgeBasesPanel";
 import { BindingBadge, ParseReportPanel, PlaybackSummary } from "@/pages/knowledge-base/KnowledgeReviewPanels";
+
+const LearningCandidatesPanel = lazy(() => import("@/pages/knowledge-base/LearningCandidatesPanel"));
+const KnowledgeBasesPanel = lazy(() => import("@/pages/knowledge-base/KnowledgeBasesPanel"));
+
+function PanelFallback() {
+  return <div className="rounded-md border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">Loading knowledge workspace…</div>;
+}
 
 // RCA Stage 2 / Phase 5 (docs/0.4.0/04-kb-contract.md) — Knowledge Base
 // module. No LLM ever writes a rule directly: everything here is a human-
@@ -349,7 +354,7 @@ export default function KnowledgeBase() {
         <Button variant={tab === "proposed-changes" ? "default" : "outline"} size="sm" onClick={() => selectTab("proposed-changes")}><FileText className="h-4 w-4" /> Proposed Changes</Button>
         <Button variant={tab === "source-documents" ? "default" : "outline"} size="sm" onClick={() => selectTab("source-documents")}><UploadCloud className="h-4 w-4" /> Source Documents</Button>
       </div>
-      {tab === "knowledge-bases" ? <KnowledgeBasesPanel selectedId={searchParams.get("kb")}
+      <Suspense fallback={<PanelFallback />}>{tab === "knowledge-bases" ? <KnowledgeBasesPanel selectedId={searchParams.get("kb")}
         onSelect={(knowledgeBaseId) => updateLocation({ kb: knowledgeBaseId })}
         onOpenSource={(documentId, versionId) => { setTab("source-documents"); updateLocation({ tab: "source-documents", kb: null, document: documentId, version: versionId }); }} />
         : tab === "source-documents" ? <DocumentsPanel initialDocumentId={searchParams.get("document")}
@@ -358,7 +363,7 @@ export default function KnowledgeBase() {
           ...(documentId !== undefined ? { document: documentId } : {}),
           ...(versionId !== undefined ? { version: versionId } : {}),
         })} />
-        : <LearningCandidatesPanel />}
+        : <LearningCandidatesPanel />}</Suspense>
     </main>
   );
 }

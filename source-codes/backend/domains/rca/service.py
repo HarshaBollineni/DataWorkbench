@@ -37,8 +37,19 @@ import kb
 import system_db as s
 import taxonomy
 import tenancy
+from ai.v2 import issues as issues_service
+from ai import sandbox_capabilities
 from ai.v2 import service as v2_service
+from domains.aar.repository import AnalysisArtifactRepository
+from domains.rca import data_chat, feature_states, investigation_agent, investigation_runtime
 from domains.rca import evidence as rca_evidence
+from domains.rca import initial_review_evidence
+from domains.rca import progress
+
+
+@progress.phase("Loading dataset")
+def _read_analysis_table(*args, **kwargs):
+    return v2_service._read_table(*args, **kwargs)
 
 DEFAULT_TENANT = tenancy.DEFAULT_TENANT
 
@@ -91,7 +102,58 @@ def _id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
+def _diagnostic_analysis_table(issue: dict) -> str:
+    """Resolve the dataset table behind a diagnostic feature-level issue."""
+    run_id = issue.get("run_id")
+    if not run_id and issue.get("finding_id"):
+        finding = s.query_one("diag_findings", finding_id=issue["finding_id"])
+        run_id = (finding or {}).get("run_id")
+    if run_id:
+        run = s.query_one("diag_runs", run_id=run_id)
+        manifest = (run or {}).get("manifest_json") or {}
+        if manifest.get("table"):
+            return str(manifest["table"])
+    return str(issue.get("table_name") or "")
+
+
+def _case_analysis_table(case: dict) -> str:
+    issue = s.query_one("issues_v2", issue_row_id=case["issue_row_id"]) or {}
+    return _diagnostic_analysis_table(issue) or str(case.get("table_name") or "")
+
+
+def _feature_state_snapshot(item_id: str, table: str) -> dict:
+    return feature_states.snapshot_from_inventory(v2_service.get_inventory(item_id, table))
+
+
+INITIAL_REVIEW_HYPOTHESIS_ORIGIN = "llm_initial_review"
+DRIVER_SEARCH_HYPOTHESIS_ORIGIN = "driver_search"
+COMPOSER_HYPOTHESIS_ORIGIN = "composer"
+ALTERNATIVE_HYPOTHESIS_ORIGIN = "alternative_explanation"
+
+
+def _active_investigation_hypothesis(case_id: str) -> dict | None:
+    for origin in (ALTERNATIVE_HYPOTHESIS_ORIGIN, DRIVER_SEARCH_HYPOTHESIS_ORIGIN,
+                   INITIAL_REVIEW_HYPOTHESIS_ORIGIN):
+        selected = next((row for row in _case_hypotheses(case_id, origin=origin)
+                         if row.get("lifecycle_status") == "selected"), None)
+        if selected:
+            return selected
+    return None
+
+
+def _case_hypotheses(case_id: str, *, origin: str = COMPOSER_HYPOTHESIS_ORIGIN,
+                     conn=None) -> list[dict]:
+    return s.query(
+        "rca_hypotheses", conn=conn, order_by="created_at",
+        case_id=case_id, origin=origin,
+    )
+
+
 class RcaError(Exception):
+    pass
+
+
+class RcaAgentUnavailable(RcaError):
     pass
 
 
@@ -315,8 +377,11 @@ def create_case_from_issue(issue_row_id: str, actor: str, tenant_id: str = DEFAU
         raise KeyError(f"Unknown issue row: {issue_row_id}")
     item = v2_service.require_item(issue["item_id"])
     family = _infer_test_family(issue["test_name"])
+    analysis_table = _diagnostic_analysis_table(issue)
 
-    matching_group = find_matching_open_group(tenant_id, issue["item_id"], issue["table_name"], issue["test_name"])
+    matching_group = find_matching_open_group(
+        tenant_id, issue["item_id"], issue["table_name"], issue["test_name"]
+    )
     if matching_group:
         s.insert("rca_attached_failures", {
             "id": _id("attf"), "group_id": matching_group["group_id"], "run_id": None,
@@ -332,6 +397,9 @@ def create_case_from_issue(issue_row_id: str, actor: str, tenant_id: str = DEFAU
     tag_snapshot = taxonomy.get_tags(tenant_id, "issues_v2", issue_row_id)
     s.insert("rca_cases", {
         "case_id": case_id, "tenant_id": tenant_id, "issue_row_id": issue_row_id,
+        # Diagnostic findings may use table_name for their governed entity
+        # (for PSI, the feature). Keep that identity for issue grouping; row-
+        # level execution resolves the physical table from the run manifest.
         "item_id": issue["item_id"], "table_name": issue["table_name"],
         "state": "created", "part": "A", "tag_snapshot_json": tag_snapshot,
         "complaint_text": None, "created_by": actor, "created_at": now, "updated_at": now,
@@ -349,14 +417,15 @@ def create_case_from_issue(issue_row_id: str, actor: str, tenant_id: str = DEFAU
 
     # Fixed intake checklist (WF Agent 1), by test family.
     checklist = {
-        "test_name": issue["test_name"], "test_family": family, "table_name": issue["table_name"],
+        "test_name": issue["test_name"], "test_family": family, "table_name": analysis_table,
         "columns": issue.get("columns_json") or [], "metric": issue.get("metric"),
         "threshold": issue.get("threshold_json"), "violation_count": issue.get("violation_count"),
         "target_variable": item.get("target_variable"), "use_case": item.get("use_case"),
+        "feature_state_snapshot": _feature_state_snapshot(issue["item_id"], analysis_table),
     }
     s.insert("rca_case_files", {
         "case_id": case_id, "checklist_json": checklist,
-        "schema_snapshot_json": v2_service._inventory_map(issue["item_id"], issue["table_name"]),
+        "schema_snapshot_json": v2_service._inventory_map(issue["item_id"], analysis_table),
         "tags_snapshot_json": tag_snapshot, "complaint_json": None, "created_at": now,
     })
     case = require_case(case_id, tenant_id)
@@ -381,6 +450,12 @@ def start_afresh(case_id: str, actor: str, confirmed: bool,
 
     now = s.now_ist()
     previous_generation = int(case.get("workflow_generation") or 1)
+    case_file = s.query_one("rca_case_files", case_id=case_id) or {}
+    refreshed_checklist = dict(case_file.get("checklist_json") or {})
+    analysis_table = _case_analysis_table(case)
+    refreshed_checklist["feature_state_snapshot"] = _feature_state_snapshot(
+        case["item_id"], analysis_table
+    )
     with s.get_conn() as conn:
         conn.execute("BEGIN IMMEDIATE")
         looks = s.query("rca_looks", conn=conn, case_id=case_id)
@@ -453,7 +528,10 @@ def start_afresh(case_id: str, actor: str, confirmed: bool,
         delete_ids("rca_audit_events", "object_id", list(related_object_ids))
         conn.execute('DELETE FROM rca_state_transitions WHERE case_id = ?', (case_id,))
         conn.execute('DELETE FROM rca_closures WHERE case_id = ?', (case_id,))
-        s.update("rca_case_files", {"case_id": case_id}, {"complaint_json": None}, conn=conn)
+        s.update("rca_case_files", {"case_id": case_id}, {
+            "complaint_json": None, "checklist_json": refreshed_checklist,
+            "schema_snapshot_json": v2_service._inventory_map(case["item_id"], analysis_table),
+        }, conn=conn)
         s.update("rca_cases", {"case_id": case_id}, {
             "state": "intake", "part": "A", "complaint_text": None,
             "updated_at": now, "closed_at": None,
@@ -498,38 +576,656 @@ def get_case(case_id: str, tenant_id: str = DEFAULT_TENANT) -> dict:
     case = require_case(case_id, tenant_id)
     case_file = s.query_one("rca_case_files", case_id=case_id)
     looks = s.query("rca_looks", order_by="seq", case_id=case_id)
-    executions = {e["look_id"]: e for e in s.query("rca_look_executions")
-                 if e["look_id"] in {lk["look_id"] for lk in looks}}
+    look_ids = [look["look_id"] for look in looks]
+    look_id_set = set(look_ids)
+    execution_rows = [row for row in s.query("rca_look_executions")
+                      if row["look_id"] in look_id_set]
+    executions = {row["look_id"]: row for row in execution_rows}
     suspects = s.query("rca_suspects", order_by="created_at", case_id=case_id)
-    hypotheses = s.query("rca_hypotheses", order_by="created_at", case_id=case_id)
-    checks = []
-    for h in hypotheses:
-        checks.extend(s.query("rca_confirmation_checks", hypothesis_id=h["hypothesis_id"]))
+    investigation_context = s.query(
+        "rca_human_questions", order_by="created_at", case_id=case_id
+    )
+    hypothesis_candidates = _case_hypotheses(
+        case_id, origin=INITIAL_REVIEW_HYPOTHESIS_ORIGIN
+    )
+    focused_hypothesis_candidates = _case_hypotheses(
+        case_id, origin=DRIVER_SEARCH_HYPOTHESIS_ORIGIN
+    )
+    hypotheses = _case_hypotheses(case_id)
+    hypothesis_ids = [hypothesis["hypothesis_id"] for hypothesis in hypotheses]
+    hypothesis_id_set = set(hypothesis_ids)
+    checks = [row for row in s.query("rca_confirmation_checks")
+              if row["hypothesis_id"] in hypothesis_id_set]
     checks.sort(key=lambda c: c["order_rank"])
     # Judge verdicts per check, and the case's confirmed hypothesis (if any)
     # — the UI needs both to route the fix-approval flow to the RIGHT
     # hypothesis now that Stage 4/5 can produce more than one.
-    judge_decisions = {c["check_id"]: s.query("rca_judge_decisions", order_by="ts", check_id=c["check_id"])
-                       for c in checks}
+    check_ids = [check["check_id"] for check in checks]
+    check_id_set = set(check_ids)
+    decision_rows = [row for row in s.query("rca_judge_decisions", order_by="ts")
+                     if row["check_id"] in check_id_set]
+    judge_decisions = {check_id: [] for check_id in check_ids}
+    for decision in decision_rows:
+        judge_decisions[decision["check_id"]].append(decision)
     accounting = s.query("rca_symptom_accounting", order_by="computed_at", case_id=case_id)
     closure = s.query_one("rca_closures", case_id=case_id)
     transitions = s.query("rca_state_transitions", order_by="ts", case_id=case_id)
-    audit_events = [event for event in s.query("rca_audit_events", order_by="ts", tenant_id=tenant_id)
-                    if event.get("object_type") == "rca_case" and event.get("object_id") == case_id]
+    audit_events = s.query(
+        "rca_audit_events", order_by="ts", tenant_id=tenant_id,
+        object_type="rca_case", object_id=case_id,
+    )
     conclusion_events = [event for event in audit_events
                          if event.get("event_type") == "conclusion_approved"]
     aar_evidence = rca_evidence.list_case_evidence(
         case_id, int(case.get("workflow_generation") or 1)
     )
-    return {**case, "case_file": case_file, "looks": looks, "executions": executions,
-           "suspects": suspects, "hypotheses": hypotheses, "confirmation_checks": checks,
-           "judge_decisions": judge_decisions, "confirmed_hypothesis": _confirmed_hypothesis(case_id),
+    selected_hypothesis = next(
+        (row for row in hypothesis_candidates if row.get("lifecycle_status") == "selected"),
+        None,
+    )
+    selected_focused_hypothesis = next(
+        (row for row in focused_hypothesis_candidates
+         if row.get("lifecycle_status") == "selected"), None,
+    )
+    confirmed_hypothesis = _confirmed_hypothesis(case_id)
+    conclusion_draft = _compose_conclusion_draft(
+        case=case, case_file=case_file, hypotheses=hypotheses,
+        hypothesis_candidates=hypothesis_candidates,
+        selected_hypothesis=_active_investigation_hypothesis(case_id),
+        confirmed_hypothesis=confirmed_hypothesis,
+        aar_evidence=aar_evidence, executions=executions,
+    )
+    data_chat_state = _data_chat_state(case, looks, executions, aar_evidence)
+    from domains.rca.presentation import present_execution
+    for execution in executions.values():
+        execution["presentation"] = present_execution(execution)
+    hypothesis_catalog = [
+        {"hypothesis_id": row["hypothesis_id"], "number": index + 1,
+         "statement": row.get("statement"), "lifecycle_status": row.get("lifecycle_status")}
+        for index, row in enumerate(s.query(
+            "rca_hypotheses", case_id=case_id, order_by="created_at, rowid"
+        ))
+    ]
+    return {**case, "hypothesis_catalog": hypothesis_catalog,
+           "active_investigation_hypothesis": _active_investigation_hypothesis(case_id),
+           "case_file": case_file, "looks": looks, "executions": executions,
+           "suspects": suspects, "hypotheses": hypotheses,
+           "hypothesis_candidates": hypothesis_candidates,
+           "selected_initial_hypothesis": selected_hypothesis,
+           "focused_hypothesis_candidates": focused_hypothesis_candidates,
+           "selected_focused_hypothesis": selected_focused_hypothesis,
+           "investigation_context": investigation_context,
+           "confirmation_checks": checks,
+           "judge_decisions": judge_decisions, "confirmed_hypothesis": confirmed_hypothesis,
+           "conclusion_draft": conclusion_draft,
            "symptom_accounting": accounting[-1] if accounting else None,
            "closure": closure, "transitions": transitions,
            "conclusion": conclusion_events[-1].get("after_json") if conclusion_events else None,
-           "audit_events": audit_events, "aar_evidence": aar_evidence}
+           "audit_events": audit_events, "aar_evidence": aar_evidence,
+           "data_chat": data_chat_state,
+           "investigation_limit": _investigation_limit(looks, executions)}
 
 
+def _successful_agent_investigations(looks: list[dict],
+                                     executions: dict[str, dict]) -> list[dict]:
+    completed = []
+    by_id = {look["look_id"]: look for look in looks}
+    for look in looks:
+        fork = look.get("fork_json") or {}
+        parent_id = fork.get("combined_parent_look_id")
+        if parent_id and ((by_id.get(parent_id) or {}).get("fork_json") or {}).get("combined_run_state") != "completed":
+            continue
+        execution = executions.get(look["look_id"]) or {}
+        summary = execution.get("summary_json") or {}
+        runtime = summary.get("runtime") or {}
+        if (look.get("kind") == "planned"
+                and fork.get("kind") == "agent_hypothesis_test"
+                and fork.get("agent_runtime")
+                and execution.get("status") in {"completed", "done"}
+                and runtime.get("ok") is True):
+            completed.append({
+                "look_id": look["look_id"],
+                "execution_id": execution.get("execution_id"),
+                "completed_at": execution.get("executed_at"),
+            })
+    return completed
+
+
+def _data_chat_state(case: dict, looks: list[dict], executions: dict[str, dict],
+                     aar_evidence: list[dict]) -> dict:
+    successful = _successful_agent_investigations(looks, executions)
+    turns: dict[str, dict] = {}
+    order: list[str] = []
+    for event in aar_evidence:
+        if not str(event.get("evidence_kind") or "").startswith("data_chat_"):
+            continue
+        details = event.get("details") or {}
+        turn_id = details.get("turn_id")
+        if not turn_id:
+            continue
+        if turn_id not in turns:
+            turns[turn_id] = {"turn_id": turn_id, "events": []}
+            order.append(turn_id)
+        turn = turns[turn_id]
+        turn["events"].append({
+            "artifact_id": event.get("artifact_id"),
+            "kind": event.get("evidence_kind"), "status": event.get("status"),
+            "recorded_at": event.get("recorded_at"),
+        })
+        kind = event.get("evidence_kind")
+        if kind == "data_chat_user_message":
+            turn.update({
+                "question": details.get("question"),
+                "asked_at": event.get("recorded_at"),
+                "user_evidence_artifact_id": event.get("artifact_id"),
+            })
+        elif kind == "data_chat_plan":
+            turn["plan"] = details.get("plan")
+            turn["model"] = details.get("model")
+        elif kind == "data_chat_library_search":
+            turn["library_search"] = details.get("library_search")
+        elif kind == "data_chat_code_generation":
+            turn["generated_code"] = details.get("generated_code")
+        elif kind in {"data_chat_analysis_execution", "data_chat_sandbox_execution"}:
+            turn["execution"] = {
+                "status": event.get("status"),
+                "result": details.get("result"),
+                "error": details.get("error"),
+                "download_artifact_id": details.get("download_artifact_id"),
+            }
+        elif kind == "data_chat_assistant_message":
+            turn.update({
+                "answer": details.get("answer"),
+                "evidence_references": details.get("evidence_references") or [],
+                "limitations": details.get("limitations") or [],
+                "answered_at": event.get("recorded_at"),
+                "assistant_evidence_artifact_id": event.get("artifact_id"),
+                "status": event.get("status"),
+            })
+    return {
+        "unlocked": len(successful) >= 2,
+        "successful_investigation_count": len(successful),
+        "required_successful_investigations": 2,
+        "successful_investigations": successful,
+        "turns": [turns[turn_id] for turn_id in order],
+        "workflow_generation": int(case.get("workflow_generation") or 1),
+    }
+
+
+def _chat_supplied_evidence(case: dict, looks: list[dict], executions: dict[str, dict],
+                            aar_evidence: list[dict]) -> tuple[dict, tuple[str, ...]]:
+    # Operational checkpoints must not displace analytical evidence in bounded prompts.
+    aar_evidence = [event for event in aar_evidence if event.get("evidence_kind") != "operation_progress"]
+    refs = tuple(dict.fromkeys(
+        event["artifact_id"] for event in aar_evidence
+        if event.get("artifact_id") and event.get("status") in {
+            "recorded", "completed", "accepted",
+        }
+    ))[-24:]
+    completed = []
+    for look in looks:
+        execution = executions.get(look["look_id"]) or {}
+        summary = execution.get("summary_json") or {}
+        if not summary:
+            continue
+        result = summary.get("result") or {}
+        completed.append({
+            "look_id": look["look_id"],
+            "question": ((look.get("fork_json") or {}).get("plan") or {}).get("question"),
+            "status": execution.get("status"),
+            "summary": result.get("summary") or summary.get("summary"),
+            "metrics": result.get("metrics") or {},
+            "evidence_rows": list(result.get("evidence_rows") or [])[:12],
+        })
+    relevant_events = []
+    for event in aar_evidence[-30:]:
+        if event.get("evidence_kind") not in {
+            "case_context_created", "static_initial_review", "llm_initial_review",
+            "agent_interpretation", "human_context", "human_decision",
+        }:
+            continue
+        relevant_events.append({
+            "artifact_id": event.get("artifact_id"),
+            "kind": event.get("evidence_kind"), "status": event.get("status"),
+            "summary": event.get("summary"), "details": event.get("details"),
+        })
+    hypotheses = [
+        {key: row.get(key) for key in (
+            "hypothesis_id", "statement", "evidence_basis", "proposed_test",
+            "lifecycle_status", "origin",
+        )}
+        for row in s.query("rca_hypotheses", order_by="created_at", case_id=case["case_id"])
+    ]
+    return ({
+        "case": {key: case.get(key) for key in (
+            "case_id", "item_id", "table_name", "test_name", "test_family",
+            "metric", "threshold", "state", "workflow_generation",
+        )},
+        "hypotheses": hypotheses,
+        "completed_investigations": completed[-8:],
+        "retained_events": relevant_events,
+    }, refs)
+
+
+@progress.action("Data chat")
+def ask_data_chat(case_id: str, question: str, actor: str,
+                  tenant_id: str = DEFAULT_TENANT) -> dict:
+    """Answer one scoped RCA question with retained evidence or one calculation."""
+    value = str(question or "").strip()
+    if not value:
+        raise ValueError("A data-chat question is required")
+    if len(value) > 2000:
+        raise ValueError("A data-chat question must not exceed 2000 characters")
+    case = require_case(case_id, tenant_id)
+    case_file = s.query_one("rca_case_files", case_id=case_id) or {}
+    looks = s.query("rca_looks", order_by="seq", case_id=case_id)
+    look_ids = {look["look_id"] for look in looks}
+    executions = {
+        row["look_id"]: row for row in s.query("rca_look_executions")
+        if row["look_id"] in look_ids
+    }
+    aar_evidence = rca_evidence.list_case_evidence(
+        case_id, int(case.get("workflow_generation") or 1)
+    )
+    successful = _successful_agent_investigations(looks, executions)
+    if len(successful) < 2:
+        raise TransitionError(
+            "Ask about this data unlocks after two successful hypothesis-test runs"
+        )
+    supplied, evidence_refs = _chat_supplied_evidence(
+        case, looks, executions, aar_evidence
+    )
+    turn_id = _id("chat")
+    user_artifact_id = rca_evidence.record_event(
+        case, evidence_kind="data_chat_user_message", stage="investigate",
+        status="recorded", actor=actor, source_artifact_ids=evidence_refs,
+        details={
+            "turn_id": turn_id, "question": value,
+            "supplied_evidence": supplied,
+            "supplied_evidence_refs": list(evidence_refs),
+        },
+    )
+    checklist = case_file.get("checklist_json") or {}
+    analysis_table = _case_analysis_table(case)
+    schema = case_file.get("schema_snapshot_json") or {}
+    catalog = investigation_runtime.helper_catalog(
+        case.get("test_family") or checklist.get("test_family"),
+        analysis_table, list(schema),
+    )
+    planner_payload = {
+        "question": value, "active_scope": supplied["case"],
+        "available_schema": schema, "retained_evidence": supplied,
+        "helper_catalog": catalog,
+        "prior_chat": _data_chat_state(case, looks, executions, aar_evidence)["turns"][-6:],
+        "guardrails": {"one_analysis_maximum": True, "read_only": True,
+                       "library_first": True, "no_autonomous_followup": True},
+    }
+    try:
+        planned = data_chat.plan(planner_payload)
+        plan = planned["output"]
+    except Exception as exc:
+        failed_plan_id = rca_evidence.record_event(
+            case, evidence_kind="data_chat_plan", stage="investigate", status="failed",
+            actor=actor, source_artifact_ids=(user_artifact_id,),
+            details={"turn_id": turn_id, "error_type": type(exc).__name__,
+                     "error": str(exc), "model": None,
+                     "attempts": getattr(exc, "attempts", [])},
+        )
+        rca_evidence.record_event(
+            case, evidence_kind="data_chat_assistant_message", stage="investigate",
+            status="failed", actor=actor, source_artifact_ids=(failed_plan_id,),
+            details={
+                "turn_id": turn_id,
+                "answer": "The question could not be planned, so no response was accepted.",
+                "evidence_references": [], "limitations": [str(exc)],
+                "error_type": type(exc).__name__,
+            },
+        )
+        raise RcaAgentUnavailable(
+            "The data-chat agent could not plan this answer; the question and failure were retained"
+        ) from exc
+    plan_artifact_id = rca_evidence.record_event(
+        case, evidence_kind="data_chat_plan", stage="investigate", status="completed",
+        actor=actor, source_artifact_ids=(user_artifact_id,),
+        details={
+            "turn_id": turn_id, "plan": plan,
+            "model": planned["selected_model"], "attempts": planned["attempts"],
+            "prompt_version": planned["prompt_version"],
+        },
+    )
+    if plan["scope_decision"] == "out_of_scope":
+        library = {"decision": "not_searched_out_of_scope", "selected_helper_id": None}
+        library_id = rca_evidence.record_event(
+            case, evidence_kind="data_chat_library_search", stage="investigate",
+            status="completed", actor=actor, source_artifact_ids=(plan_artifact_id,),
+            details={"turn_id": turn_id, "library_search": library},
+        )
+        rca_evidence.record_event(
+            case, evidence_kind="data_chat_assistant_message", stage="investigate",
+            status="rejected", actor=actor, source_artifact_ids=(library_id,),
+            details={
+                "turn_id": turn_id,
+                "answer": "I can only answer questions about this active RCA and its retained dataset evidence.",
+                "evidence_references": [], "limitations": [plan["scope_reason"]],
+                "model": planned["selected_model"],
+            },
+        )
+        return get_case(case_id, tenant_id)
+
+    analysis_result = None
+    analysis_artifact_id = None
+    library = {"decision": "not_required_retained_evidence", "selected_helper_id": None}
+    if plan["response_mode"] == "analysis":
+        issue = issues_service.get_issue(case["issue_row_id"])
+        source_evidence = issue.get("source_evidence") or {}
+        population_context = source_evidence.get("population_context") or {}
+        diagnostic = (_opening_summary(case_id).get("diagnostic") or {})
+        params = {key: item for key, item in (plan.get("helper_params") or {}).items()
+                  if item not in (None, [], "")}
+        search = investigation_runtime.search_helpers(
+            plan, catalog, has_retained_psi=bool(diagnostic.get("bins")),
+            available_columns=set(schema),
+            has_population_context=bool(
+                (population_context.get("definition") or {}).get("method") == "split_snapshot"
+            ),
+        )
+        library = search
+    library_id = rca_evidence.record_event(
+        case, evidence_kind="data_chat_library_search", stage="investigate",
+        status="completed", actor=actor, source_artifact_ids=(plan_artifact_id,),
+        details={"turn_id": turn_id, "library_search": library},
+    )
+
+    if plan["response_mode"] == "analysis":
+        frame = _read_analysis_table(case["item_id"], analysis_table)
+        feature_snapshot = checklist.get("feature_state_snapshot") or {}
+        data_profile = source_evidence.get("data_profile") or {}
+        declared = ((data_profile.get("declared_special_values")
+                     or data_profile.get("special_values") or [])
+                    if data_profile.get("special_values_confirmed") else [])
+        helper_id = library.get("selected_helper_id")
+        execution_kind = "data_chat_analysis_execution"
+        execution_source_ids = [library_id]
+        execution_failure_recorded = False
+        execution_metadata = sandbox_capabilities.execution_metadata()
+        try:
+            if helper_id:
+                analysis_result = investigation_runtime.run_helper(
+                    helper_id, frame, params, diagnostic, population_context,
+                    declared, {}, feature_snapshot,
+                )
+            else:
+                try:
+                    generated = investigation_agent.generate_code({
+                        "plan": plan, "question": value,
+                        "available_schema": schema,
+                        "retained_aggregate_evidence": supplied,
+                        "diagnostic_context": {
+                            "population_context": population_context,
+                            "feature_state_snapshot": feature_snapshot,
+                        },
+                        "investigation_history": supplied["completed_investigations"],
+                    })
+                except Exception as exc:
+                    failed_code_id = rca_evidence.record_event(
+                        case, evidence_kind="data_chat_code_generation",
+                        stage="investigate", status="failed", actor=actor,
+                        source_artifact_ids=(library_id,),
+                        details={
+                            "turn_id": turn_id, "error_type": type(exc).__name__,
+                            "error": str(exc), "model": None,
+                            "attempts": getattr(exc, "attempts", []),
+                        },
+                    )
+                    execution_source_ids.append(failed_code_id)
+                    execution_failure_recorded = True
+                    raise RcaAgentUnavailable(
+                        "The data-chat agent could not generate the bounded analysis; "
+                        "the question, plan, and failure were retained"
+                    ) from exc
+                code = generated["output"]["python_code"]
+                code_id = rca_evidence.record_event(
+                    case, evidence_kind="data_chat_code_generation", stage="investigate",
+                    status="completed", actor=actor, source_artifact_ids=(library_id,),
+                    details={
+                        "turn_id": turn_id, "generated_code": generated["output"],
+                        "sandbox_contract": sandbox_capabilities.public_contract(),
+                        "model": generated["selected_model"],
+                        "attempts": generated["attempts"],
+                        "prompt_version": generated["prompt_version"],
+                    },
+                )
+                execution_kind = "data_chat_sandbox_execution"
+                execution_source_ids.append(code_id)
+                runtime = investigation_runtime.run_generated_code(
+                    code, frame, {
+                        "analysis_params": params, "retained_evidence": supplied,
+                        "diagnostic_context": {"population_context": population_context},
+                    }, feature_state_snapshot=feature_snapshot,
+                )
+                if not runtime.get("ok"):
+                    rca_evidence.record_event(
+                        case, evidence_kind=execution_kind, stage="investigate",
+                        status=runtime.get("status") or "failed", actor=actor,
+                        source_artifact_ids=tuple(execution_source_ids),
+                        details={"turn_id": turn_id, "error": runtime.get("error")
+                                 or runtime.get("errors"), **execution_metadata},
+                    )
+                    execution_failure_recorded = True
+                    raise RcaError(runtime.get("error") or "The chat analysis did not complete")
+                analysis_result = runtime["result"]
+                full_result = runtime.get("full_result")
+                if isinstance(full_result, dict):
+                    output_id = rca_evidence.record_event(
+                        case, evidence_kind="data_chat_sandbox_output", stage="investigate",
+                        status="completed", actor=actor,
+                        source_artifact_ids=tuple(execution_source_ids),
+                        details={"turn_id": turn_id, "result": full_result},
+                    )
+                    analysis_result["download_artifact_id"] = output_id
+                    analysis_result["download_filename"] = f"rca-{case_id}-{turn_id}-chat-output.txt"
+                    execution_source_ids.append(output_id)
+            analysis_artifact_id = rca_evidence.record_event(
+                case, evidence_kind=execution_kind, stage="investigate", status="completed",
+                actor=actor, source_artifact_ids=tuple(execution_source_ids),
+                details={
+                    "turn_id": turn_id, "helper_id": helper_id,
+                    **execution_metadata,
+                    "result": analysis_result,
+                    "download_artifact_id": (analysis_result or {}).get("download_artifact_id"),
+                },
+            )
+        except Exception as exc:
+            if not execution_failure_recorded:
+                rca_evidence.record_event(
+                    case, evidence_kind=execution_kind, stage="investigate", status="failed",
+                    actor=actor, source_artifact_ids=tuple(execution_source_ids),
+                    details={"turn_id": turn_id, "error_type": type(exc).__name__,
+                             "error": str(exc), **execution_metadata},
+                )
+            rca_evidence.record_event(
+                case, evidence_kind="data_chat_assistant_message", stage="investigate",
+                status="failed", actor=actor,
+                source_artifact_ids=tuple(execution_source_ids),
+                details={
+                    "turn_id": turn_id,
+                    "answer": "The bounded analysis did not complete, so no analytical answer was accepted.",
+                    "evidence_references": [], "limitations": [str(exc)],
+                },
+            )
+            raise
+
+    answer_refs = list(evidence_refs)
+    if analysis_artifact_id:
+        answer_refs.append(analysis_artifact_id)
+    try:
+        answered = data_chat.answer({
+            "question": value, "plan": plan, "retained_evidence": supplied,
+            "analysis_result": analysis_result,
+            "supplied_evidence_refs": answer_refs,
+        })
+    except Exception as exc:
+        rca_evidence.record_event(
+            case, evidence_kind="data_chat_assistant_message", stage="investigate",
+            status="failed", actor=actor,
+            source_artifact_ids=tuple(dict.fromkeys(
+                (plan_artifact_id, library_id,
+                 *([analysis_artifact_id] if analysis_artifact_id else []))
+            )),
+            details={
+                "turn_id": turn_id,
+                "answer": "The answer could not be completed, so no response was accepted.",
+                "evidence_references": [], "limitations": [str(exc)],
+                "error_type": type(exc).__name__,
+                "attempts": getattr(exc, "attempts", []),
+            },
+        )
+        raise RcaAgentUnavailable(
+            "The data-chat agent could not complete the answer; the question, method, and failure were retained"
+        ) from exc
+    output = answered["output"]
+    valid_refs = set(answer_refs)
+    cited = [value for value in output.get("evidence_references") or []
+             if value in valid_refs]
+    assistant_id = rca_evidence.record_event(
+        case, evidence_kind="data_chat_assistant_message", stage="investigate",
+        status="completed", actor=actor,
+        source_artifact_ids=tuple(dict.fromkeys((plan_artifact_id, library_id, *cited,
+                                                 *([analysis_artifact_id]
+                                                   if analysis_artifact_id else [])))),
+        details={
+            "turn_id": turn_id, "answer": output["answer"],
+            "evidence_references": cited,
+            "limitations": output.get("limitations") or [],
+            "model": answered["selected_model"], "attempts": answered["attempts"],
+            "prompt_version": answered["prompt_version"],
+        },
+    )
+    _audit(
+        tenant_id, actor, "data_chat_answered", "rca_case", case_id,
+        after={"turn_id": turn_id, "response_mode": plan["response_mode"],
+               "assistant_artifact_id": assistant_id},
+    )
+    return get_case(case_id, tenant_id)
+
+
+def _compose_conclusion_draft(*, case: dict, case_file: dict,
+                              hypotheses: list[dict], hypothesis_candidates: list[dict],
+                              selected_hypothesis: dict | None,
+                              confirmed_hypothesis: dict | None,
+                              aar_evidence: list[dict],
+                              executions: dict[str, dict]) -> dict:
+    """Build a reviewable draft from governed RCA evidence without another model call."""
+    proposed = confirmed_hypothesis or selected_hypothesis or (hypotheses[0] if hypotheses else None)
+    hypothesis_id = (proposed or {}).get("hypothesis_id")
+    readings = []
+    for event in aar_evidence:
+        details = event.get("details") or {}
+        reading = details.get("interpretation") or {}
+        if (event.get("evidence_kind") == "agent_interpretation"
+                and event.get("status") == "completed"
+                and (not hypothesis_id or details.get("hypothesis_id") == hypothesis_id)):
+            readings.append({**reading, "look_id": details.get("look_id")})
+    reading = readings[-1] if readings else {}
+    assessment = reading.get("assessment")
+    evidence_look_ids = list((proposed or {}).get("evidence_look_ids_json") or [])
+    look_id = reading.get("look_id") or next(
+        (value for value in reversed(evidence_look_ids) if value in executions), None
+    )
+    execution = executions.get(look_id) or {}
+    execution_summary = execution.get("summary_json") or {}
+    result = execution_summary.get("result") or {}
+    result_summary = (result.get("summary") or "").strip()
+    if not result_summary and execution_summary.get("found"):
+        observed = [
+            f"{key.replace('_', ' ')}={value}"
+            for key, value in execution_summary.items()
+            if key not in {"found", "result", "runtime"}
+            and isinstance(value, (str, int, float, bool))
+        ][:6]
+        if observed:
+            result_summary = "Governed analysis recorded " + ", ".join(observed) + "."
+    statement = ((proposed or {}).get("statement") or "").strip()
+
+    root_parts = []
+    if statement:
+        root_parts.append(statement)
+    if result_summary:
+        root_parts.append(f"Observed result: {result_summary}")
+    if reading.get("rationale"):
+        root_parts.append(f"RCA interpretation: {reading['rationale'].strip()}")
+
+    rationale_parts = []
+    if result_summary:
+        rationale_parts.append(result_summary)
+    evidence_points = [str(value).strip() for value in reading.get("evidence_points") or []
+                       if str(value).strip()]
+    if evidence_points:
+        rationale_parts.append("Supporting observations:\n- " + "\n- ".join(evidence_points[:8]))
+    if assessment:
+        rationale_parts.append(f"The governed reader assessed the selected hypothesis as {assessment}.")
+    elif confirmed_hypothesis and statement:
+        rationale_parts.append(
+            f"The governed confirmation workflow verified the proposed conclusion: {statement}"
+        )
+    elif statement:
+        rationale_parts.append(f"Review the retained evidence for the proposed conclusion: {statement}")
+
+    alternatives = []
+    for row in [*hypothesis_candidates, *hypotheses]:
+        if row.get("hypothesis_id") == hypothesis_id or not row.get("statement"):
+            continue
+        status = row.get("lifecycle_status") or row.get("tier") or "considered"
+        text = f"{row['statement']} ({str(status).replace('_', ' ')})"
+        if text not in alternatives:
+            alternatives.append(text)
+
+    next_question = (reading.get("next_question") or "").strip()
+    if next_question:
+        limiting_evidence = f"The retained evidence does not yet resolve: {next_question}"
+    elif assessment == "supported" or confirmed_hypothesis:
+        limiting_evidence = (
+            "No contradictory evidence was identified within the governed analysis scope. "
+            "The result establishes the observed data pattern; it does not by itself prove "
+            "the upstream process mechanism or confirm that remediation has occurred."
+        )
+    else:
+        limiting_evidence = (
+            "The retained evidence does not yet support a conclusive root cause. "
+            "Review the investigation record and document any additional scope limitation."
+        )
+
+    tier = str((proposed or {}).get("tier") or "").lower()
+    confidence = "High" if tier == "strong" else "Low" if tier == "weak" else "Moderate"
+    checklist = (case_file or {}).get("checklist_json") or {}
+    table_name = checklist.get("table_name") or case.get("table_name") or "Table"
+    columns = list(checklist.get("columns") or [])
+    return {
+        "conclusion_type": (
+            "root_cause_identified"
+            if confirmed_hypothesis or assessment == "supported" else "unresolved"
+        ),
+        "root_cause": "\n\n".join(root_parts),
+        "confidence": confidence,
+        "limiting_evidence": limiting_evidence,
+        "alternatives_considered": (
+            "Alternative explanations reviewed:\n- " + "\n- ".join(alternatives[:6])
+            if alternatives else
+            "No additional evidence-backed alternative was identified in the available scope."
+        ),
+        "affected_scope": f"{table_name}{' · ' + ', '.join(columns) if columns else ''}",
+        "related_failures": (
+            f"Reviewed against the {checklist.get('test_name') or 'diagnostic failure'} "
+            "and the evidence retained in this RCA case."
+        ),
+        "owner": (proposed or {}).get("owner") or "",
+        "approval_rationale": "\n\n".join(rationale_parts),
+        "basis": {"hypothesis_id": hypothesis_id, "look_id": look_id,
+                  "assessment": assessment},
+    }
+
+
+@progress.action("Approving conclusion")
 def approve_conclusion(case_id: str, actor: str, conclusion: dict,
                        tenant_id: str = DEFAULT_TENANT) -> dict:
     """Complete RCA by approving its conclusion, never by asserting a fix.
@@ -710,39 +1406,143 @@ def return_to_investigation(case_id: str, actor: str, reason: str,
 # Fixed, deterministic computation — no model-generated code, matching the
 # opening-look/look contract ("fixed deterministic calculations", WF §4).
 
-def _profile_column(df, column: str) -> dict:
+def _profile_column(df, column: str, feature_state_snapshot: dict | None = None) -> dict:
     if column not in df.columns:
         return {"column": column, "found": False}
     series = df[column]
-    out = {"column": column, "found": True, "null_share": round(float(series.isna().mean()), 4),
-          "distinct": int(series.nunique(dropna=True))}
-    if len(series.dropna()):
+    governance = feature_states.column_governance(feature_state_snapshot, column)
+    states = feature_states.classify(series, governance)
+    regular = series.loc[states["regular"]]
+    effective_missing = ~states["regular"]
+    out = {"column": column, "found": True,
+           "null_share": round(float(effective_missing.mean()), 4),
+           "physical_null_share": round(float(states["physical_missing"].mean()), 4),
+           "distinct": int(regular.nunique(dropna=True)),
+           "feature_state_reconciliation": feature_states.reconciliation(
+               df, feature_state_snapshot, [column]
+           )}
+    if len(regular.dropna()):
         try:
-            out["mean"] = round(float(series.dropna().astype(float).mean()), 4)
+            out["mean"] = round(float(regular.dropna().astype(float).mean()), 4)
         except (TypeError, ValueError):
             pass
     return out
 
 
-def _segment_breakdown(df, column: str, segment_column: str) -> dict:
+def _segment_breakdown(df, column: str, segment_column: str,
+                       feature_state_snapshot: dict | None = None) -> dict:
     if column not in df.columns or segment_column not in df.columns:
         return {"column": column, "segment_column": segment_column, "found": False}
-    grp = df.groupby(segment_column, dropna=False)[column]
-    null_share_by_segment = {str(k): round(float(v), 4) for k, v in grp.apply(lambda x: x.isna().mean()).items()}
-    null_count_by_segment = {str(k): int(v) for k, v in grp.apply(lambda x: x.isna().sum()).items()}
+    target_states = feature_states.classify(
+        df[column], feature_states.column_governance(feature_state_snapshot, column)
+    )
+    segment_states = feature_states.classify(
+        df[segment_column], feature_states.column_governance(
+            feature_state_snapshot, segment_column
+        )
+    )
+    segment_labels = df[segment_column].astype("string")
+    segment_labels.loc[segment_states["physical_missing"]] = f"{segment_column} physical missing"
+    for raw, mask in segment_states["specials"]:
+        segment_labels.loc[mask] = f"{segment_column} special: {raw}"
+    effective_missing = ~target_states["regular"]
+    grouped = segment_labels.rename("segment").to_frame().assign(
+        effective_missing=effective_missing,
+        physical_missing=target_states["physical_missing"],
+    ).groupby("segment", dropna=False)
+    null_share_by_segment = {
+        str(k): round(float(v), 4)
+        for k, v in grouped["effective_missing"].mean().items()
+    }
+    null_count_by_segment = {
+        str(k): int(v) for k, v in grouped["effective_missing"].sum().items()
+    }
+    physical_null_count_by_segment = {
+        str(k): int(v) for k, v in grouped["physical_missing"].sum().items()
+    }
     worst_segment, worst_rate = max(null_share_by_segment.items(), key=lambda kv: kv[1], default=(None, 0.0))
     _, best_rate = min(null_share_by_segment.items(), key=lambda kv: kv[1], default=(None, 0.0))
     worst_count = null_count_by_segment.get(worst_segment, 0)
     return {"column": column, "segment_column": segment_column, "found": True,
            "null_share_by_segment": null_share_by_segment,
+           "physical_null_count_by_segment": physical_null_count_by_segment,
            "worst_segment": worst_segment, "worst_rate": worst_rate, "best_rate": best_rate,
-           "worst_count": worst_count}
+           "worst_count": worst_count,
+           "feature_state_reconciliation": feature_states.reconciliation(
+               df, feature_state_snapshot, [column, segment_column]
+           )}
 
 
 # --- Opening looks (Agent 2) ---------------------------------------------------
 
-def _run_llm_initial_review(case: dict, actor: str, context_id: str,
-                            checklist: dict, summary: dict) -> dict | None:
+def _persist_initial_review_candidates(case: dict, output: dict,
+                                       source_evidence_id: str) -> list[dict]:
+    """Persist structured LLM proposals without promoting them to conclusions."""
+    candidates = output.get("candidate_hypotheses") or []
+    created = []
+    for rank, candidate in enumerate(candidates, start=1):
+        hypothesis_id = _id("hyp")
+        s.insert("rca_hypotheses", {
+            "hypothesis_id": hypothesis_id,
+            "case_id": case["case_id"],
+            "suspect_id": None,
+            "statement": candidate["statement"],
+            "label": "candidate",
+            "tier": "unassessed",
+            "evidence_look_ids_json": [],
+            "confirm_check_json": {"proposed_test": candidate["testable_next_step"]},
+            "reject_condition_json": None,
+            "owner": None,
+            "created_at": s.now_ist(),
+            "origin": INITIAL_REVIEW_HYPOTHESIS_ORIGIN,
+            "lifecycle_status": "candidate",
+            "evidence_basis": candidate["evidence_basis"],
+            "proposed_test": candidate["testable_next_step"],
+            "source_evidence_id": source_evidence_id,
+            "candidate_rank": rank,
+            "selected_by": None,
+            "selected_at": None,
+        })
+        created.append(s.query_one("rca_hypotheses", hypothesis_id=hypothesis_id))
+    return created
+
+
+def _persist_driver_hypothesis_candidate(case: dict, look_id: str, reading: dict,
+                                         source_evidence_id: str) -> dict:
+    existing = next((row for row in _case_hypotheses(
+        case["case_id"], origin=DRIVER_SEARCH_HYPOTHESIS_ORIGIN
+    ) if look_id in (row.get("evidence_look_ids_json") or [])), None)
+    if existing:
+        return existing
+    hypothesis_id = _id("hyp")
+    s.insert("rca_hypotheses", {
+        "hypothesis_id": hypothesis_id, "case_id": case["case_id"],
+        "suspect_id": None, "statement": reading["focused_hypothesis"],
+        "label": "driver-focused candidate", "tier": "unassessed",
+        "evidence_look_ids_json": [look_id],
+        "confirm_check_json": {"proposed_test": reading["proposed_test"]},
+        "reject_condition_json": None, "owner": None, "created_at": s.now_ist(),
+        "origin": DRIVER_SEARCH_HYPOTHESIS_ORIGIN, "lifecycle_status": "candidate",
+        "evidence_basis": reading["evidence_basis"],
+        "proposed_test": reading["proposed_test"],
+        "source_evidence_id": source_evidence_id, "candidate_rank": 1,
+        "selected_by": None, "selected_at": None,
+    })
+    # A new agent-proposed candidate must receive an explicit human review;
+    # an earlier selected focused hypothesis must not suppress the new choice in the UI.
+    with s.get_conn() as conn:
+        conn.execute(
+            "UPDATE rca_hypotheses SET lifecycle_status='not_selected', "
+            "selected_by=NULL, selected_at=NULL WHERE case_id=? AND origin=? "
+            "AND lifecycle_status='selected'",
+            (case["case_id"], DRIVER_SEARCH_HYPOTHESIS_ORIGIN),
+        )
+        conn.commit()
+    return s.query_one("rca_hypotheses", hypothesis_id=hypothesis_id)
+
+
+def _run_llm_initial_review(case: dict, actor: str, checklist: dict, summary: dict,
+                            source_artifact_ids: tuple[str, ...]) -> dict | None:
     """Run the configured LLM review without making static evidence depend on it."""
     from domains.rca import initial_review
 
@@ -754,11 +1554,13 @@ def _run_llm_initial_review(case: dict, actor: str, context_id: str,
         policy = None
     rca_evidence.record_event(
         case, evidence_kind="llm_initial_review", stage="initial_review", status="started",
-        actor=actor, source_artifact_ids=(context_id,), details={
+        actor=actor, source_artifact_ids=source_artifact_ids, details={
             "workload": initial_review.WORKLOAD,
             "prompt_version": initial_review.PROMPT_VERSION,
             "contract_version": initial_review.CONTRACT_VERSION,
             "model_policy": policy,
+            "evidence_bundle_fingerprint": summary.get("evidence_bundle_fingerprint"),
+            "evidence_source_artifact_ids": list(source_artifact_ids),
         },
     )
     try:
@@ -771,24 +1573,41 @@ def _run_llm_initial_review(case: dict, actor: str, context_id: str,
             "metric": checklist.get("metric"),
             "threshold": checklist.get("threshold"),
             "violation_count": checklist.get("violation_count"),
+            "user_context": [row["answer"] for row in s.query(
+                "rca_human_questions", order_by="created_at", case_id=case["case_id"]
+            ) if row.get("answer")],
         }, summary)
     except Exception as exc:  # noqa: BLE001 - failure is retained and manual flow remains usable
         rca_evidence.record_event(
             case, evidence_kind="llm_initial_review", stage="initial_review", status="failed",
-            actor=actor, source_artifact_ids=(context_id,), details={
+            actor=actor, source_artifact_ids=source_artifact_ids, details={
                 "workload": initial_review.WORKLOAD,
                 "error_type": type(exc).__name__,
                 "attempts": getattr(exc, "attempts", []),
                 "manual_continuation_available": True,
+                "evidence_bundle_fingerprint": summary.get("evidence_bundle_fingerprint"),
+                "evidence_source_artifact_ids": list(source_artifact_ids),
             },
         )
         return {"status": "failed", "error_type": type(exc).__name__}
     evidence_id = rca_evidence.record_event(
         case, evidence_kind="llm_initial_review", stage="initial_review", status="completed",
-        actor=actor, source_artifact_ids=(context_id,), details=result,
+        actor=actor, source_artifact_ids=source_artifact_ids, details={
+            **result,
+            "evidence_bundle_fingerprint": summary.get("evidence_bundle_fingerprint"),
+            "evidence_source_artifact_ids": list(source_artifact_ids),
+        },
     )
-    return {"status": "completed", "aar_evidence_id": evidence_id, **result}
+    candidates = _persist_initial_review_candidates(
+        case, result.get("output") or {}, evidence_id
+    )
+    return {
+        "status": "completed", "aar_evidence_id": evidence_id,
+        "candidate_hypothesis_ids": [row["hypothesis_id"] for row in candidates],
+        **result,
+    }
 
+@progress.action("Initial review")
 def run_opening_look(case_id: str, actor: str, tenant_id: str = DEFAULT_TENANT) -> dict:
     case = require_case(case_id, tenant_id)
     context_id = _ensure_case_context(case)
@@ -800,20 +1619,53 @@ def run_opening_look(case_id: str, actor: str, tenant_id: str = DEFAULT_TENANT) 
     rca_evidence.record_event(
         case, evidence_kind="static_initial_review", stage="initial_review", status="started",
         actor=actor, source_artifact_ids=(context_id,),
-        details={"analysis": "profile_column", "deterministic": True},
+        details={"analysis": "diagnostic_aware_opening_evidence", "deterministic": True},
     )
     try:
         case_file = s.query_one("rca_case_files", case_id=case_id)
         checklist = case_file["checklist_json"]
         columns = checklist.get("columns") or []
         column = columns[0] if columns else None
-        frame = v2_service._read_table(case["item_id"], case["table_name"])
-        summary = _profile_column(frame, column) if column else {"found": False}
+        repository = AnalysisArtifactRepository()
+        context_metadata, case_context = repository.get(context_id)
+
+        source_evidence = (case_context.get("issue") or {}).get("source_evidence") or {}
+        source_metrics = source_evidence.get("metrics")
+        source_metrics = source_metrics if isinstance(source_metrics, dict) else {}
+        has_governed_opening_evidence = bool(
+            source_evidence.get("data_profile")
+            or source_metrics.get("data_profile")
+            or source_metrics.get("artifact_id")
+        )
+        if column and not has_governed_opening_evidence:
+            frame = _read_analysis_table(case["item_id"], case["table_name"])
+            raw_summary = _profile_column(
+                frame, column, checklist.get("feature_state_snapshot") or {}
+            )
+        else:
+            raw_summary = {"column": column, "found": bool(column)}
+
+        def load_artifact(artifact_id: str) -> dict | None:
+            try:
+                _, payload = repository.get(artifact_id)
+            except KeyError:
+                return None
+            return payload if isinstance(payload, dict) else None
+
+        source_artifact_ids = tuple(dict.fromkeys(
+            (context_id, *context_metadata.source_artifact_ids)
+        ))
+        summary = initial_review_evidence.build_opening_evidence(
+            case_context, raw_summary,
+            source_artifact_ids=source_artifact_ids,
+            artifact_loader=load_artifact,
+        )
     except Exception as exc:
         rca_evidence.record_event(
             case, evidence_kind="static_initial_review", stage="initial_review", status="failed",
             actor=actor, source_artifact_ids=(context_id,),
-            details={"analysis": "profile_column", "error_type": type(exc).__name__,
+            details={"analysis": "diagnostic_aware_opening_evidence",
+                     "error_type": type(exc).__name__,
                      "error": str(exc)},
         )
         raise
@@ -833,12 +1685,15 @@ def run_opening_look(case_id: str, actor: str, tenant_id: str = DEFAULT_TENANT) 
     completed_case = require_case(case_id, tenant_id)
     evidence_id = rca_evidence.record_event(
         completed_case, evidence_kind="static_initial_review", stage="initial_review",
-        status="completed", actor=actor, source_artifact_ids=(context_id,),
+        status="completed", actor=actor, source_artifact_ids=source_artifact_ids,
         details={"look_id": look_id, "execution_id": execution_id,
-                 "analysis": "profile_column", "deterministic": True, "result": summary},
+                 "analysis": "diagnostic_aware_opening_evidence", "deterministic": True,
+                 "evidence_bundle_fingerprint": summary["evidence_bundle_fingerprint"],
+                 "evidence_source_artifact_ids": list(source_artifact_ids),
+                 "result": summary},
     )
     llm_review = _run_llm_initial_review(
-        completed_case, actor, context_id, checklist, summary
+        completed_case, actor, checklist, summary, source_artifact_ids
     )
     return {"look_id": look_id, "execution_id": execution_id, "summary": summary,
             "aar_evidence_id": evidence_id, "llm_review": llm_review}
@@ -849,15 +1704,330 @@ def continue_from_initial_review(case_id: str, actor: str,
     case = require_case(case_id, tenant_id)
     if case["state"] != "initial_review_complete":
         raise TransitionError(f"Investigation cannot start from state {case['state']!r}")
+    candidates = _case_hypotheses(
+        case_id, origin=INITIAL_REVIEW_HYPOTHESIS_ORIGIN
+    )
+    selected = next(
+        (row for row in candidates if row.get("lifecycle_status") == "selected"), None
+    )
+    if candidates and selected is None:
+        raise TransitionError(
+            "Select one candidate hypothesis before starting the investigation"
+        )
     transition(case_id, "investigation_loop", actor, reason="initial review accepted",
                tenant_id=tenant_id)
     continued = require_case(case_id, tenant_id)
     rca_evidence.record_event(
         continued, evidence_kind="human_decision", stage="initial_review", status="accepted",
-        actor=actor, details={"decision": "continue_to_investigation",
-                              "from_state": "initial_review_complete",
-                              "to_state": "investigation_loop"},
+        actor=actor,
+        source_artifact_ids=((selected.get("source_evidence_id"),)
+                             if selected and selected.get("source_evidence_id") else ()),
+        details={"decision": "continue_to_investigation",
+                 "selected_hypothesis_id": (selected or {}).get("hypothesis_id"),
+                 "selected_hypothesis": (selected or {}).get("statement"),
+                 "from_state": "initial_review_complete",
+                 "to_state": "investigation_loop"},
     )
+    return get_case(case_id, tenant_id)
+
+
+def select_initial_review_hypothesis(case_id: str, hypothesis_id: str, actor: str,
+                                     tenant_id: str = DEFAULT_TENANT) -> dict:
+    """Select exactly one persisted Initial Review proposal for investigation."""
+    case = require_case(case_id, tenant_id)
+    if case["state"] != "initial_review_complete":
+        raise TransitionError(
+            f"An Initial Review hypothesis cannot be selected from state {case['state']!r}"
+        )
+    candidates = _case_hypotheses(
+        case_id, origin=INITIAL_REVIEW_HYPOTHESIS_ORIGIN
+    )
+    target = next(
+        (row for row in candidates if row["hypothesis_id"] == hypothesis_id), None
+    )
+    if target is None:
+        raise RcaError("The selected hypothesis is not an Initial Review candidate for this case")
+    if target.get("lifecycle_status") == "selected":
+        return get_case(case_id, tenant_id)
+    previous = next(
+        (row for row in candidates if row.get("lifecycle_status") == "selected"), None
+    )
+    now = s.now_ist()
+    with s.get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE rca_hypotheses SET lifecycle_status='not_selected', "
+            "selected_by=NULL, selected_at=NULL "
+            "WHERE case_id=? AND origin=? AND lifecycle_status='selected'",
+            (case_id, INITIAL_REVIEW_HYPOTHESIS_ORIGIN),
+        )
+        conn.execute(
+            "UPDATE rca_hypotheses SET lifecycle_status='selected', selected_by=?, "
+            "selected_at=? WHERE hypothesis_id=? AND case_id=? AND origin=?",
+            (actor, now, hypothesis_id, case_id, INITIAL_REVIEW_HYPOTHESIS_ORIGIN),
+        )
+        conn.commit()
+    selected = s.query_one("rca_hypotheses", hypothesis_id=hypothesis_id)
+    _audit(
+        tenant_id, actor, "hypothesis_selected", "rca_case", case_id,
+        before={"hypothesis_id": (previous or {}).get("hypothesis_id")},
+        after={"hypothesis_id": hypothesis_id, "statement": selected["statement"]},
+        reason="Selected Initial Review hypothesis for investigation",
+    )
+    source_id = selected.get("source_evidence_id")
+    rca_evidence.record_event(
+        case, evidence_kind="human_decision", stage="initial_review", status="accepted",
+        actor=actor, source_artifact_ids=((source_id,) if source_id else ()),
+        details={
+            "decision": "select_hypothesis",
+            "hypothesis_id": hypothesis_id,
+            "statement": selected["statement"],
+            "evidence_basis": selected.get("evidence_basis"),
+            "proposed_test": selected.get("proposed_test"),
+            "replaced_hypothesis_id": (previous or {}).get("hypothesis_id"),
+            "selected_at": now,
+        },
+    )
+    return get_case(case_id, tenant_id)
+
+
+def select_focused_hypothesis(case_id: str, hypothesis_id: str, actor: str,
+                              tenant_id: str = DEFAULT_TENANT) -> dict:
+    """Human-select one driver-informed candidate for the normal RCA loop."""
+    case = require_case(case_id, tenant_id)
+    if case["state"] != "investigation_loop":
+        raise TransitionError(
+            f"A focused hypothesis cannot be selected from state {case['state']!r}"
+        )
+    candidates = _case_hypotheses(case_id, origin=DRIVER_SEARCH_HYPOTHESIS_ORIGIN)
+    target = next((row for row in candidates if row["hypothesis_id"] == hypothesis_id), None)
+    if target is None:
+        raise RcaError("The selected hypothesis is not a driver-search candidate for this case")
+    if target.get("lifecycle_status") == "selected":
+        return get_case(case_id, tenant_id)
+    now = s.now_ist()
+    with s.get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE rca_hypotheses SET lifecycle_status='not_selected', "
+            "selected_by=NULL, selected_at=NULL WHERE case_id=? AND origin=? "
+            "AND lifecycle_status='selected'",
+            (case_id, DRIVER_SEARCH_HYPOTHESIS_ORIGIN),
+        )
+        conn.execute(
+            "UPDATE rca_hypotheses SET lifecycle_status='selected', selected_by=?, "
+            "selected_at=? WHERE hypothesis_id=? AND case_id=? AND origin=?",
+            (actor, now, hypothesis_id, case_id, DRIVER_SEARCH_HYPOTHESIS_ORIGIN),
+        )
+        conn.commit()
+    rca_evidence.record_event(
+        case, evidence_kind="human_decision", stage="investigate", status="accepted",
+        actor=actor,
+        source_artifact_ids=((target.get("source_evidence_id"),)
+                             if target.get("source_evidence_id") else ()),
+        details={"decision": "select_driver_focused_hypothesis",
+                 "hypothesis_id": hypothesis_id, "statement": target["statement"],
+                 "evidence_basis": target.get("evidence_basis"),
+                 "proposed_test": target.get("proposed_test"), "selected_at": now},
+    )
+    _audit(tenant_id, actor, "focused_hypothesis_selected", "rca_case", case_id,
+           after={"hypothesis_id": hypothesis_id, "statement": target["statement"]})
+    return get_case(case_id, tenant_id)
+
+
+def review_hypothesis(case_id: str, hypothesis_id: str, actor: str, review: dict,
+                      tenant_id: str = DEFAULT_TENANT) -> dict:
+    """Retain a human review, optionally create a revised candidate, and select it."""
+    case = require_case(case_id, tenant_id)
+    target = s.query_one("rca_hypotheses", hypothesis_id=hypothesis_id, case_id=case_id)
+    if target is None or target.get("origin") not in {
+        INITIAL_REVIEW_HYPOTHESIS_ORIGIN, DRIVER_SEARCH_HYPOTHESIS_ORIGIN,
+    }:
+        raise RcaError("The hypothesis is not a reviewable candidate for this case")
+    origin = target["origin"]
+    expected_state = (
+        "initial_review_complete"
+        if origin == INITIAL_REVIEW_HYPOTHESIS_ORIGIN else "investigation_loop"
+    )
+    if case["state"] != expected_state:
+        raise TransitionError(
+            f"This hypothesis cannot be reviewed from state {case['state']!r}"
+        )
+
+    def reviewed_value(name: str, limit: int) -> str:
+        value = str(review.get(name) or target.get(name) or "").strip()
+        if not value:
+            raise ValueError(f"{name.replace('_', ' ').title()} is required")
+        if len(value) > limit:
+            raise ValueError(
+                f"{name.replace('_', ' ').title()} must not exceed {limit} characters"
+            )
+        return value
+
+    statement = reviewed_value("statement", 4000)
+    evidence_basis = reviewed_value("evidence_basis", 8000)
+    proposed_test = reviewed_value("proposed_test", 8000)
+    comment = str(review.get("comment") or "").strip()
+    if len(comment) > 4000:
+        raise ValueError("Hypothesis context must not exceed 4000 characters")
+    revised = any((
+        statement != str(target.get("statement") or "").strip(),
+        evidence_basis != str(target.get("evidence_basis") or "").strip(),
+        proposed_test != str(target.get("proposed_test") or "").strip(),
+    ))
+    now = s.now_ist()
+    selected_id = hypothesis_id
+    if revised:
+        selected_id = _id("hyp")
+        ranks = [int(row.get("candidate_rank") or 0)
+                 for row in _case_hypotheses(case_id, origin=origin)]
+        s.insert("rca_hypotheses", {
+            "hypothesis_id": selected_id, "case_id": case_id,
+            "suspect_id": target.get("suspect_id"), "statement": statement,
+            "label": "human-refined candidate", "tier": target.get("tier") or "unassessed",
+            "evidence_look_ids_json": target.get("evidence_look_ids_json") or [],
+            "confirm_check_json": {"proposed_test": proposed_test},
+            "reject_condition_json": target.get("reject_condition_json"),
+            "owner": target.get("owner"), "created_at": now, "origin": origin,
+            "lifecycle_status": "candidate", "evidence_basis": evidence_basis,
+            "proposed_test": proposed_test,
+            "source_evidence_id": target.get("source_evidence_id"),
+            "candidate_rank": max(ranks, default=0) + 1,
+            "selected_by": None, "selected_at": None,
+        })
+
+    context_id = None
+    context_evidence_id = None
+    stage = "initial_review" if origin == INITIAL_REVIEW_HYPOTHESIS_ORIGIN else "investigate"
+    if comment:
+        context_id = _id("hctx")
+        s.insert("rca_human_questions", {
+            "id": context_id, "case_id": case_id,
+            "question": f"Context for hypothesis {hypothesis_id}",
+            "asked_by_look_id": None, "answer": comment, "answered_by": actor,
+            "answered_at": now, "knowledge_rule_id_out": None, "created_at": now,
+        })
+        context_evidence_id = rca_evidence.record_event(
+            case, evidence_kind="human_context", stage=stage, status="recorded",
+            actor=actor,
+            source_artifact_ids=((target.get("source_evidence_id"),)
+                                 if target.get("source_evidence_id") else ()),
+            details={"context_id": context_id, "comment": comment,
+                     "hypothesis_id": hypothesis_id,
+                     "reviewed_hypothesis_id": selected_id},
+        )
+
+    with s.get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "UPDATE rca_hypotheses SET lifecycle_status='not_selected', "
+            "selected_by=NULL, selected_at=NULL WHERE case_id=? AND origin=? "
+            "AND lifecycle_status='selected'",
+            (case_id, origin),
+        )
+        conn.execute(
+            "UPDATE rca_hypotheses SET lifecycle_status='selected', selected_by=?, "
+            "selected_at=? WHERE hypothesis_id=? AND case_id=? AND origin=?",
+            (actor, now, selected_id, case_id, origin),
+        )
+        conn.commit()
+    source_ids = tuple(value for value in (
+        target.get("source_evidence_id"), context_evidence_id
+    ) if value)
+    rca_evidence.record_event(
+        case, evidence_kind="human_decision", stage=stage, status="accepted",
+        actor=actor, source_artifact_ids=source_ids,
+        details={
+            "decision": "review_and_select_hypothesis",
+            "original_hypothesis_id": hypothesis_id,
+            "selected_hypothesis_id": selected_id,
+            "revision_created": revised,
+            "original": {
+                "statement": target.get("statement"),
+                "evidence_basis": target.get("evidence_basis"),
+                "proposed_test": target.get("proposed_test"),
+            },
+            "reviewed": {"statement": statement, "evidence_basis": evidence_basis,
+                         "proposed_test": proposed_test},
+            "context_id": context_id, "selected_at": now,
+        },
+    )
+    _audit(
+        tenant_id, actor, "hypothesis_reviewed", "rca_case", case_id,
+        before={"hypothesis_id": hypothesis_id, "statement": target.get("statement")},
+        after={"hypothesis_id": selected_id, "statement": statement,
+               "revision_created": revised, "context_id": context_id},
+        reason="Reviewed and selected hypothesis for governed investigation",
+    )
+    return get_case(case_id, tenant_id)
+
+
+def add_investigation_context(case_id: str, comment: str, actor: str,
+                              tenant_id: str = DEFAULT_TENANT,
+                              hypothesis_id: str | None = None) -> dict:
+    """Retain human context and cancel an unexecuted plan so it can be replanned."""
+    case = require_case(case_id, tenant_id)
+    intake = case["state"] == "intake"
+    if case["state"] not in {"intake", "investigation_loop"}:
+        raise TransitionError(
+            f"Investigation context cannot be added from state {case['state']!r}"
+        )
+    value = str(comment or "").strip()
+    if not value:
+        raise ValueError("Investigation context is required")
+    if len(value) > 4000:
+        raise ValueError("Investigation context must not exceed 4000 characters")
+    if hypothesis_id:
+        if intake:
+            raise TransitionError("Intake context belongs to the case, not a hypothesis")
+        target = s.query_one("rca_hypotheses", case_id=case_id, hypothesis_id=hypothesis_id)
+        if not target:
+            raise KeyError("Unknown hypothesis for this RCA")
+        active = _active_investigation_hypothesis(case_id)
+        if not active or active["hypothesis_id"] != hypothesis_id:
+            raise TransitionError("Context can only be added to the active hypothesis")
+    planned_looks = _case_planned_looks(case_id)
+    if any((look.get("fork_json") or {}).get("combined_run_state") == "running"
+           for look in planned_looks):
+        raise TransitionError("Wait for the current hypothesis run before adding context")
+    now = s.now_ist()
+    context_id = _id("hctx")
+    s.insert("rca_human_questions", {
+        "id": context_id, "case_id": case_id,
+        "question": (f"Context for hypothesis {hypothesis_id}" if hypothesis_id
+                     else "User-provided investigation context"), "asked_by_look_id": None,
+        "answer": value, "answered_by": actor, "answered_at": now,
+        "knowledge_rule_id_out": None, "created_at": now,
+    })
+    context_evidence_id = rca_evidence.record_event(
+        case, evidence_kind="human_context", stage="intake" if intake else "investigate", status="recorded",
+        actor=actor, details={"context_id": context_id, "comment": value,
+                             "hypothesis_id": hypothesis_id},
+    )
+    executions = {row["look_id"] for row in s.query("rca_look_executions")}
+    pending = next((look for look in reversed(planned_looks)
+                    if look["look_id"] not in executions
+                    and (not hypothesis_id or (look.get("fork_json") or {}).get("hypothesis_id") == hypothesis_id)), None)
+    if pending:
+        execution_id = _id("exec")
+        s.insert("rca_look_executions", {
+            "execution_id": execution_id, "look_id": pending["look_id"],
+            "status": "cancelled",
+            "summary_json": {"found": False, "cancelled": True,
+                             "reason": "Superseded by new user investigation context.",
+                             "context_evidence_id": context_evidence_id},
+            "crashed": 0, "retried": 0, "executed_at": now,
+        })
+        s.update("rca_looks", {"look_id": pending["look_id"]}, {"budget_counted": 0})
+        rca_evidence.record_event(
+            case, evidence_kind="investigation_plan_cancelled", stage="investigate",
+            status="cancelled", actor=actor,
+            source_artifact_ids=(context_evidence_id,),
+            details={"look_id": pending["look_id"], "execution_id": execution_id,
+                     "reason": "New user context requires replanning."},
+        )
+    _audit(tenant_id, actor, "investigation_context_added", "rca_case", case_id,
+           after={"context_id": context_id, "comment": value, "hypothesis_id": hypothesis_id})
     return get_case(case_id, tenant_id)
 
 
@@ -866,8 +2036,33 @@ def continue_from_initial_review(case_id: str, actor: str,
 # dead-end; board cap 8 active suspects (9th needs a named kill target).
 
 LOOK_BUDGET = 10
+HYPOTHESIS_RUN_LIMIT = 2
 BOARD_CAP = 8
 SECOND_CHANCE_BONUS_LOOKS = 5
+
+
+def _investigation_limit(looks: list[dict], executions: dict[str, dict]) -> dict:
+    """Count started root runs, never proposals, opening evidence or confirmation children."""
+    used = 0
+    for look in looks:
+        fork = look.get("fork_json") or {}
+        execution = executions.get(look["look_id"]) or {}
+        if (look.get("kind") != "planned" or not fork.get("agent_runtime")
+                or fork.get("combined_parent_look_id") or execution.get("status") == "cancelled"):
+            continue
+        if fork.get("execution_started") or fork.get("combined_run_state") or execution:
+            used += 1
+    return {"limit": HYPOTHESIS_RUN_LIMIT, "used": used,
+            "remaining": max(0, HYPOTHESIS_RUN_LIMIT - used),
+            "reached": used >= HYPOTHESIS_RUN_LIMIT}
+
+
+def _require_hypothesis_capacity(case_id: str, *, conn=None) -> None:
+    looks = s.query("rca_looks", case_id=case_id, conn=conn)
+    executions = {look["look_id"]: execution for look in looks
+                  if (execution := s.query_one("rca_look_executions", look_id=look["look_id"], conn=conn))}
+    if _investigation_limit(looks, executions)["reached"]:
+        raise TransitionError("Two-run hypothesis limit reached. Use available data chat or continue to closure.")
 
 
 def _case_planned_looks(case_id: str) -> list[dict]:
@@ -900,8 +2095,456 @@ def _suspect_origin_look(suspect_id: str) -> dict | None:
     return s.query_one("rca_looks", look_id=hist[0]["look_id"])
 
 
+def _opening_summary(case_id: str) -> dict:
+    opening = next((look for look in s.query("rca_looks", order_by="seq", case_id=case_id)
+                    if look.get("kind") == "opening"), None)
+    if not opening:
+        return {}
+    execution = s.query_one("rca_look_executions", look_id=opening["look_id"])
+    return (execution or {}).get("summary_json") or {}
+
+
+def _agent_investigation_history(case: dict) -> list[dict]:
+    """Return a bounded same-generation history for follow-up planning."""
+    interpretation_by_look = {}
+    for event in rca_evidence.list_case_evidence(
+        case["case_id"], int(case.get("workflow_generation") or 1)
+    ):
+        details = event.get("details") or {}
+        if (event.get("evidence_kind") == "agent_interpretation"
+                and event.get("status") == "completed" and details.get("look_id")):
+            interpretation_by_look[details["look_id"]] = details.get("interpretation") or {}
+    history = []
+    for look in _case_planned_looks(case["case_id"]):
+        fork = look.get("fork_json") or {}
+        if not fork.get("agent_runtime"):
+            continue
+        execution = s.query_one("rca_look_executions", look_id=look["look_id"])
+        result = ((execution or {}).get("summary_json") or {}).get("result") or {}
+        reading = interpretation_by_look.get(look["look_id"], {})
+        history.append({
+            "look_id": look["look_id"],
+            "question": (fork.get("plan") or {}).get("question"),
+            "helper_id": look.get("sql_or_helper_ref"),
+            "helper_params": fork.get("helper_params") or {},
+            "result_summary": result.get("summary"),
+            "result_metrics": result.get("metrics"),
+            "assessment": reading.get("assessment"),
+            "next_question": reading.get("next_question"),
+        })
+    return history[-5:]
+
+
+def _agent_propose_driver_search(case: dict, selected: dict, actor: str, *,
+                                 analysis_table: str, schema: dict,
+                                 opening: dict, population_context: dict,
+                                 declared_special_values: list,
+                                 feature_state_snapshot: dict,
+                                 psi_bin_definition: dict | None,
+                                 source_ids: tuple[str, ...]) -> dict | None:
+    """Create the first governed driver-discovery look when a valid target exists."""
+    case_id = case["case_id"]
+    rca_evidence.record_event(
+        case, evidence_kind="driver_target_definition", stage="investigate", status="started",
+        actor=actor, source_artifact_ids=source_ids,
+        details={"hypothesis_id": selected["hypothesis_id"]},
+    )
+    user_context = [
+        f"{row.get('question') or 'User context'}: {row['answer']}" for row in s.query(
+            "rca_human_questions", order_by="created_at", case_id=case_id
+        ) if row.get("answer")
+    ][-5:]
+    try:
+        defined = investigation_agent.define_driver_target({
+            "case": {key: case.get(key) for key in (
+                "case_id", "test_name", "test_family", "table_name", "metric", "threshold"
+            )},
+            "selected_hypothesis": {key: selected.get(key) for key in (
+                "hypothesis_id", "statement", "evidence_basis", "proposed_test"
+            )},
+            "observed_diagnostic": opening,
+            "population_context": population_context,
+            "available_schema": schema,
+            "user_context": user_context,
+        })
+        target_spec = defined["output"]
+        if target_spec.get("target_mode") == "unavailable":
+            rca_evidence.record_event(
+                case, evidence_kind="driver_target_definition", stage="investigate", status="blocked",
+                actor=actor, source_artifact_ids=source_ids,
+                details={"hypothesis_id": selected["hypothesis_id"], "target_spec": target_spec,
+                         "model": defined["selected_model"], "attempts": defined["attempts"],
+                         "prompt_version": defined["prompt_version"]},
+            )
+            return None
+        frame = _read_analysis_table(case["item_id"], analysis_table)
+        from domains.rca.driver_search import validate_target_spec
+        target_spec = validate_target_spec(
+            frame, target_spec, population_context, opening.get("diagnostic"),
+            psi_bin_definition,
+        )
+    except Exception as exc:
+        rca_evidence.record_event(
+            case, evidence_kind="driver_target_definition", stage="investigate", status="failed",
+            actor=actor, source_artifact_ids=source_ids,
+            details={"hypothesis_id": selected["hypothesis_id"],
+                     "error_type": type(exc).__name__, "error": str(exc)},
+        )
+        return None
+
+    target_id = rca_evidence.record_event(
+        case, evidence_kind="driver_target_definition", stage="investigate", status="completed",
+        actor=actor, source_artifact_ids=source_ids,
+        details={"hypothesis_id": selected["hypothesis_id"], "target_spec": target_spec,
+                 "model": defined["selected_model"], "attempts": defined["attempts"],
+                 "prompt_version": defined["prompt_version"]},
+    )
+    helper_params = {"target_spec": target_spec}
+    plan = {
+        "question": target_spec["problem_statement"],
+        "rationale": target_spec["rationale"],
+        "analysis_kind": "shallow_greedy_driver_search",
+        "preferred_helper_ids": ["greedy_driver_search"],
+        "helper_params": helper_params,
+        "expected_output": ["validated feature importance", "bounded separating rules",
+                            "validation AUC", "balanced accuracy"],
+        "supports_hypothesis_when": (
+            "One or more adequately supported inputs provide stable out-of-sample separation "
+            "and yield a testable focused hypothesis."
+        ),
+        "rejects_hypothesis_when": (
+            "No eligible input provides material validated separation or the apparent split "
+            "depends on leakage or inadequate support."
+        ),
+    }
+    execution_artifact = investigation_runtime.helper_execution_artifact(
+        "greedy_driver_search", helper_params
+    )
+    fork = {
+        "kind": "agent_driver_search", "agent_runtime": True,
+        "hypothesis_id": selected["hypothesis_id"], "hypothesis": selected["statement"],
+        "source_evidence_id": target_id, "plan": plan,
+        "library_search": {"selected_helper_id": "greedy_driver_search",
+                           "reason": "Governed target-driven discovery helper"},
+        "execution_mode": "approved_helper", "helper_params": helper_params,
+        "population_context": population_context,
+        "declared_special_values": declared_special_values,
+        "feature_state_snapshot": feature_state_snapshot,
+        "psi_bin_definition": psi_bin_definition,
+        "execution_artifact": execution_artifact, "generated_code": None,
+        "target_spec": target_spec,
+        "planner": {"model": defined["selected_model"], "attempts": defined["attempts"],
+                    "prompt_version": defined["prompt_version"]},
+    }
+    look_id = _id("look")
+    s.insert("rca_looks", {
+        "look_id": look_id, "case_id": case_id,
+        "seq": len(_case_planned_looks(case_id)) + 2, "kind": "planned",
+        "proposed_by": "investigation_agent", "fork_json": fork,
+        "sql_or_helper_ref": "greedy_driver_search", "budget_counted": 1,
+        "created_at": s.now_ist(),
+    })
+    rca_evidence.record_event(
+        case, evidence_kind="library_search", stage="investigate", status="completed",
+        actor=actor, source_artifact_ids=(target_id,),
+        details={"look_id": look_id, "hypothesis_id": selected["hypothesis_id"],
+                 "selected_helper_id": "greedy_driver_search",
+                 "reason": "Governed target-driven discovery helper"},
+    )
+    rca_evidence.record_event(
+        case, evidence_kind="agent_investigation_plan", stage="investigate", status="completed",
+        actor=actor, source_artifact_ids=(target_id,),
+        details={"look_id": look_id, "hypothesis_id": selected["hypothesis_id"],
+                 "plan": plan, "execution_mode": "approved_helper",
+                 "target_spec": target_spec, "execution_artifact": execution_artifact,
+                 "model": defined["selected_model"], "attempts": defined["attempts"],
+                 "prompt_version": defined["prompt_version"]},
+    )
+    _audit(case["tenant_id"], actor, "agent_driver_search_plan", "rca_look", look_id,
+           after={"hypothesis_id": selected["hypothesis_id"], "target_mode": target_spec["target_mode"]})
+    return {"look_id": look_id, "fork": fork}
+
+
+def _agent_propose_look(case: dict, selected: dict, actor: str, *,
+                        confirmation: dict | None = None) -> dict:
+    case_id = case["case_id"]
+    case_file = s.query_one("rca_case_files", case_id=case_id)
+    checklist = case_file["checklist_json"] or {}
+    analysis_table = _case_analysis_table(case)
+    schema = case_file["schema_snapshot_json"] or v2_service._inventory_map(
+        case["item_id"], analysis_table
+    )
+    columns = list(checklist.get("columns") or [])
+    opening = _opening_summary(case_id)
+    diagnostic = opening.get("diagnostic") if isinstance(opening, dict) else None
+    issue = issues_service.get_issue(case["issue_row_id"])
+    source_evidence = issue.get("source_evidence") or {}
+    population_context = source_evidence.get("population_context") or {}
+    data_profile = source_evidence.get("data_profile") or {}
+    declared_special_values = ((data_profile.get("declared_special_values")
+                                or data_profile.get("special_values") or [])
+                               if data_profile.get("special_values_confirmed") else [])
+    feature_state_snapshot = checklist.get("feature_state_snapshot") or {}
+    psi_bin_definition = None
+    psi_metrics = source_evidence.get("metrics") or {}
+    bin_artifact_id = psi_metrics.get("bin_artifact_id")
+    if bin_artifact_id:
+        try:
+            from domains.test_lab.diagnostics.t4_d14_population_stability.runner import load_frozen_bin_definition
+            psi_bin_definition = load_frozen_bin_definition({
+                "artifact_id": bin_artifact_id,
+                "payload_hash": psi_metrics.get("bin_payload_hash"),
+                "allow_historical": True,
+            }, str(psi_metrics.get("feature") or columns[0]))
+        except (KeyError, FileNotFoundError, ValueError):
+            psi_bin_definition = None
+    history = _agent_investigation_history(case)
+    catalog = investigation_runtime.helper_catalog(
+        case.get("test_family") or checklist.get("test_family"), analysis_table, columns,
+    )
+    source_ids = ((selected.get("source_evidence_id"),)
+                  if selected.get("source_evidence_id") else ())
+    if not history and confirmation is None:
+        discovery = _agent_propose_driver_search(
+            case, selected, actor, analysis_table=analysis_table, schema=schema,
+            opening=opening, population_context=population_context,
+            declared_special_values=declared_special_values, source_ids=source_ids,
+            feature_state_snapshot=feature_state_snapshot,
+            psi_bin_definition=psi_bin_definition,
+        )
+        if discovery:
+            return discovery
+    rca_evidence.record_event(
+        case, evidence_kind="agent_investigation_plan", stage="investigate",
+        status="started", actor=actor, source_artifact_ids=source_ids,
+        details={"hypothesis_id": selected["hypothesis_id"],
+                 "hypothesis": selected["statement"]},
+    )
+    payload = {
+        "case": {key: case.get(key) for key in (
+            "case_id", "test_name", "test_family", "table_name", "metric", "threshold"
+        )},
+        "selected_hypothesis": {
+            key: selected.get(key) for key in (
+                "hypothesis_id", "statement", "evidence_basis", "proposed_test"
+            )
+        },
+        "opening_evidence": opening,
+        "diagnostic_context": {
+            "population_context": population_context,
+            "declared_special_values": declared_special_values,
+            "feature_state_snapshot": feature_state_snapshot,
+        },
+        "investigation_history": history,
+        "user_context": [f"{row.get('question') or 'User context'}: {row['answer']}" for row in s.query(
+            "rca_human_questions", order_by="created_at", case_id=case_id
+        ) if row.get("answer")][-5:],
+        "available_schema": schema,
+        "helper_catalog": catalog,
+        "guardrails": {"one_analysis_per_plan": True, "read_only": True,
+                       "library_first": True, "max_generated_code_chars": 12000,
+                       "sandbox_timeout_seconds": 15},
+    }
+    payload["case"]["table_name"] = analysis_table
+    if confirmation is not None:
+        payload["discovery_confirmation"] = confirmation
+    try:
+        planned = investigation_agent.plan(payload)
+        plan = planned["output"]
+        plan["helper_params"] = {
+            key: value for key, value in (plan.get("helper_params") or {}).items()
+            if value not in (None, [], "")
+        }
+        if confirmation is not None and plan.get("confirmation_possible") is False:
+            raise RcaError("Confirmation needs additional information: " + plan["rationale"])
+    except Exception as exc:
+        attempts = getattr(exc, "attempts", [])
+        rca_evidence.record_event(
+            case, evidence_kind="agent_investigation_plan", stage="investigate",
+            status="failed", actor=actor, source_artifact_ids=source_ids,
+            details={"hypothesis_id": selected["hypothesis_id"],
+                     "error_type": type(exc).__name__, "error": str(exc),
+                     "attempts": attempts},
+        )
+        if attempts:
+            raise RcaAgentUnavailable(
+                "The investigation agent could not create a plan. Model attempt details were retained in the AAR; retry after checking the configured deployment."
+            ) from exc
+        raise
+
+    search = investigation_runtime.search_helpers(
+        plan, catalog, has_retained_psi=bool(diagnostic and diagnostic.get("bins")),
+        available_columns={str(value).split(".")[-1] for value in schema},
+        has_population_context=bool((population_context.get("definition") or {}).get("method") == "split_snapshot"),
+    )
+    rca_evidence.record_event(
+        case, evidence_kind="library_search", stage="investigate", status="completed",
+        actor=actor, source_artifact_ids=source_ids,
+        details={"hypothesis_id": selected["hypothesis_id"], **search},
+    )
+    generated = None
+    validation_errors: list[str] = []
+    helper_id = search.get("selected_helper_id")
+    if confirmation is not None and helper_id == "greedy_driver_search":
+        raise RcaError("Confirmation cannot repeat driver discovery")
+    if not helper_id:
+        rca_evidence.record_event(
+            case, evidence_kind="code_generation", stage="investigate", status="started",
+            actor=actor, source_artifact_ids=source_ids,
+            details={"hypothesis_id": selected["hypothesis_id"], "plan": plan},
+        )
+        try:
+            generated = investigation_agent.generate_code({
+                "plan": plan, "selected_hypothesis": payload["selected_hypothesis"],
+                "available_schema": schema, "retained_aggregate_evidence": opening,
+                "diagnostic_context": payload["diagnostic_context"],
+                "investigation_history": history,
+                "discovery_confirmation": confirmation,
+            })
+            validation_errors = investigation_runtime.validate_generated_code(
+                generated["output"]["python_code"]
+            )
+            if validation_errors:
+                raise RcaError("Generated code failed guardrails: " + "; ".join(validation_errors))
+        except Exception as exc:
+            rca_evidence.record_event(
+                case, evidence_kind="code_generation", stage="investigate", status="failed",
+                actor=actor, source_artifact_ids=source_ids,
+                details={"hypothesis_id": selected["hypothesis_id"],
+                         "error_type": type(exc).__name__, "error": str(exc),
+                         "generated_code": (generated or {}).get("output"),
+                         "model": (generated or {}).get("selected_model"),
+                         "attempts": (generated or {}).get("attempts") or [],
+                         "validation_errors": validation_errors},
+            )
+            raise
+        rca_evidence.record_event(
+            case, evidence_kind="code_generation", stage="investigate", status="completed",
+            actor=actor, source_artifact_ids=source_ids,
+            details={"hypothesis_id": selected["hypothesis_id"],
+                     "generated_code": generated["output"],
+                     "model": generated["selected_model"], "attempts": generated["attempts"],
+                     "prompt_version": generated["prompt_version"]},
+        )
+
+    helper_params = plan.get("helper_params") or {}
+    runtime_params = ({
+        "analysis_params": helper_params,
+        "retained_evidence": opening,
+        "diagnostic_context": payload["diagnostic_context"],
+    } if not helper_id else None)
+    execution_artifact = (
+        investigation_runtime.helper_execution_artifact(helper_id, helper_params)
+        if helper_id else investigation_runtime.generated_execution_artifact(
+            generated["output"]["python_code"], runtime_params or {}
+        )
+    )
+    fork = {
+        "kind": "agent_hypothesis_test", "agent_runtime": True,
+        "hypothesis_id": selected["hypothesis_id"], "hypothesis": selected["statement"],
+        "source_evidence_id": selected.get("source_evidence_id"),
+        "plan": plan, "library_search": search,
+        "execution_mode": "approved_helper" if helper_id else "generated_code_sandbox",
+        "helper_params": helper_params, "runtime_params": runtime_params,
+        "population_context": population_context,
+        "declared_special_values": declared_special_values,
+        "feature_state_snapshot": feature_state_snapshot,
+        "execution_artifact": execution_artifact,
+        "generated_code": (generated or {}).get("output"),
+        "planner": {"model": planned["selected_model"], "attempts": planned["attempts"],
+                    "prompt_version": planned["prompt_version"]},
+    }
+    if confirmation is not None:
+        fork["combined_parent_look_id"] = confirmation["look_id"]
+        fork["discovery_confirmation"] = confirmation
+    look_id = _id("look")
+    planned_looks = _case_planned_looks(case_id)
+    s.insert("rca_looks", {
+        "look_id": look_id, "case_id": case_id, "seq": len(planned_looks) + 2,
+        "kind": "planned", "proposed_by": "investigation_agent", "fork_json": fork,
+        "sql_or_helper_ref": helper_id or "generated_code_sandbox",
+        "budget_counted": 0 if confirmation is not None else 1, "created_at": s.now_ist(),
+    })
+    rca_evidence.record_event(
+        case, evidence_kind="agent_investigation_plan", stage="investigate",
+        status="completed", actor=actor, source_artifact_ids=source_ids,
+        details={"look_id": look_id, "hypothesis_id": selected["hypothesis_id"],
+                 "plan": plan, "library_search": search,
+                 "execution_mode": fork["execution_mode"],
+                 "diagnostic_context": payload["diagnostic_context"],
+                 "investigation_history": history,
+                 "discovery_confirmation": confirmation,
+                 "execution_artifact": execution_artifact,
+                 "model": planned["selected_model"], "attempts": planned["attempts"],
+                 "prompt_version": planned["prompt_version"]},
+    )
+    _audit(case["tenant_id"], actor, "agent_investigation_plan", "rca_look", look_id,
+           after={"hypothesis_id": selected["hypothesis_id"], "execution_mode": fork["execution_mode"]})
+    return {"look_id": look_id, "fork": fork}
+
+
+def _propose_alternative(case: dict, actor: str) -> dict:
+    case_id = case["case_id"]
+    case_file = s.query_one("rca_case_files", case_id=case_id) or {}
+    prior = s.query("rca_hypotheses", case_id=case_id, order_by="created_at, rowid")
+    payload = {
+        "case_id": case_id, "opening_evidence": _opening_summary(case_id),
+        "available_schema": case_file.get("schema_snapshot_json") or {},
+        "feature_state_snapshot": (case_file.get("checklist_json") or {}).get("feature_state_snapshot"),
+        "prior_hypotheses": [{key: row.get(key) for key in
+                              ("hypothesis_id", "statement", "evidence_basis")} for row in prior],
+        "investigation_history": _agent_investigation_history(case),
+        "user_context": [{"scope": row.get("question"), "comment": row["answer"]}
+                         for row in s.query("rca_human_questions", case_id=case_id,
+                                            order_by="created_at") if row.get("answer")],
+    }
+    proposed = None
+    try:
+        proposed = investigation_agent.propose_alternative(payload)
+        output = investigation_agent.AlternativeExplanation.model_validate(proposed["output"]).model_dump()
+        if not output["available"]:
+            raise RcaError("Another explanation needs additional information: " + output["distinction"])
+        if any(" ".join(row["statement"].lower().split()) ==
+               " ".join(output["statement"].lower().split()) for row in prior):
+            raise RcaError("The proposed explanation duplicates an existing hypothesis")
+    except Exception as exc:
+        rca_evidence.record_event(case, evidence_kind="alternative_hypothesis", stage="investigate",
+            status="failed", actor=actor, details={"error": str(exc),
+                "input": payload, "output": (proposed or {}).get("output"),
+                "model": (proposed or {}).get("selected_model"),
+                "attempts": (proposed or {}).get("attempts") or getattr(exc, "attempts", [])})
+        raise
+    hypothesis_id = _id("hyp")
+    source_id = rca_evidence.record_event(case, evidence_kind="alternative_hypothesis",
+        stage="investigate", status="completed", actor=actor,
+        details={"hypothesis_id": hypothesis_id, "output": output, "input": payload,
+                 "model": proposed.get("selected_model"), "attempts": proposed.get("attempts"),
+                 "prompt_version": proposed.get("prompt_version"),
+                 "user_action": "explore_another_explanation"})
+    with s.get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        s.insert("rca_hypotheses", {
+            "hypothesis_id": hypothesis_id, "case_id": case_id, "suspect_id": None,
+            "statement": output["statement"], "label": "alternative explanation", "tier": "unassessed",
+            "evidence_look_ids_json": [row["look_id"] for row in _case_planned_looks(case_id)],
+            "confirm_check_json": {"proposed_test": output["proposed_test"]},
+            "reject_condition_json": None, "owner": None, "created_at": s.now_ist(),
+            "origin": ALTERNATIVE_HYPOTHESIS_ORIGIN, "lifecycle_status": "selected",
+            "evidence_basis": output["evidence_basis"], "proposed_test": output["proposed_test"],
+            "source_evidence_id": source_id, "candidate_rank": len(prior) + 1,
+            "selected_by": actor, "selected_at": s.now_ist(),
+        }, conn=conn)
+        conn.execute("UPDATE rca_hypotheses SET lifecycle_status='not_selected' "
+                     "WHERE case_id=? AND hypothesis_id<>? AND lifecycle_status='selected'",
+                     (case_id, hypothesis_id))
+        conn.commit()
+    return s.query_one("rca_hypotheses", hypothesis_id=hypothesis_id)
+
+
+@progress.action("Planning investigation")
 def planner_propose_look(case_id: str, actor: str, tenant_id: str = DEFAULT_TENANT,
-                         kill_target_suspect_id: str | None = None) -> dict:
+                         kill_target_suspect_id: str | None = None,
+                         exploration: str | None = None) -> dict:
     """Proposes exactly one look + a precommitted fork (WF Agent 3). Reads
     only the case file and quarantines history — this function never queries
     rca_hypotheses/closures from OTHER cases, only this case's own
@@ -915,8 +2558,56 @@ def planner_propose_look(case_id: str, actor: str, tenant_id: str = DEFAULT_TENA
     case = require_case(case_id, tenant_id)
     if case["state"] != "investigation_loop":
         raise TransitionError(f"Planner cannot propose a look from state {case['state']!r}")
+    if exploration not in (None, "follow_up", "alternative"):
+        raise ValueError("Unknown exploration choice")
+    _require_hypothesis_capacity(case_id)
+    if exploration:
+        selected = _active_investigation_hypothesis(case_id)
+        if not selected:
+            raise TransitionError("Select a hypothesis before exploring")
+        planned = _case_planned_looks(case_id)
+        if any((row.get("fork_json") or {}).get("combined_run_state") == "running" for row in planned):
+            raise TransitionError("Wait for the current investigation to finish")
+        pending = [row for row in planned if not s.query_one("rca_look_executions", look_id=row["look_id"])]
+        if exploration == "follow_up" and pending:
+            current = next((row for row in pending if (row.get("fork_json") or {}).get("hypothesis_id") == selected["hypothesis_id"]), None)
+            if current:
+                return {"look_id": current["look_id"], "fork": current["fork_json"]}
+        if _budget_spent(case_id) >= _effective_look_budget(case_id):
+            return {"dead_end": True, "reason": "budget already spent"}
+        if exploration == "alternative":
+            selected = _propose_alternative(case, actor)
+            for row in pending:
+                execution_id = _id("exec")
+                s.insert("rca_look_executions", {"execution_id": execution_id,
+                    "look_id": row["look_id"], "status": "cancelled", "crashed": 0, "retried": 0,
+                    "executed_at": s.now_ist(), "summary_json": {"cancelled": True,
+                    "reason": "Superseded by the user's choice to explore another explanation."}})
+                s.update("rca_looks", {"look_id": row["look_id"]}, {"budget_counted": 0})
+                rca_evidence.record_event(case, evidence_kind="investigation_plan_cancelled",
+                    stage="investigate", status="cancelled", actor=actor,
+                    details={"look_id": row["look_id"], "execution_id": execution_id,
+                             "replacement_hypothesis_id": selected["hypothesis_id"]})
+        return _agent_propose_look(case, selected, actor)
+
     if _budget_spent(case_id) >= _effective_look_budget(case_id):
         return {"dead_end": True, "reason": "budget already spent"}
+
+    focused_candidates = _case_hypotheses(
+        case_id, origin=DRIVER_SEARCH_HYPOTHESIS_ORIGIN
+    )
+    selected = next((row for row in focused_candidates
+                     if row.get("lifecycle_status") == "selected"), None)
+    alternative = next((row for row in _case_hypotheses(case_id, origin=ALTERNATIVE_HYPOTHESIS_ORIGIN)
+                        if row.get("lifecycle_status") == "selected"), None)
+    selected = alternative or selected
+    if focused_candidates and selected is None:
+        raise TransitionError("Select the focused driver hypothesis before planning the next analysis")
+    selected = selected or next((row for row in _case_hypotheses(
+        case_id, origin=INITIAL_REVIEW_HYPOTHESIS_ORIGIN
+    ) if row.get("lifecycle_status") == "selected"), None)
+    if selected:
+        return _agent_propose_look(case, selected, actor)
 
     case_file = s.query_one("rca_case_files", case_id=case_id)
     checklist = case_file["checklist_json"]
@@ -993,20 +2684,197 @@ def runner_execute(look_id: str, actor: str, tenant_id: str = DEFAULT_TENANT) ->
     if not look:
         raise KeyError("Unknown look")
     case = require_case(look["case_id"], tenant_id)
-    frame = v2_service._read_table(case["item_id"], case["table_name"])
+    if s.query_one("rca_look_executions", look_id=look_id, status="cancelled"):
+        raise TransitionError("This plan was superseded by context; create a new plan before running")
     fork = look["fork_json"] or {}
-    if look["sql_or_helper_ref"] == "segment_breakdown" and fork.get("segment_column"):
-        summary = _segment_breakdown(frame, fork["column"], fork["segment_column"])
+    if fork.get("agent_runtime"):
+        with s.get_conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = s.query_one("rca_looks", look_id=look_id, conn=conn)
+            fork = current["fork_json"] or {}
+            if fork.get("execution_started") or s.query_one("rca_look_executions", look_id=look_id, conn=conn):
+                raise TransitionError("This analysis has already started; retain its evidence")
+            parent_id = fork.get("combined_parent_look_id")
+            if parent_id:
+                parent = s.query_one("rca_looks", look_id=parent_id, case_id=case["case_id"], conn=conn)
+                if not parent or (parent.get("fork_json") or {}).get("combined_run_state") != "running":
+                    raise TransitionError("Confirmation requires an active parent hypothesis run")
+            elif fork.get("combined_run_state") != "running":
+                _require_hypothesis_capacity(case["case_id"], conn=conn)
+            fork["execution_started"] = True
+            s.update("rca_looks", {"look_id": look_id}, {"fork_json": fork}, conn=conn)
+            conn.commit()
+    frame = _read_analysis_table(case["item_id"], _case_analysis_table(case))
+    if fork.get("agent_runtime"):
+        source_id = fork.get("source_evidence_id")
+        source_ids = ((source_id,) if source_id else ())
+        rca_evidence.record_event(
+            case, evidence_kind="sandbox_execution", stage="investigate", status="started",
+            actor=actor, source_artifact_ids=source_ids,
+            details={"look_id": look_id, "hypothesis_id": fork.get("hypothesis_id"),
+                     "execution_mode": fork.get("execution_mode")},
+        )
+        if fork.get("execution_mode") == "approved_helper":
+            try:
+                result = investigation_runtime.run_helper(
+                    look["sql_or_helper_ref"], frame, fork.get("helper_params") or {},
+                    _opening_summary(case["case_id"]).get("diagnostic"),
+                    fork.get("population_context") or {},
+                    fork.get("declared_special_values") or [],
+                    fork.get("psi_bin_definition") or {},
+                    fork.get("feature_state_snapshot") or {},
+                )
+                runtime = {"status": "completed", "ok": True, "result": result,
+                           "platform": "approved_helper_runtime"}
+            except Exception as exc:
+                runtime = {"status": "failed", "ok": False,
+                           "error": f"{type(exc).__name__}: {exc}",
+                           "platform": "approved_helper_runtime"}
+        else:
+            generated = fork.get("generated_code") or {}
+            runtime = investigation_runtime.run_generated_code(
+                generated.get("python_code") or "", frame, fork.get("runtime_params") or {},
+                feature_state_snapshot=fork.get("feature_state_snapshot") or {},
+            )
+            runtime["platform"] = "isolated_process_sandbox"
+        runtime.update(sandbox_capabilities.execution_metadata())
+        output_artifact_id = None
+        full_result = runtime.pop("full_result", None)
+        if runtime.get("ok") and isinstance(full_result, dict):
+            output_artifact_id = rca_evidence.record_event(
+                case, evidence_kind="sandbox_output", stage="investigate", status="completed",
+                actor=actor, source_artifact_ids=source_ids,
+                details={"look_id": look_id, "hypothesis_id": fork.get("hypothesis_id"),
+                         "execution_mode": fork.get("execution_mode"),
+                         "result": full_result},
+            )
+            runtime["result"]["download_artifact_id"] = output_artifact_id
+            runtime["result"]["download_filename"] = (
+                f"rca-{case['case_id']}-{look_id}-sandbox-output.txt"
+            )
+        summary = {"found": bool(runtime.get("ok")), "agent_runtime": True,
+                   "hypothesis_id": fork.get("hypothesis_id"), "runtime": runtime,
+                   "result": runtime.get("result")}
+        rca_evidence.record_event(
+            case, evidence_kind="sandbox_execution", stage="investigate",
+            status=runtime.get("status") or "failed", actor=actor,
+            source_artifact_ids=source_ids + ((output_artifact_id,) if output_artifact_id else ()),
+            details={"look_id": look_id, "hypothesis_id": fork.get("hypothesis_id"),
+                     "execution_mode": fork.get("execution_mode"), "runtime": runtime},
+        )
+    elif look["sql_or_helper_ref"] == "segment_breakdown" and fork.get("segment_column"):
+        case_file = s.query_one("rca_case_files", case_id=case["case_id"]) or {}
+        snapshot = (case_file.get("checklist_json") or {}).get("feature_state_snapshot") or {}
+        summary = _segment_breakdown(
+            frame, fork["column"], fork["segment_column"], snapshot
+        )
     else:
         summary = {"found": False, "reason": "no eligible segment column for this table"}
     execution_id = _id("exec")
     s.insert("rca_look_executions", {
-        "execution_id": execution_id, "look_id": look_id, "status": "done",
-        "summary_json": summary, "crashed": 0, "retried": 0, "executed_at": s.now_ist(),
+        "execution_id": execution_id, "look_id": look_id,
+        "status": (summary.get("runtime") or {}).get("status", "done"),
+        "summary_json": summary, "crashed": int(bool(summary.get("runtime") and not summary["runtime"].get("ok"))),
+        "retried": 0, "executed_at": s.now_ist(),
     })
     _audit(case["tenant_id"], actor, "look_execution", "rca_look_execution", execution_id,
           after={"look_id": look_id, "found": summary.get("found")})
     return {"execution_id": execution_id, "summary": summary}
+
+
+@progress.action("Hypothesis investigation")
+def run_investigation(look_id: str, actor: str, tenant_id: str = DEFAULT_TENANT) -> dict:
+    """Run discovery and exactly one confirmation under the original hypothesis."""
+    look = s.query_one("rca_looks", look_id=look_id)
+    if not look:
+        raise KeyError("Unknown look")
+    case = require_case(look["case_id"], tenant_id)
+    if s.query_one("rca_look_executions", look_id=look_id, status="cancelled"):
+        raise TransitionError("This plan was superseded by context; create a new plan before running")
+    fork = look.get("fork_json") or {}
+    if fork.get("combined_parent_look_id"):
+        raise TransitionError("Confirmation is executed as part of its parent hypothesis run")
+    if fork.get("kind") != "agent_driver_search":
+        result = runner_execute(look_id, actor, tenant_id)
+        reader_interpret(result["execution_id"], actor, tenant_id)
+        return get_case(case["case_id"], tenant_id)
+    # Claim this bounded run once, including duplicate requests from another tab.
+    already_finished = False
+    with s.get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        current = s.query_one("rca_looks", look_id=look_id, conn=conn)
+        current_fork = current["fork_json"] or {}
+        state = current_fork.get("combined_run_state")
+        if state == "running":
+            raise TransitionError("This hypothesis run is already in progress")
+        if state in {"completed", "failed"}:
+            already_finished = True
+        elif s.query_one("rca_look_executions", look_id=look_id, conn=conn):
+            raise TransitionError("This discovery already ran; retain its evidence and plan a new test")
+        else:
+            _require_hypothesis_capacity(case["case_id"], conn=conn)
+            current_fork["combined_run_state"] = "running"
+            s.update("rca_looks", {"look_id": look_id}, {"fork_json": current_fork}, conn=conn)
+        conn.commit()
+    if already_finished:
+        return get_case(case["case_id"], tenant_id)
+
+    def ensure_current() -> None:
+        latest = require_case(case["case_id"], tenant_id)
+        if latest.get("workflow_generation") != case.get("workflow_generation"):
+            raise TransitionError("The RCA was started afresh; this run was superseded")
+
+    confirmation_look_id = None
+    outcome = {"assessment": "inconclusive", "rationale": "The hypothesis run did not complete."}
+    completed = False
+    try:
+        execution = runner_execute(look_id, actor, tenant_id)
+        ensure_current()
+        if not execution["summary"].get("found"):
+            raise RcaError("Discovery did not complete; no confirmation was attempted")
+        if not ((execution["summary"].get("result") or {}).get("metrics") or {}).get("top_feature"):
+            raise RcaError("Discovery found no usable separator; no confirmation was attempted")
+        discovered = reader_interpret(
+            execution["execution_id"], actor, tenant_id, persist_driver_candidate=False
+        )["interpretation"]
+        ensure_current()
+        selected = s.query_one("rca_hypotheses", hypothesis_id=fork.get("hypothesis_id"))
+        if selected is None:
+            raise RcaError("The original hypothesis is unavailable")
+        confirmation = {
+            "look_id": look_id, "interpretation": discovered,
+            "result": execution["summary"].get("result"),
+            "constraint": "Test the original hypothesis using this separator; do not change the hypothesis or start another discovery.",
+        }
+        with progress.phase("Planning confirmation"):
+            proposed = _agent_propose_look(case, selected, actor, confirmation=confirmation)
+        confirmation_look_id = proposed["look_id"]
+        ensure_current()
+        with progress.phase("Running confirmation"):
+            confirmed = runner_execute(confirmation_look_id, actor, tenant_id)
+        ensure_current()
+        if not confirmed["summary"].get("found"):
+            raise RcaError("Confirmation did not complete; no final analytical assessment was accepted")
+        with progress.phase("Interpreting confirmation"):
+            outcome = reader_interpret(confirmed["execution_id"], actor, tenant_id)["interpretation"]
+        completed = True
+    except Exception as exc:
+        ensure_current()
+        outcome = {"assessment": "inconclusive", "rationale": str(exc),
+                   "limitations": ["The bounded run stopped; no automatic retry was started."]}
+    ensure_current()
+    current_fork["combined_run_state"] = "completed" if completed else "failed"
+    current_fork["confirmation_look_id"] = confirmation_look_id
+    s.update("rca_looks", {"look_id": look_id}, {
+        "fork_json": current_fork, "budget_counted": 1,
+    })
+    rca_evidence.record_event(
+        case, evidence_kind="combined_hypothesis_run", stage="investigate",
+        status="completed" if completed else "failed", actor=actor,
+        details={"look_id": look_id, "confirmation_look_id": confirmation_look_id,
+                 "hypothesis_id": fork.get("hypothesis_id"), "interpretation": outcome},
+    )
+    return get_case(case["case_id"], tenant_id)
 
 
 def revive_suspect(suspect_id: str, reason: str, actor: str, tenant_id: str = DEFAULT_TENANT) -> dict:
@@ -1087,7 +2955,8 @@ def evaluate_stop_condition(case_id: str) -> dict:
     return {"stop": False, "reason": None}
 
 
-def reader_interpret(execution_id: str, actor: str, tenant_id: str = DEFAULT_TENANT) -> dict:
+def reader_interpret(execution_id: str, actor: str, tenant_id: str = DEFAULT_TENANT,
+                     *, persist_driver_candidate: bool = True) -> dict:
     """The sole writer of suspect status (WF Agent 5). Compares the result
     against the look's precommitted fork; for a kill_attempt look, survival
     (still concentrated) keeps the suspect active and records the
@@ -1113,6 +2982,78 @@ def reader_interpret(execution_id: str, actor: str, tenant_id: str = DEFAULT_TEN
         # suspect/status-change.
         s.update("rca_looks", {"look_id": look["look_id"]}, {"budget_counted": 0})
         return {"suspect": None, "stop": evaluate_stop_condition(case["case_id"])}
+
+    if fork.get("agent_runtime"):
+        selected = s.query_one("rca_hypotheses", hypothesis_id=fork.get("hypothesis_id"))
+        source_id = fork.get("source_evidence_id")
+        source_ids = ((source_id,) if source_id else ())
+        rca_evidence.record_event(
+            case, evidence_kind="agent_interpretation", stage="investigate", status="started",
+            actor=actor, source_artifact_ids=source_ids, details={"look_id": look["look_id"],
+                                  "hypothesis_id": fork.get("hypothesis_id")},
+        )
+        try:
+            reader = (investigation_agent.interpret_driver_search
+                      if kind == "agent_driver_search" else investigation_agent.interpret)
+            interpreted = reader({
+                "selected_hypothesis": {
+                    "hypothesis_id": (selected or {}).get("hypothesis_id"),
+                    "statement": (selected or {}).get("statement"),
+                    "evidence_basis": (selected or {}).get("evidence_basis"),
+                },
+                "plan": fork.get("plan") or {},
+                "discovery_confirmation": fork.get("discovery_confirmation"),
+                "analysis_result": summary.get("result"),
+                "runtime": {key: value for key, value in (summary.get("runtime") or {}).items()
+                            if key not in {"result", "stdout"}},
+            })
+        except Exception as exc:
+            rca_evidence.record_event(
+                case, evidence_kind="agent_interpretation", stage="investigate", status="failed",
+                actor=actor, source_artifact_ids=source_ids, details={"look_id": look["look_id"],
+                                      "hypothesis_id": fork.get("hypothesis_id"),
+                                      "error_type": type(exc).__name__, "error": str(exc)},
+            )
+            raise
+        reading = interpreted["output"]
+        assessment = reading["assessment"]
+        suspect = None
+        if kind == "agent_driver_search":
+            assessment = "inconclusive"
+            reading["assessment"] = assessment
+        if assessment != "inconclusive":
+            status = "active" if assessment == "supported" else "ruled_out"
+            suspect_id = _id("susp")
+            s.insert("rca_suspects", {
+                "suspect_id": suspect_id, "case_id": case["case_id"], "kind": "single",
+                "member_cause_ids_json": [fork.get("hypothesis_id")], "status": status,
+                "origin": "agent_hypothesis_test", "created_at": s.now_ist(),
+                "updated_at": s.now_ist(),
+            })
+            s.insert("rca_suspect_history", {
+                "id": _id("sh"), "suspect_id": suspect_id, "prev_status": None,
+                "new_status": status, "reason": reading["rationale"],
+                "look_id": look["look_id"], "ts": s.now_ist(),
+            })
+            suspect = s.query_one("rca_suspects", suspect_id=suspect_id)
+        elif kind != "agent_driver_search":
+            s.update("rca_looks", {"look_id": look["look_id"]}, {"budget_counted": 0})
+        interpretation_evidence_id = rca_evidence.record_event(
+            case, evidence_kind="agent_interpretation", stage="investigate",
+            status="completed", actor=actor,
+            source_artifact_ids=source_ids,
+            details={"look_id": look["look_id"], "hypothesis_id": fork.get("hypothesis_id"),
+                     "interpretation": reading, "model": interpreted["selected_model"],
+                     "attempts": interpreted["attempts"]},
+        )
+        focused_candidate = (_persist_driver_hypothesis_candidate(
+            case, look["look_id"], reading, interpretation_evidence_id
+        ) if kind == "agent_driver_search" and persist_driver_candidate else None)
+        _audit(case["tenant_id"], actor, "agent_interpretation", "rca_look_execution",
+               execution_id, after={"assessment": assessment, "hypothesis_id": fork.get("hypothesis_id")})
+        return {"suspect": suspect, "interpretation": reading,
+                "focused_hypothesis_candidate": focused_candidate,
+                "stop": evaluate_stop_condition(case["case_id"])}
 
     worst_rate = summary.get("worst_rate", 0.0)
     best_rate = summary.get("best_rate", 0.0)
@@ -1362,6 +3303,7 @@ def compose_hypothesis(case_id: str, actor: str, tenant_id: str = DEFAULT_TENANT
             "evidence_look_ids_json": evidence_look_ids or [suspect["suspect_id"]],
             "confirm_check_json": confirm_check, "reject_condition_json": reject_condition,
             "owner": None, "created_at": s.now_ist(),
+            "origin": COMPOSER_HYPOTHESIS_ORIGIN, "lifecycle_status": "composed",
         })
         created.append(s.query_one("rca_hypotheses", hypothesis_id=hypothesis_id))
 
@@ -1378,6 +3320,7 @@ def compose_hypothesis(case_id: str, actor: str, tenant_id: str = DEFAULT_TENANT
             "confirm_check_json": {"check": "segment_breakdown", "reject_condition": "rerun; REJECT if no signal reappears"},
             "reject_condition_json": {"rule": "rerun; REJECT if no signal reappears"},
             "owner": None, "created_at": s.now_ist(),
+            "origin": COMPOSER_HYPOTHESIS_ORIGIN, "lifecycle_status": "composed",
         })
         created.append(s.query_one("rca_hypotheses", hypothesis_id=hypothesis_id))
 
@@ -1417,6 +3360,8 @@ def _suspect_check_result(case: dict, suspect_id: str | None) -> dict:
         return {"found": False}
     suspect = s.query_one("rca_suspects", suspect_id=suspect_id)
     frame = v2_service._read_table(case["item_id"], case["table_name"])
+    case_file = s.query_one("rca_case_files", case_id=case["case_id"]) or {}
+    snapshot = (case_file.get("checklist_json") or {}).get("feature_state_snapshot") or {}
     member_ids = suspect["member_cause_ids_json"] if suspect["kind"] == "pair" else [suspect_id]
     results = []
     for member_id in member_ids:
@@ -1425,7 +3370,9 @@ def _suspect_check_result(case: dict, suspect_id: str | None) -> dict:
         if not fork.get("segment_column"):
             results.append({"found": False})
             continue
-        results.append(_segment_breakdown(frame, fork["column"], fork["segment_column"]))
+        results.append(_segment_breakdown(
+            frame, fork["column"], fork["segment_column"], snapshot
+        ))
     if not results:
         return {"found": False}
     if suspect["kind"] == "pair":
@@ -1442,7 +3389,7 @@ def _suspect_check_result(case: dict, suspect_id: str | None) -> dict:
 
 def _next_pending_check(case_id: str) -> dict | None:
     checks = []
-    for h in s.query("rca_hypotheses", case_id=case_id):
+    for h in _case_hypotheses(case_id):
         checks.extend(s.query("rca_confirmation_checks", hypothesis_id=h["hypothesis_id"]))
     pending = [c for c in checks if c["status"] == "pending"]
     pending.sort(key=lambda c: c["order_rank"])
@@ -1481,7 +3428,7 @@ def record_symptom_accounting(case_id: str, actor: str, tenant_id: str = DEFAULT
     case_file = s.query_one("rca_case_files", case_id=case_id)
     total = float((case_file["checklist_json"] or {}).get("violation_count") or 0)
     explained = 0.0
-    for h in s.query("rca_hypotheses", case_id=case_id):
+    for h in _case_hypotheses(case_id):
         checks = s.query("rca_confirmation_checks", hypothesis_id=h["hypothesis_id"])
         confirmed = any(jd["verdict"] == "confirmed"
                         for chk in checks
@@ -1789,7 +3736,7 @@ def _confirmed_hypothesis(case_id: str) -> dict | None:
     (Strong verified before Moderate before Weak, per WF's ordering rule)."""
     tier_rank = {"strong": 0, "moderate": 1, "weak": 2}
     confirmed = []
-    for h in s.query("rca_hypotheses", case_id=case_id):
+    for h in _case_hypotheses(case_id):
         checks = s.query("rca_confirmation_checks", hypothesis_id=h["hypothesis_id"])
         if any(jd["verdict"] == "confirmed" for chk in checks
               for jd in s.query("rca_judge_decisions", check_id=chk["check_id"])):

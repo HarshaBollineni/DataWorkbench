@@ -7,6 +7,7 @@ import os
 import shutil
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -103,6 +104,25 @@ class Step4Tests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(s.query_one("dq_items", item_id=item["item_id"])["snapshot_label"],
                          "saved-once")
+
+    def test_save_and_proceed_reuses_unchanged_exact_profiles(self):
+        item = self._profile(data=b"account,target\nA1,0\nA2,1\nA3,0\n")
+        reviewed = service.get_inventory(item["item_id"])
+
+        with (patch.object(service, "_read_table", wraps=service._read_table) as read_table,
+              patch.object(service, "_column_profile", wraps=service._column_profile) as column_profile):
+            service.process_snapshot(
+                item["item_id"], snapshot_label="profile-reuse",
+                target_variable="target", inventory_rows=reviewed,
+            )
+
+        self.assertEqual(read_table.call_count, 0)
+        self.assertEqual(column_profile.call_count, 0)
+        target = next(row for row in service.get_inventory(item["item_id"])
+                      if row["column_name"] == "target")
+        self.assertEqual(target["profile_json"]["inferred_type"], "target")
+        self.assertEqual(len(s.query(
+            "analysis_artifacts", snapshot_id=item["item_id"], artifact_type="column_profile")), 2)
 
     def test_failed_sourcing_cannot_be_promoted_to_ready(self):
         item = self._profile(data=b"id,id\n1,2\n")

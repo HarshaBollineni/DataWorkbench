@@ -54,6 +54,7 @@ _declare("data_sourcing", "clear", (
     "dataset_structure_profile_publication_completions",
     "dataset_structure_backfill_runs", "technical_row_id_transforms",
     "dataset_structure_materialization_reconcile_cursor",
+    "dataset_structure_staged_reviews",
     "dataset_structure_review_states", "dataset_structure_review_drafts",
     "dataset_structure_review_idempotency",
     "dataset_structure_review_decision_batches",

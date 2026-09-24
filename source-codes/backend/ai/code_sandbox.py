@@ -26,16 +26,15 @@ import numpy as np
 import pandas as pd
 
 from ai._helper_log import logged_call
+from ai import sandbox_capabilities as capabilities
 
 # Roots that self-contained test code may import (e.g. `from scipy.stats import
 # ks_2samp`). Everything else is refused by the import shim below — os /
-# subprocess / sys etc. are also blocked statically by ``_static_check``.
+# subprocess / sys etc. are also rejected by the shared capability validator.
 # statsmodels / sklearn (Test Lab Phase 1) unlock the credit-risk gap battery
 # (ADF/KPSS/VIF stationarity & multicollinearity; AUC/Gini decay). The AST and
 # attribute guards below still apply unchanged regardless of the import root.
-_ALLOWED_IMPORT_ROOTS = {"pandas", "numpy", "scipy", "math", "statistics",
-                         "datetime", "collections", "itertools", "functools",
-                         "statsmodels", "sklearn", "dq_tests"}
+_ALLOWED_IMPORT_ROOTS = capabilities.IMPORT_ROOTS
 
 
 def _safe_import(name: str, globals: dict | None = None, locals: dict | None = None,
@@ -46,40 +45,10 @@ def _safe_import(name: str, globals: dict | None = None, locals: dict | None = N
         return _builtins.__import__(name, globals, locals, fromlist, level)
     raise ImportError(f"Import of '{name}' is not permitted in the sandbox.")
 
-# Names that may never appear as imported modules or attribute targets.
-_BLOCKED_MODULES = {"os", "subprocess", "sys", "importlib", "shutil", "socket",
-                    "pathlib", "ctypes", "builtins", "pickle", "open"}
-_BLOCKED_NAMES = {"__import__", "eval", "exec", "compile", "globals", "locals",
-                  "getattr", "setattr", "delattr", "vars", "open", "input"}
-_BLOCKED_ATTRS = {"__globals__", "__builtins__", "__subclasses__", "__bases__",
-                  "__class__", "__mro__", "__code__", "__dict__", "__import__"}
-
-
-def _static_check(tree: ast.AST) -> str | None:
-    """Return an error message if the AST violates the policy, else None."""
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            mods = ([a.name for a in node.names]
-                    + ([node.module] if isinstance(node, ast.ImportFrom) else []))
-            for m in mods:
-                root = (m or "").split(".")[0]
-                if root in _BLOCKED_MODULES:
-                    return f"Import of '{m}' is not permitted in the sandbox."
-        if isinstance(node, ast.Attribute) and node.attr in _BLOCKED_ATTRS:
-            return f"Access to attribute '{node.attr}' is not permitted."
-        if isinstance(node, ast.Name) and node.id in _BLOCKED_NAMES:
-            return f"Use of '{node.id}' is not permitted in the sandbox."
-    return None
-
-
 # A minimal safe builtins set + a whitelisted __import__ (analytics modules only).
 _SAFE_BUILTINS = {
     k: __builtins__[k] if isinstance(__builtins__, dict) else getattr(__builtins__, k)
-    for k in ("abs", "min", "max", "sum", "len", "round", "sorted", "range",
-              "enumerate", "zip", "map", "filter", "list", "dict", "set", "tuple",
-              "float", "int", "str", "bool", "any", "all", "print", "isinstance",
-              "Exception", "ValueError", "TypeError", "KeyError", "ZeroDivisionError",
-              "abs", "divmod", "reversed", "frozenset", "repr", "next", "iter")
+    for k in capabilities.BUILTIN_NAMES
 }
 _SAFE_BUILTINS["__import__"] = _safe_import
 
@@ -128,9 +97,9 @@ def _run(code: str, df: pd.DataFrame, extra: dict[str, Any] | None = None,
         return {"ok": False, "error": f"SyntaxError: {exc.msg} (line {exc.lineno})",
                 "traceback": _tb.format_exc(limit=1)}
 
-    violation = _static_check(tree)
-    if violation:
-        return {"ok": False, "error": violation, "traceback": ""}
+    errors = capabilities.validate_capabilities(code, {"pd", "np", "df"} | set(extra or {}))
+    if errors:
+        return {"ok": False, "error": "; ".join(errors), "traceback": ""}
 
     sandbox = {"pd": pd, "np": np, "df": df.copy(), "__builtins__": _SAFE_BUILTINS}
     if extra:

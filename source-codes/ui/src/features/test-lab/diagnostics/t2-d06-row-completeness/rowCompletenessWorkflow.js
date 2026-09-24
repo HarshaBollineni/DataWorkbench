@@ -14,6 +14,10 @@ export const LEGACY_FLOOR_RULES = new Set(["T2D6-03", "T2D6-05", "T2D6-06"]);
 export const ROW_COMPLETENESS_RULE_HELP = LEGACY_ROW_COMPLETENESS_RULE_HELP;
 export const FLOOR_RULES = LEGACY_FLOOR_RULES;
 
+export function hasMultipleTableOptions(manifest) {
+  return (manifest?.table_options || []).length > 1;
+}
+
 export function rowCompletenessReviewCount(findings = []) {
   return findings.filter((finding) => finding?.outcome === "VIOLATION"
     && finding?.review_state === "open" && !finding?.existing_issue).length;
@@ -34,9 +38,6 @@ export function rowCompletenessValidation(manifest) {
   const floor = Number(manifest?.configuration?.continuity_floor?.value);
   if (!Number.isFinite(floor) || floor < 0 || floor > 1) {
     issues.push("Continuity floor must be between 0% and 100%.");
-  }
-  if (manifest?.dsc_assist?.state === "available" && !manifest.dsc_assist.scope_confirmed) {
-    issues.push("Confirm the Dataset Structure suggestions or the manual scope values.");
   }
   return issues;
 }

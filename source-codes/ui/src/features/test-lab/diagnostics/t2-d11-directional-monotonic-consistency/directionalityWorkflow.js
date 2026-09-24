@@ -297,6 +297,63 @@ export function suggestedScope(features = [], referenceColumn = null, segmentCol
     .map((feature) => feature.feature);
 }
 
+const MATERIAL_DIRECTIONS = new Set(["INCREASING", "DECREASING"]);
+
+function signedDirection(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number === 0) return "flat";
+  return number > 0 ? "positive" : "negative";
+}
+
+function nonVoteExplanation(label, component, floor, metricLabel, significanceLevel) {
+  const value = Number(component?.value);
+  const pValue = Number(component?.p_value);
+  if (Number.isFinite(value) && Math.abs(value) < Number(floor)) {
+    return `${label} is ${signedDirection(value)} but does not vote because ${metricLabel} ${fmt(Math.abs(value), 3)} is below the ${fmt(floor, 2)} floor.`;
+  }
+  if (Number.isFinite(pValue) && pValue > Number(significanceLevel)) {
+    return `${label} does not vote because p=${fmt(pValue, 3)} is above the ${fmt(significanceLevel, 2)} significance threshold.`;
+  }
+  return `${label} does not provide a material directional vote${component?.reason ? `: ${component.reason}` : "."}`;
+}
+
+export function directionalityVoteDetails(evidence = {}) {
+  const thresholds = evidence.thresholds || {};
+  const significance = thresholds.significance_level ?? 0.05;
+  const definitions = [
+    ["spearman", "Spearman", evidence.spearman, thresholds.corr_floor ?? 0.20, "|ρ|"],
+    ["regression", "Regression", evidence.regression, thresholds.regression_floor ?? 0.10, "|coefficient|"],
+    ["binned", "Binned trend", evidence.binned, thresholds.bin_range_floor_sd ?? 0.10, "standardized endpoint change"],
+  ];
+  return definitions.map(([key, label, component, floor, metricLabel]) => {
+    const direction = key === "binned" ? component?.shape : component?.direction;
+    const votes = MATERIAL_DIRECTIONS.has(direction);
+    return {
+      key, label, direction: direction || "UNAVAILABLE", votes,
+      note: votes
+        ? `Votes ${String(direction).toLowerCase()}`
+        : nonVoteExplanation(label, component, floor, metricLabel, significance),
+    };
+  });
+}
+
+export function directionalityConsensusSummary(evidence = {}) {
+  if (evidence.observed_direction === "NON_MONOTONIC") {
+    return evidence.status_reason || "The binned trend shows a material non-monotonic pattern.";
+  }
+  const details = directionalityVoteDetails(evidence);
+  const observed = String(evidence.observed_direction || "").toLowerCase();
+  const agreeing = details.filter((item) => item.votes && item.direction === evidence.observed_direction);
+  if (agreeing.length === 3) {
+    return `All 3 voting signals meet the configured thresholds and point ${observed}.`;
+  }
+  if (agreeing.length >= 2) {
+    const nonVotes = details.filter((item) => !item.votes).map((item) => item.note);
+    return `${agreeing.length} of 3 voting signals meet the configured thresholds and point ${observed}.${nonVotes.length ? ` ${nonVotes.join(" ")}` : ""}`;
+  }
+  return evidence.status_reason || "The voting signals do not establish a clear material direction.";
+}
+
 export function fmt(value, digits = 3) {
   return formatDisplayNumber(value, { maximumFractionDigits: digits });
 }

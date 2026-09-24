@@ -403,7 +403,7 @@ def build_manifest(item_id: str, actor: str = "system", *,
     )
     dsc_context = resolve_dsc(
         item=item, table=table, consumer_id=consumer_id, actor=actor,
-        selectors=selectors,
+        selectors=selectors, observe_missing=False,
     )
     structural_columns = {
         value for value in (
@@ -614,13 +614,50 @@ def refresh_draft_scope(run_id: str, actor: str = "system", *,
         payload["segment_definition"] = None
         changed = True
     _item, _table, _saved_target, scope_rows = _scope(payload["item_id"])
+    active_kb = knowledge.resources()[0]
+    consumer_id, selectors = dsc_request_from_execution_context(
+        active_kb["execution_context"], _table,
+    )
+    dsc_context = resolve_dsc(
+        item=_item, table=_table, consumer_id=consumer_id, actor=actor,
+        selectors=selectors, observe_missing=False,
+    )
+    structural_columns = {
+        value for value in (
+            default_binding_column(dsc_context, "default-entity"),
+            default_binding_column(dsc_context, "default-temporal"),
+        ) if value
+    }
+    prior_features = {row["feature"]: row for row in payload.get("features") or []}
+    refreshed_features = []
+    for row in scope_rows:
+        column = row["column_name"]
+        if column == _saved_target or column in structural_columns:
+            continue
+        baseline = _feature_card(row)
+        refreshed_features.append({**baseline, **prior_features.get(column, {})})
+    if (payload.get("dataset_structure_context") or {}).get("context_ref") != dsc_context.get("context_ref"):
+        payload["dataset_structure_context"] = dsc_context
+        changed = True
+    if payload.get("dsc_excluded_structural_columns") != sorted(structural_columns):
+        payload["dsc_excluded_structural_columns"] = sorted(structural_columns)
+        changed = True
+    if payload.get("features") != refreshed_features:
+        payload["features"] = refreshed_features
+        changed = True
+    if payload.get("segment_column") in structural_columns:
+        payload["segment_column"] = None
+        payload["segment_definition"] = None
+        payload["segment_preview"] = None
+        changed = True
     prior_completed_runs = _completed_run_count(
         payload["item_id"], stored_tenant, exclude_run_id=run_id,
     )
     sequence = {"prior_completed_runs": prior_completed_runs,
                 "segment_analysis_available": prior_completed_runs > 0}
     candidates = _segment_candidates(
-        scope_rows, (payload.get("reference") or {}).get("column") or _saved_target,
+        [row for row in scope_rows if row["column_name"] not in structural_columns],
+        (payload.get("reference") or {}).get("column") or _saved_target,
     )
     if payload.get("analysis_sequence") != sequence:
         payload["analysis_sequence"] = sequence

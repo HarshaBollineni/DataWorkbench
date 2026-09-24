@@ -120,6 +120,33 @@ def test_cltv_ai_no_match_is_persisted_completed_review_is_not_repeated_and_fail
     assert unmapped["adjudication"]["status"] == "proposal_ready"
 
 
+def test_open_draft_refreshes_new_confirmed_dsc_bindings_and_preserves_human_roles(snapshot, monkeypatch):
+    draft = manifest.build_manifest(snapshot, actor="analyst", enforce_register=False)
+    stored = db.query_one("diag_runs", run_id=draft["run_id"])["manifest_json"]
+    cltv = next(row for row in stored["fields"] if row["column"] == "CLTV")
+    cltv.update({
+        "binding_source": "human_confirmed", "confirmed_roles": ["outstanding_balance"],
+        "proposed_roles": ["outstanding_balance"], "review_required": False, "selected": True,
+    })
+    db.update("diag_runs", {"run_id": draft["run_id"]}, {"manifest_json": stored})
+    monkeypatch.setattr(manifest, "resolve_dsc", lambda **_kwargs: {
+        "context_ref": "dsc-context-confirmed", "selector_results": [],
+    })
+    monkeypatch.setattr(manifest, "default_binding_column", lambda _context, selector_id: {
+        "default-entity": "INCOME", "default-temporal": "UNMAPPED_NOTE",
+    }.get(selector_id))
+
+    refreshed = manifest.refresh_draft_scope(draft["run_id"], actor="analyst")
+
+    by_column = {row["column"]: row for row in refreshed["fields"]}
+    assert by_column["INCOME"]["binding_source"] == "dsc_confirmed"
+    assert "entity_id" in by_column["INCOME"]["confirmed_roles"]
+    assert by_column["UNMAPPED_NOTE"]["binding_source"] == "dsc_confirmed"
+    assert "period" in by_column["UNMAPPED_NOTE"]["confirmed_roles"]
+    assert by_column["CLTV"]["binding_source"] == "human_confirmed"
+    assert by_column["CLTV"]["confirmed_roles"] == ["outstanding_balance"]
+
+
 def test_same_snapshot_rerun_reuses_prior_ai_and_only_new_field_invokes_provider(snapshot, monkeypatch):
     calls = []
 

@@ -517,6 +517,71 @@ def test_scope_edits_are_validated_and_dispatch_is_registered(snapshot):
     assert adapter(6)["agent"] == "row_completeness_engine"
 
 
+def test_authenticated_d06_patch_records_the_user_not_system(snapshot, monkeypatch):
+    created = manifest_row_completeness.build_manifest(snapshot)
+    monkeypatch.setattr(diagnostics_router, "_diagnostic_principal", lambda _authorization: {
+        "username": "scope-reviewer", "tenant_id": "tenant-d06", "authz_roles": [],
+    })
+
+    updated = diagnostics_router.patch_diagnostic_manifest(
+        created["run_id"],
+        diagnostics_router.ManifestPatch(
+            kind="threshold_tune", key="continuity_floor", value=0.9,
+        ),
+        authorization="Bearer reviewer",
+    )
+
+    assert updated["configuration"]["continuity_floor"]["source"].startswith(
+        "user-set (scope-reviewer,"
+    )
+
+
+def test_existing_draft_cascades_its_pinned_dsc_cadence_before_display_and_freeze(snapshot, monkeypatch):
+    created = manifest_row_completeness.build_manifest(snapshot)
+    created["dsc_assist"] = {
+        "state": "unavailable", "scope_confirmed": False,
+        "expected_cadence": {"unit": "quarter", "step": 1},
+    }
+    created["configuration"]["reporting_grain"] = {"value": "monthly", "source": "default"}
+    db.update("diag_runs", {"run_id": created["run_id"]}, {"manifest_json": created})
+    monkeypatch.setattr(diagnostics_router, "_diagnostic_principal", lambda _authorization: {
+        "username": "owner", "tenant_id": "tenant-d06", "authz_roles": [],
+    })
+
+    refreshed = diagnostics_router.get_diagnostic_manifest(
+        created["run_id"], authorization="Bearer owner",
+    )["manifest"]
+
+    assert refreshed["configuration"]["reporting_grain"]["value"] == "quarterly"
+    assert refreshed["configuration"]["reporting_grain"]["score"] == 1.0
+    assert refreshed["dsc_assist"]["cadence_state"] == "available"
+    frozen = manifest_row_completeness.freeze(created["run_id"])
+    assert frozen["scope"]["reporting_grain"] == "quarterly"
+
+
+def test_existing_draft_re_resolves_dsc_authority_confirmed_after_creation(snapshot, monkeypatch):
+    created = manifest_row_completeness.build_manifest(snapshot)
+    assert created["configuration"]["reporting_grain"]["value"] == "monthly"
+
+    def apply_confirmed(_item, current, *, table, actor):
+        current["dataset_structure_context"] = {"context_ref": "dsc-context-confirmed"}
+        current["dsc_assist"] = {
+            "state": "available", "scope_confirmed": False,
+            "expected_cadence": {"unit": "quarter", "step": 1},
+            "cadence_state": "available",
+        }
+
+    monkeypatch.setattr(manifest_row_completeness, "_apply_dsc_assist", apply_confirmed)
+
+    refreshed = manifest_row_completeness.refresh_draft_cadence(created["run_id"])
+
+    assert refreshed["configuration"]["reporting_grain"]["value"] == "quarterly"
+    assert refreshed["configuration"]["reporting_grain"]["source"] == \
+        "confirmed Dataset Structure expected cadence"
+    frozen = manifest_row_completeness.freeze(created["run_id"])
+    assert frozen["scope"]["reporting_grain"] == "quarterly"
+
+
 def test_opt_in_llm_role_review_is_audited_and_never_applies_mapping(snapshot, monkeypatch):
     manifest = manifest_row_completeness.build_manifest(snapshot)
     calls = {}

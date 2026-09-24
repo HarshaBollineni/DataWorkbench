@@ -1,6 +1,7 @@
 """Governed intake, scope, role-binding, declaration, and freeze contract for T2-D08."""
 from __future__ import annotations
 
+import copy
 import time
 import uuid
 import hashlib
@@ -125,7 +126,7 @@ def _apply_dsc_structure(item: dict[str, Any], table: str,
     )
     context = resolve_dsc(
         item=item, table=table, consumer_id=consumer_id, actor=actor,
-        selectors=selectors,
+        selectors=selectors, observe_missing=False,
     )
     for selector_id, role in (("default-entity", "entity_id"), ("default-temporal", "period")):
         column = default_binding_column(context, selector_id)
@@ -137,6 +138,29 @@ def _apply_dsc_structure(item: dict[str, Any], table: str,
             field["binding_source"] = "dsc_confirmed"
             field["review_required"] = False
     return context
+
+
+def _refresh_dsc_structure(manifest: dict[str, Any], actor: str) -> bool:
+    """Re-resolve confirmed structure for an open draft, preserving human decisions."""
+    item = db.query_one("dq_items", item_id=manifest["item_id"])
+    if item is None:
+        return False
+    fields = manifest.get("fields") or []
+    before_fields = copy.deepcopy(fields)
+    before_context = manifest.get("dataset_structure_context") or {}
+    baselines = {
+        row["column"]: row for row in (
+            _field_card(inventory, manifest["context"]["selected"])
+            for inventory in _inventory(manifest["item_id"], manifest["table"])
+        )
+    }
+    for index, field in enumerate(fields):
+        if field.get("binding_source") == "dsc_confirmed" and field["column"] in baselines:
+            fields[index] = baselines[field["column"]]
+    context = _apply_dsc_structure(item, manifest["table"], fields, actor)
+    manifest["dataset_structure_context"] = context
+    return (before_fields != fields
+            or before_context.get("context_ref") != context.get("context_ref"))
 
 
 def _ai_reuse_identity(manifest: dict[str, Any], field: dict[str, Any]) -> str:
@@ -610,6 +634,7 @@ def refresh_draft_scope(run_id: str, actor: str = "system", *,
         raise KeyError("Unknown value-semantics run")
     if run["status"] != DRAFT:
         return manifest
+    _refresh_dsc_structure(manifest, actor)
     _hydrate_reusable_ai(manifest, actor)
     _refresh(manifest)
     db.update("diag_runs", {"run_id": run_id}, {"manifest_json": manifest})

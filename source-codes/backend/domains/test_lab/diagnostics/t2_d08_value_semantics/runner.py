@@ -250,7 +250,7 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
         *manifest["selected_fields"], *([predicate_column] if predicate_column else []),
     ]))
     yield {"phase": "start", "agent": AGENT, "run_id": run_id,
-           "total": len(manifest["coverage"]["ready_routes"]),
+           "total": 6,
            "thought": "Loading the frozen scope and applying confirmed semantic bindings."}
     frame = SnapshotLoader().load_table(manifest["item_id"], manifest["table"], columns=columns)
     row_reference = manifest["row_reference"]["column"]
@@ -260,12 +260,15 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
     declarations = dict(manifest["runtime_declarations"])
     declarations["confirmed_role_bindings"] = bindings
     yield {"phase": "progress", "agent": AGENT, "run_id": run_id,
-           "done": 0, "total": len(manifest["coverage"]["ready_routes"]),
+           "done": 1, "total": 6, "task": "Load frozen scope",
            "thought": "Evaluating safe, identifier-mapped KB primitives; no free-form rules are executed."}
     result = execute_value_semantics(
         frame, dictionary, bindings, declarations, knowledge.resources()[0],
         row_reference_column=row_reference,
     )
+    yield {"phase": "progress", "agent": AGENT, "run_id": run_id,
+           "done": 2, "total": 6, "task": "Evaluate semantic rules",
+           "thought": "Semantic rule evaluation complete; preparing governed summaries."}
     summary_frame = frame[manifest["selected_fields"]].copy()
     summary_dictionary = _dictionary(manifest, manifest["selected_fields"])
     summaries = summarize_value_semantics(
@@ -279,6 +282,9 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
             for field in manifest["fields"] if field.get("selected")
         ]),
     )
+    yield {"phase": "progress", "agent": AGENT, "run_id": run_id,
+           "done": 3, "total": 6, "task": "Build summaries",
+           "thought": "Summaries complete; persisting bindings, tags, and assessment evidence."}
     binding_artifact, _ = _save_bindings(manifest, actor)
     tag_frame = result.resolved_cell_tags.drop(columns=["input_value"], errors="ignore")
     ledger_frame = result.assessment_ledger.drop(columns=["input_value"], errors="ignore")
@@ -293,10 +299,16 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
         {"unclassified_assessments": int(ledger_frame["status"].eq("UNCLASSIFIED").sum()),
          "unscoped_routes": int(ledger_frame["status"].eq("UNSCOPED").sum())},
     )
+    yield {"phase": "progress", "agent": AGENT, "run_id": run_id,
+           "done": 4, "total": 6, "task": "Persist governed evidence",
+           "thought": "Governed evidence persisted; indexing results and findings."}
     result_id, findings, rollup = _persist_results(
         manifest, summaries, actions,
         {"bindings": binding_artifact, "tags": tags_artifact, "ledger": ledger_artifact},
     )
+    yield {"phase": "progress", "agent": AGENT, "run_id": run_id,
+           "done": 5, "total": 6, "task": "Index results and findings",
+           "thought": "Results indexed; creating the final governed report."}
     # The report is part of D08's promised result package. Persist it and link
     # it to the compact result before publishing DONE, so a report/storage
     # failure cannot advertise an incomplete successful run.

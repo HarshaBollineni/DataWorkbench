@@ -124,6 +124,13 @@ class StructuralPrecheckIn(BaseModel):
     inventory_rows: list[dict] = Field(default_factory=list)
 
 
+class StagedStructureReviewIn(BaseModel):
+    inventory_rows: list[dict] = Field(default_factory=list)
+    evidence_fingerprint: str
+    selections: dict = Field(default_factory=lambda: {"tables": []})
+    expected_revision: int = Field(default=0, ge=0)
+
+
 class ItemPatch(BaseModel):
     status: str | None = None
 
@@ -313,6 +320,24 @@ def structural_precheck(item_id: str, body: StructuralPrecheckIn,
         return service.staged_structural_precheck(item_id, body.inventory_rows)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.patch("/items/{item_id}/dataset-structure/staged-draft")
+def save_staged_structure_review(item_id: str, body: StagedStructureReviewIn,
+                                 authorization: str | None = Header(default=None)):
+    principal = _sourcing_principal(authorization)
+    _require_draft_access(item_id, principal)
+    try:
+        return service.save_staged_structure_review(
+            item_id, body.inventory_rows,
+            evidence_fingerprint=body.evidence_fingerprint,
+            selections=body.selections,
+            expected_revision=body.expected_revision,
+            tenant_id=principal["tenant_id"], actor=principal["username"],
+        )
+    except ValueError as exc:
+        status = 409 if "changed" in str(exc).lower() else 422
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
 
 
 @router.post("/items/{item_id}/technical-row-id")

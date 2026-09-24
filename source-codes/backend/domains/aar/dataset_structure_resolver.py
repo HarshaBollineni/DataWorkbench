@@ -81,7 +81,8 @@ def _active_v2_authority(repo: Any, *, snapshot_id: str, asset_id: str, table: s
 
 def resolve_dataset_structure_context(repo: Any, request: Any, *, snapshot_loader: SnapshotLoader | None = None,
                                       clock: Callable[[], str] = db.now_ist,
-                                      created_by: str | None = None) -> dict[str, Any]:
+                                      created_by: str | None = None,
+                                      observe_missing: bool = True) -> dict[str, Any]:
     """Resolve and persist one consistently pinned DSC v1 context."""
     loader = snapshot_loader or SnapshotLoader()
     try:
@@ -100,20 +101,21 @@ def resolve_dataset_structure_context(repo: Any, request: Any, *, snapshot_loade
             materialized.setdefault(selector["subject"]["table"], set()).add(selector["predicate"])
     observed: dict[tuple[str, str], list[tuple[Any, dict[str, Any], str]]] = {}
     errors: dict[tuple[str, str], str] = {}
-    for table, predicates in sorted(materialized.items()):
-        for predicate in sorted(predicates):
-            try:
-                produced = observe_dataset_structure(repo, reference.snapshot_id, tables=[table],
-                                                     predicates=(predicate,), snapshot_loader=loader,
-                                                     created_by=created_by)
-                for outcome in produced:
-                    metadata, payload = repo.get(outcome.artifact.artifact_id)
-                    observed.setdefault((table, payload["predicate"]), []).append(
-                        (metadata, payload, "fresh" if outcome.outcome == "created" else "exact_reused"))
-                if (table, predicate) in observed:
-                    observed[(table, predicate)].sort(key=lambda item: item[1]["instance_key"])
-            except DatasetStructureObservationError as exc:
-                errors[(table, predicate)] = exc.reason_code
+    if observe_missing:
+        for table, predicates in sorted(materialized.items()):
+            for predicate in sorted(predicates):
+                try:
+                    produced = observe_dataset_structure(repo, reference.snapshot_id, tables=[table],
+                                                         predicates=(predicate,), snapshot_loader=loader,
+                                                         created_by=created_by)
+                    for outcome in produced:
+                        metadata, payload = repo.get(outcome.artifact.artifact_id)
+                        observed.setdefault((table, payload["predicate"]), []).append(
+                            (metadata, payload, "fresh" if outcome.outcome == "created" else "exact_reused"))
+                    if (table, predicate) in observed:
+                        observed[(table, predicate)].sort(key=lambda item: item[1]["instance_key"])
+                except DatasetStructureObservationError as exc:
+                    errors[(table, predicate)] = exc.reason_code
 
     context_version = "2" if "2" in normalized["supported_context_versions"] else "1"
     results: list[dict[str, Any]] = []; sensitivities: list[str] = []

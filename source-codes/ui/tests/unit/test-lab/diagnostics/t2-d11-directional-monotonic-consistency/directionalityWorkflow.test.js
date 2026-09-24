@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   aiSuggestionDraft, bulkEligibleScope, candidateSelectionDraft, expectedBucket,
+  directionalityConsensusSummary, directionalityVoteDetails,
   governedExactDecisionState, groupExpected, groupObserved, hasUsableAiSuggestion, isBulkEligibleRole,
   initialRelationshipReviewOpen, needsAiSuggestion, quickAcceptanceDraft, readableConceptName, REFERENCE_DIRECTION_LABELS,
   reviewSuggestionSummary, scopeCandidates, suggestedScope,
@@ -327,4 +328,39 @@ test("bulk selection omits protected roles while manual scope remains available"
   assert.deepEqual(bulkEligibleScope(rows).map((row) => row.role), ["Feature", "Score"]);
   assert.equal(scopeCandidates(rows).length, roles.length);
   assert.equal(isBulkEligibleRole(" target "), false);
+});
+
+test("directionality consensus explains which material signal did not vote", () => {
+  const evidence = {
+    observed_direction: "INCREASING",
+    status_reason: "Two of three directional evidence sources agree.",
+    thresholds: {
+      corr_floor: 0.2, regression_floor: 0.1,
+      bin_range_floor_sd: 0.1, significance_level: 0.05,
+    },
+    spearman: { direction: "FLAT", value: 0.132, p_value: 0.001 },
+    regression: { direction: "INCREASING", value: 1.564, p_value: 0.001 },
+    binned: { direction: "INCREASING", shape: "INCREASING", value: 0.3 },
+  };
+
+  assert.deepEqual(directionalityVoteDetails(evidence).map((item) => [item.label, item.votes]), [
+    ["Spearman", false], ["Regression", true], ["Binned trend", true],
+  ]);
+  assert.equal(
+    directionalityConsensusSummary(evidence),
+    "2 of 3 voting signals meet the configured thresholds and point increasing. Spearman is positive but does not vote because |ρ| 0.132 is below the 0.2 floor.",
+  );
+});
+
+test("directionality consensus states when all three material signals align", () => {
+  const evidence = {
+    observed_direction: "INCREASING", thresholds: {},
+    spearman: { direction: "INCREASING", value: 0.4 },
+    regression: { direction: "INCREASING", value: 0.5 },
+    binned: { direction: "INCREASING", shape: "INCREASING", value: 0.4 },
+  };
+  assert.equal(
+    directionalityConsensusSummary(evidence),
+    "All 3 voting signals meet the configured thresholds and point increasing.",
+  );
 });

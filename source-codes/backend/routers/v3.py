@@ -411,6 +411,8 @@ def _rca_error_map(exc: Exception) -> HTTPException:
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, rca.TransitionError):
         return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, rca.RcaAgentUnavailable):
+        return HTTPException(status_code=503, detail=str(exc))
     if isinstance(exc, (rca.RcaError, ValueError)):
         return HTTPException(status_code=400, detail=str(exc))
     print(f"[rca] unhandled {type(exc).__name__} in a v3 route: {exc}", flush=True)
@@ -436,6 +438,31 @@ def get_rca_case(case_id: str, authorization: str | None = Header(default=None))
         raise _rca_error_map(exc) from exc
 
 
+@router.get("/rca/cases/{case_id}/progress")
+def get_rca_progress(case_id: str, response: Response, authorization: str | None = Header(default=None)):
+    p = _principal(authorization)
+    response.headers["Cache-Control"] = "no-store"
+    from domains.rca import progress
+    try:
+        return progress.read(rca.require_case(case_id, p["tenant_id"]))
+    except Exception as exc:  # noqa: BLE001
+        raise _rca_error_map(exc) from exc
+
+
+@router.get("/rca/cases/{case_id}/report")
+def download_rca_report(case_id: str, fmt: str = "pdf", authorization: str | None = Header(default=None)):
+    p = _principal(authorization)
+    from domains.rca.report import build_report
+    try:
+        content, filename = build_report(case_id, p["tenant_id"], fmt)
+        return Response(content, media_type="text/plain" if fmt == "text" else "application/pdf", headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        })
+    except Exception as exc:  # noqa: BLE001
+        raise _rca_error_map(exc) from exc
+
+
 class ConclusionApprovalIn(BaseModel):
     conclusion_type: str
     root_cause: str = ""
@@ -455,6 +482,26 @@ class ReturnToInvestigationIn(BaseModel):
 
 class StartAfreshIn(BaseModel):
     confirmed: bool
+
+
+class InitialReviewHypothesisSelectionIn(BaseModel):
+    hypothesis_id: str
+
+
+class InvestigationContextIn(BaseModel):
+    comment: str
+    hypothesis_id: str | None = None
+
+
+class DataChatQuestionIn(BaseModel):
+    question: str
+
+
+class HypothesisReviewIn(BaseModel):
+    comment: str = ""
+    statement: str | None = None
+    evidence_basis: str | None = None
+    proposed_test: str | None = None
 
 
 @router.post("/rca/cases/{case_id}/start-afresh")
@@ -523,13 +570,87 @@ def continue_rca_from_initial_review(case_id: str,
         raise _rca_error_map(exc) from exc
 
 
+@router.post("/rca/cases/{case_id}/initial-review/hypothesis-selection")
+def select_rca_initial_review_hypothesis(
+    case_id: str, body: InitialReviewHypothesisSelectionIn,
+    authorization: str | None = Header(default=None),
+):
+    p = _principal(authorization)
+    try:
+        return rca.select_initial_review_hypothesis(
+            case_id, body.hypothesis_id, p["username"], tenant_id=p["tenant_id"]
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _rca_error_map(exc) from exc
+
+
+@router.post("/rca/cases/{case_id}/investigation/focused-hypothesis-selection")
+def select_rca_focused_hypothesis(
+    case_id: str, body: InitialReviewHypothesisSelectionIn,
+    authorization: str | None = Header(default=None),
+):
+    p = _principal(authorization)
+    try:
+        return rca.select_focused_hypothesis(
+            case_id, body.hypothesis_id, p["username"], tenant_id=p["tenant_id"]
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _rca_error_map(exc) from exc
+
+
+@router.post("/rca/cases/{case_id}/investigation/context")
+def add_rca_investigation_context(
+    case_id: str, body: InvestigationContextIn,
+    authorization: str | None = Header(default=None),
+):
+    p = _principal(authorization)
+    try:
+        return rca.add_investigation_context(
+            case_id, body.comment, p["username"], tenant_id=p["tenant_id"],
+            hypothesis_id=body.hypothesis_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _rca_error_map(exc) from exc
+
+
+@router.post("/rca/cases/{case_id}/data-chat")
+def ask_rca_data_chat(
+    case_id: str, body: DataChatQuestionIn,
+    authorization: str | None = Header(default=None),
+):
+    p = _principal(authorization)
+    try:
+        return rca.ask_data_chat(
+            case_id, body.question, p["username"], tenant_id=p["tenant_id"]
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _rca_error_map(exc) from exc
+
+
+@router.post("/rca/cases/{case_id}/hypotheses/{hypothesis_id}/review")
+def review_rca_hypothesis(
+    case_id: str, hypothesis_id: str, body: HypothesisReviewIn,
+    authorization: str | None = Header(default=None),
+):
+    p = _principal(authorization)
+    try:
+        return rca.review_hypothesis(
+            case_id, hypothesis_id, p["username"], body.model_dump(),
+            tenant_id=p["tenant_id"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise _rca_error_map(exc) from exc
+
+
 @router.post("/rca/cases/{case_id}/planner-look")
 def run_rca_planner_look(case_id: str, kill_target_suspect_id: str | None = None,
+                             exploration: str | None = None,
                              authorization: str | None = Header(default=None)):
     p = _principal(authorization)
     try:
         proposed = rca.planner_propose_look(case_id, p["username"], tenant_id=p["tenant_id"],
-                                                kill_target_suspect_id=kill_target_suspect_id)
+                                                kill_target_suspect_id=kill_target_suspect_id,
+                                                exploration=exploration)
         if proposed.get("dead_end"):
             rca.handle_dead_end(case_id, p["username"], tenant_id=p["tenant_id"])
         return rca.get_case(case_id, p["tenant_id"])
@@ -541,10 +662,7 @@ def run_rca_planner_look(case_id: str, kill_target_suspect_id: str | None = None
 def run_rca_look(look_id: str, authorization: str | None = Header(default=None)):
     p = _principal(authorization)
     try:
-        result = rca.runner_execute(look_id, p["username"], tenant_id=p["tenant_id"])
-        rca.reader_interpret(result["execution_id"], p["username"], tenant_id=p["tenant_id"])
-        look = s.query_one("rca_looks", look_id=look_id)
-        return rca.get_case(look["case_id"], p["tenant_id"])
+        return rca.run_investigation(look_id, p["username"], tenant_id=p["tenant_id"])
     except Exception as exc:  # noqa: BLE001
         raise _rca_error_map(exc) from exc
 

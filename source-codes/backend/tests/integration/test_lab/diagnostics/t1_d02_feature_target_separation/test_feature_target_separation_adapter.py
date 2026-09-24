@@ -29,6 +29,7 @@ os.environ.pop("SYSTEM_DB_BACKUP_PATH", None)
 import system_db as s  # noqa: E402
 from ai.v2 import service  # noqa: E402
 from domains.aar.repository import AnalysisArtifactRepository  # noqa: E402
+from domains.aar.data_sourcing import persist_snapshot_profile_artifacts  # noqa: E402
 from dq_diagnostics.engines.feature_target_separation.adapter import assess_snapshot  # noqa: E402
 from dq_diagnostics import manifest_feature_target  # noqa: E402
 from dq_diagnostics import runner_feature_target  # noqa: E402
@@ -97,6 +98,7 @@ def _snapshot(frame: pd.DataFrame, *, target: str = "target") -> tuple[str, str]
             "profile_json": profile,
             "provisional": 0, "updated_at": now,
         })
+    persist_snapshot_profile_artifacts(snapshot_id, actor="test:data-sourcing")
     return asset_id, snapshot_id
 
 

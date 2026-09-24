@@ -98,7 +98,7 @@ Chart palette: `#FFAD28`, `#10b981`, `#3b82f6`, `#FF4F59`, `#6D706B`.
 | Test Lab / Diagnostics | Coverage → frozen scope → SSE execution → findings disposition → deterministic score | Coverage board + dedicated diagnostic workflow | `POST /diagnostics/manifest`, `/manifests/{id}/run`; `GET /runs/{id}/stream`; `POST /findings/{id}/disposition` |
 | Health Scoring | Deterministic 0-100 = criticality-weighted pass rate | ScorePanel | `scoring/health.py` + `criticality.py` — no endpoint of its own |
 | Issue Management | Failed tests tracked with status/criticality/tags; one row per failed test per table | IssueManagement | `GET /issues/register`, `/items/{id}/issues`; `PATCH /issues/tracked/{id}` |
-| RCA agentic case workflow | Intake → opening look → planner/runner/reader → hypothesis → human-approved fix → rerun → closure → KB update | IssueRca page | `POST /v3/rca/cases`, `/opening-look`, `/planner-look`, `/hypotheses/{id}/propose-fix`, `/cases/{id}/close` |
+| RCA agentic case workflow | Intake → Initial Review → Investigate → Closure; frozen feature states, human-selected hypotheses and retained data chat after two successful hypothesis tests | IssueRca page | `POST /api/v3/issues/{issue_row_id}/rca/case`, `/api/v3/rca/cases/{case_id}/data-chat` |
 | Knowledge Base | Document → Version → Section → Rule hierarchy; `kb.py` is the sole writer of `kb_rules`; publish/archive is human-only | KnowledgeBase page | `POST /v3/knowledge/documents`, `/rules/{id}/publish`, `/archive`; `GET /knowledge/retrieve` |
 | Tagging / Taxonomy | Tag assets, tests, results, issues and KB docs by dimension | TagPicker | `GET /v3/taxonomy/dimensions` + per-entity tag CRUD |
 | Admin | User management, factory reset, asset and context-memory oversight | Admin page | `/api/admin/users`, `/factory-reset`, `/context-memory` |
@@ -150,7 +150,7 @@ Each skill is an editable markdown prompt file under `backend/skills/`; seeded `
 | `/test-lab` | TestLab | Coverage board; opens Scope → Run → Findings → Score |
 | `/test-lab/artifacts` | AnalyticsArtifactRepository | Reusable supporting-analysis evidence |
 | `/issues` | IssueManagement | Tracked failed-test register |
-| `/issues/:issueRowId` | IssueRca | RCA case; RCA is regenerated on open |
+| `/issues/:issueRowId` | IssueRca | Retained RCA case and chat; explicit Start afresh discards derived work |
 | `/knowledge-base` | KnowledgeBase | Documents, versions, rules |
 | `/dq-framework` | DQFramework | Test library reference |
 | `/admin` | Admin | Users, reset, oversight |

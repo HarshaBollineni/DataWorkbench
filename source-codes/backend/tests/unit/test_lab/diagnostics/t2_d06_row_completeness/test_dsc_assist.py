@@ -5,7 +5,35 @@ from types import SimpleNamespace
 
 import pytest
 
-from domains.test_lab.diagnostics.t2_d06_row_completeness import dsc_assist
+from domains.test_lab.diagnostics.t2_d06_row_completeness import dsc_assist, manifest
+
+
+def test_confirmed_cadence_prefills_grain_even_when_dsc_roles_are_unavailable(monkeypatch):
+    context = {"state": "partial", "context_ref": {"artifact_id": "ctx"}, "selector_results": [{
+        "selector_id": "expected-cadence", "result": "fulfilled",
+        "value": {"kind": "expected_cadence", "unit": "quarter", "step": 1},
+    }]}
+    draft = {
+        "kb": {"execution_context": {"dataset_structure_context": {}}},
+        "configuration": {"reporting_grain": {"value": "monthly", "source": "default"}},
+        "available_columns": ["facility_id", "reporting_quarter"],
+        "roles": {},
+    }
+    monkeypatch.setattr(manifest, "dsc_request_from_execution_context", lambda *_args: ("diagnostic:6", []))
+    monkeypatch.setattr(manifest, "resolve_dsc", lambda **_kwargs: context)
+    monkeypatch.setattr(manifest, "default_binding_column", lambda *_args: None)
+
+    manifest._apply_dsc_assist({}, draft, table="Data", actor="tester")
+
+    assert draft["dsc_assist"]["state"] == "unavailable"
+    assert draft["dsc_assist"]["cadence_state"] == "available"
+    assert draft["configuration"]["reporting_grain"] == {
+        "value": "quarterly",
+        "source": "confirmed Dataset Structure expected cadence",
+        "score": 1.0,
+        "reason": "Confirmed DSC expected cadence is every 1 quarter; mapped to quarterly reporting.",
+        "evidence": {"unit": "quarter", "step": 1, "resolution": "confirmed"},
+    }
 
 
 @pytest.mark.parametrize(

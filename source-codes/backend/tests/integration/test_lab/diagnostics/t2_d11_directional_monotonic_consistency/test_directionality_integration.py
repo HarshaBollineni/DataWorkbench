@@ -396,6 +396,28 @@ def test_refresh_backfills_exact_decision_evidence_for_an_older_draft(snapshot):
     }
 
 
+def test_open_draft_refreshes_new_confirmed_dsc_structural_exclusions(snapshot, monkeypatch):
+    draft = manifest.build_manifest(snapshot)
+    stored = db.query_one("diag_runs", run_id=draft["run_id"])["manifest_json"]
+    dscr = next(row for row in stored["features"] if row["feature"] == "DSCR")
+    dscr["rationale"] = "Reviewer-owned rationale retained across DSC refresh."
+    db.update("diag_runs", {"run_id": draft["run_id"]}, {"manifest_json": stored})
+    monkeypatch.setattr(manifest, "resolve_dsc", lambda **_kwargs: {
+        "context_ref": "dsc-context-confirmed", "selector_results": [],
+    })
+    monkeypatch.setattr(manifest, "default_binding_column", lambda _context, selector_id: {
+        "default-entity": "CURRENT_LTV", "default-temporal": "segment",
+    }.get(selector_id))
+
+    refreshed = manifest.refresh_draft_scope(draft["run_id"], actor="analyst")
+
+    assert refreshed["dsc_excluded_structural_columns"] == ["CURRENT_LTV", "segment"]
+    assert {row["feature"] for row in refreshed["features"]}.isdisjoint({"CURRENT_LTV", "segment"})
+    assert {row["column"] for row in refreshed["segment_candidates"]}.isdisjoint({"CURRENT_LTV", "segment"})
+    assert next(row for row in refreshed["features"] if row["feature"] == "DSCR")["rationale"] == \
+        "Reviewer-owned rationale retained across DSC refresh."
+
+
 def test_freeze_suppresses_a_preexisting_unchanged_exact_kb_intent(snapshot):
     draft = manifest.build_manifest(snapshot)
     draft = manifest.patch_manifest(draft["run_id"], {

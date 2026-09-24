@@ -42,6 +42,12 @@ OWNER_ID = "diagnostic:6"
 ROLE_VERIFIER_KEY = "role_mapping_verifier"
 ROLE_INFERENCE_VERSION = "row-completeness-role-binding-v1"
 VERIFICATION_POLICY = "advisory_only_user_must_apply_role_override"
+GRAIN_BY_CADENCE = {
+    ("month", 1): "monthly", ("month", 3): "quarterly",
+    ("quarter", 1): "quarterly", ("month", 6): "semiannual",
+    ("quarter", 2): "semiannual", ("month", 12): "annual",
+    ("quarter", 4): "annual", ("year", 1): "annual",
+}
 
 
 def _id(prefix: str) -> str:
@@ -187,6 +193,27 @@ def _bounded_candidates(values: list[dict[str, Any]], limit_per_table: int = 8) 
     return retained
 
 
+def _apply_expected_cadence(manifest: dict[str, Any], expected_cadence: Any) -> None:
+    """Prefill the consumer-owned grain from confirmed DSC cadence evidence."""
+    if not isinstance(expected_cadence, dict):
+        return
+    unit, step = expected_cadence.get("unit"), expected_cadence.get("step")
+    proposed_grain = GRAIN_BY_CADENCE.get((unit, step))
+    if not proposed_grain:
+        return
+    current = manifest["configuration"]["reporting_grain"]
+    if str(current.get("source") or "").startswith("user-set"):
+        return
+    cadence_label = f"every {step} {unit}{'' if step == 1 else 's'}"
+    manifest["configuration"]["reporting_grain"] = {
+        "value": proposed_grain,
+        "source": "confirmed Dataset Structure expected cadence",
+        "score": 1.0,
+        "reason": f"Confirmed DSC expected cadence is {cadence_label}; mapped to {proposed_grain} reporting.",
+        "evidence": {"unit": unit, "step": step, "resolution": "confirmed"},
+    }
+
+
 def _apply_dsc_assist(item: dict[str, Any], manifest: dict[str, Any], *,
                       table: str, actor: str) -> None:
     """Resolve and pin confirmed structure before proposing executable scope."""
@@ -195,7 +222,7 @@ def _apply_dsc_assist(item: dict[str, Any], manifest: dict[str, Any], *,
     )
     context = resolve_dsc(
         item=item, table=table, consumer_id=consumer_id, actor=actor,
-        selectors=selectors,
+        selectors=selectors, observe_missing=False,
     )
     manifest["dataset_structure_context"] = context
     entity = default_binding_column(context, "default-entity")
@@ -208,32 +235,52 @@ def _apply_dsc_assist(item: dict[str, Any], manifest: dict[str, Any], *,
     manifest["dsc_assist"] = {
         "state": "available" if entity and period else "unavailable",
         "scope_confirmed": False, "expected_cadence": expected_cadence,
+        "cadence_state": "available" if expected_cadence else "unavailable",
         "provenance": {"source": "dataset_structure_context", "context_ref": context.get("context_ref")},
     }
+    _apply_expected_cadence(manifest, expected_cadence)
     if not entity or not period:
         return
     if entity == period or entity not in manifest["available_columns"] or period not in manifest["available_columns"]:
-        manifest["dsc_assist"] = {"state": "unavailable", "scope_confirmed": False}
+        manifest["dsc_assist"].update({"state": "unavailable", "scope_confirmed": False})
         return
     manifest["roles"]["facility_id"] = {"table": table, "column": entity, "source": "dsc_assist", "score": None,
-                                           "reason": "Confirmed Dataset Structure default; review and confirm before execution."}
+                                           "reason": "Confirmed Dataset Structure default; review before execution."}
     manifest["roles"]["period"] = {"table": table, "column": period, "source": "dsc_assist", "score": None,
-                                      "reason": "Confirmed Dataset Structure default; review and confirm before execution."}
-    grain_by_cadence = {
-        ("month", 1): "monthly", ("month", 3): "quarterly",
-        ("quarter", 1): "quarterly", ("month", 6): "semiannual",
-        ("quarter", 2): "semiannual", ("month", 12): "annual",
-        ("quarter", 4): "annual", ("year", 1): "annual",
-    }
-    proposed_grain = grain_by_cadence.get(
-        (expected_cadence or {}).get("unit") and (
-            expected_cadence["unit"], expected_cadence.get("step")
-        )
-    )
-    if proposed_grain:
-        manifest["configuration"]["reporting_grain"] = {
-            "value": proposed_grain, "source": "confirmed Dataset Structure expected cadence",
+                                      "reason": "Confirmed Dataset Structure default; review before execution."}
+
+
+def refresh_draft_cadence(run_id: str) -> dict[str, Any]:
+    """Refresh an open draft from current confirmed DSC authority."""
+    run = _run(run_id)
+    manifest = run["manifest_json"]
+    if run["status"] != DRAFT:
+        return manifest
+    prior_expected_cadence = (manifest.get("dsc_assist") or {}).get("expected_cadence")
+    item = db.query_one("dq_items", item_id=manifest["item_id"])
+    if item:
+        manual_roles = {
+            role: binding for role, binding in manifest.get("roles", {}).items()
+            if isinstance(binding, dict) and binding.get("source") == "manual"
         }
+        prior_context_ref = (manifest.get("dataset_structure_context") or {}).get("context_ref")
+        prior_confirmed = bool((manifest.get("dsc_assist") or {}).get("scope_confirmed"))
+        _apply_dsc_assist(item, manifest, table=manifest["table"], actor="system")
+        manifest["roles"].update(manual_roles)
+        current_context_ref = (manifest.get("dataset_structure_context") or {}).get("context_ref")
+        if prior_confirmed and prior_context_ref == current_context_ref:
+            manifest["dsc_assist"]["scope_confirmed"] = True
+    assist = manifest.setdefault("dsc_assist", {"state": "unavailable", "scope_confirmed": False})
+    expected_cadence = assist.get("expected_cadence") or prior_expected_cadence or selector_value(
+        manifest.get("dataset_structure_context") or {}, "expected-cadence",
+    )
+    if isinstance(expected_cadence, dict) and expected_cadence.get("selection") != "none":
+        expected_cadence = {"unit": expected_cadence.get("unit"), "step": expected_cadence.get("step")}
+        assist["expected_cadence"] = expected_cadence
+        assist["cadence_state"] = "available"
+        _apply_expected_cadence(manifest, expected_cadence)
+    db.update("diag_runs", {"run_id": run_id}, {"manifest_json": manifest})
+    return manifest
 
 
 def build_manifest(item_id: str, actor: str = "system", *, enforce_register: bool = True) -> dict[str, Any]:
@@ -515,8 +562,7 @@ def patch_manifest(run_id: str, patch: dict[str, Any], actor: str = "system") ->
 def _frozen_scope(manifest: dict[str, Any]) -> RunScope:
     if not manifest["roles"].get("facility_id") or not manifest["roles"].get("period"):
         raise ManifestError("facility identifier and reporting period must both be resolved before running")
-    if manifest.get("dsc_assist", {}).get("state") == "available" and not manifest["dsc_assist"].get("scope_confirmed"):
-        raise ManifestError("confirm the Dataset Structure suggestions or choose manual scope values before running")
+    _apply_expected_cadence(manifest, (manifest.get("dsc_assist") or {}).get("expected_cadence"))
     return RunScope(asset_id=manifest["snapshot"]["asset_id"], snapshot_id=manifest["item_id"],
         table=manifest["table"], facility_id=RoleBinding.model_validate(manifest["roles"]["facility_id"]),
         period=RoleBinding.model_validate(manifest["roles"]["period"]),

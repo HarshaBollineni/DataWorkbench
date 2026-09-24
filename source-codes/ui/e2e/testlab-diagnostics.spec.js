@@ -1,5 +1,5 @@
 import { expect, test } from "./support/test-fixture";
-import { confirmDatasetStructure } from "./support/dataset-structure";
+import { confirmDatasetStructure, saveStagedStructure } from "./support/dataset-structure";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { E2E_API_BASE } from "./support/endpoints";
@@ -131,7 +131,8 @@ test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)
     await selectPopoverOption(page, "Use case");
     await selectPopoverOption(page, "Product");
     await page.getByLabel(/I confirm this target/).check();
-    await page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" }).click();
+    await saveStagedStructure(page);
+    await page.getByTestId("upl-step-6").getByRole("button", { name: "Save and Proceed" }).click();
     await confirmDatasetStructure(page);
 
     const itemId = await findItemIdByName(request, token, itemName);
@@ -186,9 +187,19 @@ test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)
     const card6 = page.locator('[data-testid="diagnostic-card"][data-diagnostic-id="6"]');
     await expect(card6.locator('[data-testid="chip-status"][data-status="ready"]')).toBeVisible();
     await card6.getByRole("button", { name: "Launch workflow" }).click();
+    await expect(page.getByTestId("row-completeness-objective")).toContainText("continuity gaps");
+    const rowGuide = page.getByTestId("row-completeness-guide");
+    for (const step of ["Confirm data structure & cadence", "Review six checks", "Run diagnostic", "Review results", "Raise issue"]) {
+      await expect(rowGuide.getByRole("listitem").filter({ hasText: step })).toBeVisible();
+    }
+    await expect(rowGuide.getByText("Observed-span methodology")).toBeVisible();
     const rowScope = page.getByTestId("row-completeness-scope");
     await expect(rowScope).toBeVisible();
-    await expect(rowScope.getByLabel("Table to assess")).toBeVisible();
+    await expect(rowScope.getByText("1. Confirm data structure and cadence")).toBeVisible();
+    await expect(rowScope.getByText("2. Review the six checks")).toBeVisible();
+    await expect(rowScope.getByLabel("Table to assess")).toHaveCount(0);
+    await expect(rowScope.getByText("Configuration ready")).toHaveCount(0);
+    await expect(rowScope.getByText(/immutable snapshot/)).toHaveCount(0);
     await expect(rowScope.getByLabel("Facility identifier")).toBeVisible();
     await expect(rowScope.getByLabel("Reporting period")).toBeVisible();
     await expect(rowScope.getByLabel("Segment")).toBeVisible();
@@ -196,10 +207,6 @@ test.describe("Test Lab diagnostics — the register-driven journey (plan 6-T18)
     await expect(rowScope.locator("#row-continuity-floor")).toHaveValue("95");
     await expect(rowScope.getByText("T2D6-06 · Segment-period row coverage")).toBeVisible();
     await expect(rowScope.getByRole("button", { name: "Request advisory review" })).toBeVisible();
-    const dscScopeConfirmation = rowScope.getByLabel(/I reviewed the D06 scope/);
-    await dscScopeConfirmation.click();
-    await expect(dscScopeConfirmation).toBeChecked();
-    await expect(rowScope.getByText("D06 scope confirmation recorded")).toBeVisible();
     await expect(rowScope.getByRole("button", { name: "Run diagnostic" })).toBeEnabled();
     await rowScope.getByRole("button", { name: "Run diagnostic" }).click();
     await expect(page.getByText("Run console")).toBeVisible();

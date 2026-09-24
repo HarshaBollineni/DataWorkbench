@@ -61,13 +61,16 @@ def test_review_uses_structured_responses_and_returns_auditable_metadata(monkeyp
     monkeypatch.setattr(initial_review, "execute_with_fallback", execute)
 
     result = initial_review.review(
-        {"case_id": "rca-unit", "test_name": "Completeness", "columns": ["amount"]},
+        {"case_id": "rca-unit", "test_name": "Completeness", "columns": ["amount"],
+         "user_context": ["The feed changed last quarter."]},
         {"found": True, "null_share": 0.4},
     )
 
     assert request["model"] == "gpt-5.6-sol"
     assert request["text_format"] is initial_review.InitialReviewOutput
     assert request["store"] is False
+    assert "The feed changed last quarter." in request["input"][0]["content"][0]["text"]
+    assert "unverified background" in request["instructions"]
     assert "source rows" not in request["input"][0]["content"][0]["text"]
     assert result["selected_model"]["model_version"] == "2026-07-09"
     assert result["output"]["candidate_hypotheses"][0]["testable_next_step"]

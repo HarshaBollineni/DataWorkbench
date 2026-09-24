@@ -1,7 +1,7 @@
 import { expect, test } from "./support/test-fixture";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { confirmDatasetStructure } from "./support/dataset-structure";
+import { confirmDatasetStructure, saveStagedStructure } from "./support/dataset-structure";
 import { selectPopoverOption } from "./support/select";
 
 const fixtures = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -28,7 +28,8 @@ async function uploadReadyDataset(page, alias) {
   await selectPopoverOption(page, "Use case");
   await selectPopoverOption(page, "Product");
   await page.getByLabel(/I confirm this target/).check();
-  await page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" }).click();
+  await saveStagedStructure(page);
+  await page.getByTestId("upl-step-6").getByRole("button", { name: "Save and Proceed" }).click();
   await confirmDatasetStructure(page);
 }
 

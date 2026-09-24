@@ -7,7 +7,7 @@ test criteria 2-T1..2-T4 + the invariant-bite proof, plan rule 6).
 2-T2 (U/N) — ``ai.test_kit`` is the ONE registry: a duplicate name raises;
              ``ai.tool_registry`` has no catalogue of its own (it delegates).
 2-T3 (U) — every registered helper is documented (fn docstring + purpose);
-           each of the 12 ``ai.rca_helpers`` probes gets a real unit test on
+           each governed ``ai.rca_helpers`` probe gets a real unit test on
            a small, fully deterministic pandas fixture.
 2-T4 (S) — a helper that raises produces the one structured log line
            (logger "archimedes.helpers", DEBUG) with the caller's context id.
@@ -198,7 +198,7 @@ def test_tool_registry_has_no_catalogue_of_its_own():
 # ---------------------------------------------------------------------------
 def test_every_registered_helper_has_a_docstring_and_a_purpose():
     helpers = tk.list_helpers()
-    assert len(helpers) >= 22  # 10 gx metrics + 12 rca helpers, at minimum
+    assert len(helpers) >= 25  # 10 gx metrics + 15 rca helpers, at minimum
     undocumented = [
         h.name for h in helpers
         if not (h.fn.__doc__ or "").strip() or not (h.purpose or "").strip()
@@ -206,13 +206,13 @@ def test_every_registered_helper_has_a_docstring_and_a_purpose():
     assert not undocumented, f"helper(s) missing fn docstring or purpose text: {undocumented}"
 
 
-def test_rca_helpers_dict_has_exactly_twelve_entries_matching_test_kit():
-    assert len(rh.HELPERS) == 12
+def test_rca_helpers_dict_has_expected_entries_matching_test_kit():
+    assert len(rh.HELPERS) == 15
     catalogue_rca = {h.name for h in tk.list_helpers() if h.kind == "rca_helper"}
     assert catalogue_rca == set(rh.HELPERS)
 
 
-# --- real behavioural fixtures, one per rca_helper (12) ---------------------
+# --- real behavioural fixtures, one per original dataframe RCA helper ------
 
 def test_time_window_drift_detects_a_seeded_mean_shift():
     df = pd.DataFrame({
@@ -237,6 +237,33 @@ def test_psi_ks_decomposition_detects_a_seeded_distribution_shift():
     m = out["result"]["metrics"]
     assert m["psi"] > 1.0        # a real, large shift — not a rounding artifact
     assert m["ks_gap"] > 0.5
+
+
+def test_population_segment_missingness_reuses_frozen_split_and_separates_specials():
+    df = pd.DataFrame({
+        "year": [2011, 2011, 2012, 2015, 2015],
+        "reporting_quarter": ["2011-Q2", "2011-Q3", "2012-Q1", "2015-Q1", "2015-Q2"],
+        "debt_yield": [None, None, -999.0, 8.2, -999.0],
+    })
+    context = {
+        "definition": {
+            "method": "split_snapshot", "split_feature": "year",
+            "expression": {"operator": "in", "values": ["2011", "2012"]},
+            "null_policy": "baseline", "special_values": [], "special_policy": "exclude",
+        },
+        "preview": {"population_fingerprint": "frozen-population"},
+    }
+    out = rh.run_helper("population_segment_missingness", df, {
+        "column": "debt_yield", "segment_col": "reporting_quarter",
+        "population_context": context, "declared_special_values": ["-999"],
+    })["result"]
+
+    assert out["metrics"]["baseline"]["physical_null_count"] == 2
+    assert out["metrics"]["current"]["physical_null_count"] == 0
+    assert out["metrics"]["baseline"]["declared_special_count"] == 1
+    assert out["metrics"]["current"]["declared_special_count"] == 1
+    assert out["metrics"]["baseline_physical_null_segments"] == ["2011-Q2", "2011-Q3"]
+    assert out["metrics"]["population_fingerprint"] == "frozen-population"
 
 
 def test_segment_attribution_finds_the_drifting_segment():

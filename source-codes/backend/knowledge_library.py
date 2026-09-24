@@ -229,7 +229,7 @@ def get_library(tenant_id: str) -> dict[str, Any]:
         summary for definition in _KNOWLEDGE_BASES
         if (summary := _document_summary(tenant_id, definition)) is not None
     ]
-    proposed_change_count = len(kb.list_learning_candidates(tenant_id))
+    proposed_change_count = kb.learning_candidate_count(tenant_id)
     return {
         "knowledge_bases": knowledge_bases,
         "upcoming_enhancements": _upcoming_enhancements(),

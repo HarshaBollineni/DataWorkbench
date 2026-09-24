@@ -80,6 +80,7 @@
     "app_fsm": { "label": "saved workflow context", "group": "yourWork" },
     "context_memory": { "label": "saved workflow context", "group": "yourWork" },
     "diagnostic_execution_context": { "label": "saved workflow context", "group": "yourWork" },
+    "dataset_structure_staged_reviews": { "label": "saved workflow context", "group": "yourWork" },
     "dataset_structure_review_idempotency": { "label": "saved workflow context", "group": "yourWork" },
     "dataset_structure_review_drafts": { "label": "saved workflow context", "group": "yourWork" },
     "dataset_structure_review_states": { "label": "saved workflow context", "group": "yourWork" },

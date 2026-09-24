@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { BarChart3, CheckCircle2, History, ListChecks, Lock, Play, RefreshCw, RotateCcw, Settings2, Trash2 } from "lucide-react";
 
@@ -9,13 +9,20 @@ import {
 } from "@/api/client";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import CoverageBoard from "./testlab/CoverageBoard";
-import ScopeGate from "./testlab/ScopeGate";
-import RunConsole from "./testlab/RunConsole";
-import FindingsPanel from "./testlab/FindingsPanel";
-import { PsiJourneySummary } from "@/features/test-lab/diagnostics/t4-d14-population-stability/PopulationStabilityResults";
-import ScorePanel from "./testlab/ScorePanel";
 import SupportingInvestigations from "./testlab/SupportingInvestigations";
 import { ArtifactRepositoryCard, IssueReviewCard } from "./testlab/TestLabOverview";
+
+const ScopeGate = lazy(() => import("./testlab/ScopeGate"));
+const RunConsole = lazy(() => import("./testlab/RunConsole"));
+const FindingsPanel = lazy(() => import("./testlab/FindingsPanel"));
+const ScorePanel = lazy(() => import("./testlab/ScorePanel"));
+const PsiJourneySummary = lazy(() => import(
+  "@/features/test-lab/diagnostics/t4-d14-population-stability/PopulationStabilityResults"
+).then((module) => ({ default: module.PsiJourneySummary })));
+
+function WorkflowFallback() {
+  return <div className="rounded-lg border border-slate-200 bg-white p-6 text-sm text-slate-500">Loading workflow…</div>;
+}
 
 // Phase 6 (0.4.0) rewrite — testlab-redesign-0.4.0.md §3/§5.4: the
 // four-step plan/execute/recommend/rollup wizard retires (D-16). One page,
@@ -130,9 +137,6 @@ export default function TestLab() {
     (card) => card.diagnostic_id === activeDiagnosticId)?.name || "",
   [board, activeDiagnosticId]);
   const locked = !items.length;
-  const boardReady = Boolean(board?.cards?.length)
-    && board.cards.every((card) => card.loading !== true);
-
   // No separate "loading" flag: `board` itself is the loading signal (null
   // until the fetch resolves for THIS item — changeItem clears it up front
   // so a stale previous item's board is never shown mid-switch).
@@ -169,17 +173,6 @@ export default function TestLab() {
       if (request !== boardRequest.current) return;
       setBoard(summary);
 
-      try {
-        const complete = await getDiagnosticsBoardV2(targetItemId);
-        if (request !== boardRequest.current) return;
-        setBoard(complete);
-        restoreCompletedRun(targetItemId, complete.cards || []);
-        return;
-      } catch {
-        // A mixed-ownership deployment may refuse the aggregate endpoint for
-        // one governed card. Retain per-card isolation as a compatibility
-        // fallback while using one request for the normal owned-item path.
-      }
       const settled = await Promise.allSettled((summary.cards || []).map(async (shell) => {
         try {
           const card = await getDiagnosticsBoardCardV2(targetItemId, shell.diagnostic_id);
@@ -372,6 +365,7 @@ export default function TestLab() {
 
   if (!locked && item && activeRunId) {
     return <DiagnosticWorkflowPage item={item} runId={activeRunId}
+      diagnosticId={activeDiagnosticId}
       diagnosticName={activeDiagnosticName}
       initialManifest={activeInitialManifest}
       onBack={() => { setActiveRunId(""); setActiveInitialManifest(null); loadBoard(); }}
@@ -411,12 +405,20 @@ export default function TestLab() {
         <>
           {message && <p className="mb-3 text-sm text-red-600">{message}</p>}
 
+          {/* Layout contract: repository and issue status stay above the diagnostics board. */}
+          {!activeRunId && (
+            <div className="mb-4 grid gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)]">
+              <ArtifactRepositoryCard key={`artifacts-${item.item_id}`} item={item} />
+              <IssueReviewCard key={`issues-${item.item_id}`} item={item} />
+            </div>
+          )}
+
           {activeRunId && <div className="mb-6 grid gap-4">
             <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-white px-4 py-3">
               <p className="text-sm font-semibold text-slate-900">Diagnostic workflow</p>
               <Button size="sm" variant="outline" onClick={() => setActiveRunId("")}>Back to Test Lab</Button>
             </div>
-            <RunTab key={activeRunId} runId={activeRunId} onRunStarted={onRunStarted} onDone={onRunDone} />
+            <Suspense fallback={<WorkflowFallback />}><RunTab key={activeRunId} runId={activeRunId} onRunStarted={onRunStarted} onDone={onRunDone} /></Suspense>
           </div>}
 
           <div className="grid gap-6">
@@ -429,13 +431,7 @@ export default function TestLab() {
               discardedRunIds={discardedRunIds}
               launchingDiagnosticId={launchingDiagnosticId}
               onViewRun={viewRun} />
-            {!activeRunId && boardReady && <>
-              <div className="grid gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(20rem,1fr)]">
-                <ArtifactRepositoryCard key={`artifacts-${item.item_id}`} item={item} />
-                <IssueReviewCard key={`issues-${item.item_id}`} item={item} />
-              </div>
-              <SupportingInvestigations key={itemId} itemId={itemId} />
-            </>}
+            {!activeRunId && board && <SupportingInvestigations key={itemId} itemId={itemId} />}
           </div>
 
           {legacyPanes && (
@@ -463,10 +459,10 @@ export default function TestLab() {
           )}
 
           {legacyPanes && (
-            <div className="grid gap-5">
+            <Suspense fallback={<WorkflowFallback />}><div className="grid gap-5">
               <FindingsPanel results={results} loading={resultsLoading} error={resultsError} onDisposition={disposition} onRecompute={refreshDerived} runId={completedRunId || activeRunId} />
               <ScorePanel itemId={itemId} runId={completedRunId || activeRunId} />
-            </div>
+            </div></Suspense>
           )}
         </>
       )}
@@ -526,16 +522,31 @@ export default function TestLab() {
   );
 }
 
-function DiagnosticWorkflowPage({ item, runId, diagnosticName, initialManifest, onBack, onRunStarted, onDone, onSelectRun, viewResults, liveRun }) {
+function DiagnosticWorkflowPage({ item, runId, diagnosticId, diagnosticName, initialManifest, onBack, onRunStarted, onDone, onSelectRun, viewResults, liveRun }) {
   const isDirectionality = /directional\s*\/\s*monotonic/i.test(diagnosticName || "");
   const isValueSemantics = /value.?semantics/i.test(diagnosticName || "");
   const isFeatureTarget = /single-feature target separation/i.test(diagnosticName || "");
+  const isRowCompleteness = /row-completeness reconciliation/i.test(diagnosticName || "");
   const featureTargetSteps = [
     [Settings2, "Review target & defaults"],
     [ListChecks, "Select variables"],
     [Play, "Run diagnostic"],
     [BarChart3, "Monitor progress"],
     [CheckCircle2, "Review findings"],
+  ];
+  const directionalitySteps = [
+    [Settings2, "Confirm reference"],
+    [ListChecks, "Select features"],
+    [CheckCircle2, "Resolve expected directions"],
+    [BarChart3, "Review evidence"],
+    [CheckCircle2, "Raise issue"],
+  ];
+  const rowCompletenessSteps = [
+    [Settings2, "Confirm data structure & cadence"],
+    [ListChecks, "Review six checks"],
+    [Play, "Run diagnostic"],
+    [BarChart3, "Review results"],
+    [CheckCircle2, "Raise issue"],
   ];
   return <main className="min-h-screen bg-slate-50 p-8">
     <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
@@ -544,14 +555,41 @@ function DiagnosticWorkflowPage({ item, runId, diagnosticName, initialManifest, 
         <h1 className="mt-1 text-2xl font-bold text-slate-950">
           {isDirectionality || isValueSemantics ? diagnosticName : <>Diagnostic workflow{diagnosticName ? ` — ${diagnosticName}` : ""}</>}
         </h1>
-        {isDirectionality && <p className="mt-1 text-base text-slate-700">Compare expected economic relationships with observed empirical direction.</p>}
-        {isValueSemantics && <p className="mt-1 text-base text-slate-700">Identify censored, stale/frozen, and not-applicable cells before downstream analysis.</p>}
-        {isFeatureTarget
-          ? <p className="mt-1 max-w-4xl text-base text-slate-700" data-testid="feature-target-objective">Find individual variables that predict the target unusually well—or provide very little signal—before modelling.</p>
-          : <p className="mt-1 text-sm text-slate-500">{item.name} · {isDirectionality ? "review outcomes, escalate anomalies for RCA, and optionally check segment-level behavior for later runs." : isValueSemantics ? "start with intended use, then confirm roles, rule coverage, and treatment evidence." : "review scope and run the selected diagnostic."}</p>}
+        {isDirectionality
+          ? <p className="mt-1 max-w-4xl text-base text-slate-700" data-testid="directionality-objective">Find numeric features whose observed relationship with the target disagrees with the expected economic direction.</p>
+          : isValueSemantics
+            ? <p className="mt-1 text-base text-slate-700">Identify censored, stale/frozen, and not-applicable cells before downstream analysis.</p>
+            : isFeatureTarget
+              ? <p className="mt-1 max-w-4xl text-base text-slate-700" data-testid="feature-target-objective">Find individual variables that predict the target unusually well—or provide very little signal—before modelling.</p>
+          : isRowCompleteness
+            ? <p className="mt-1 max-w-4xl text-base text-slate-700" data-testid="row-completeness-objective">Find missing reporting periods, duplicate facility-period rows, and continuity gaps before downstream analysis.</p>
+              : <p className="mt-1 text-sm text-slate-500">{item.name} · review scope and run the selected diagnostic.</p>}
       </div>
       <Button variant="outline" onClick={onBack}>Back to Test Lab</Button>
     </div>
+    {isDirectionality && !viewResults && <section className="mb-4 rounded-lg border border-slate-200 bg-white p-4" data-testid="directionality-guide">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="max-w-5xl">
+          <h2 className="text-sm font-semibold text-slate-900">Expected-versus-observed direction</h2>
+          <p className="mt-1 text-xs leading-5 text-slate-600">Confirm what risk direction is expected, then compare it with binned trends, Spearman correlation, and standardized univariate regression.</p>
+        </div>
+        <span className="rounded-full bg-teal-50 px-2.5 py-1 text-[11px] font-semibold text-teal-700">5 steps</span>
+      </div>
+      <ol className="mt-3 flex flex-wrap gap-2">
+        {directionalitySteps.map(([Icon, label], index) => <li key={label} className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700">
+          <span className="text-[10px] font-bold text-slate-400">{index + 1}</span><Icon className="h-3.5 w-3.5 text-teal-700" />{label}
+        </li>)}
+      </ol>
+      <details className="group mt-3 border-t border-slate-100 pt-3" data-testid="directionality-about">
+        <summary className="cursor-pointer list-none text-xs font-semibold text-slate-700">About this diagnostic</summary>
+        <div className="mt-3 grid gap-3 text-xs leading-5 text-slate-600 md:grid-cols-3">
+          <p><strong className="block text-slate-800">Objective</strong>Identify economic relationships that disagree with expectations or lack clear empirical support.</p>
+          <p><strong className="block text-slate-800">What the UI supports</strong>Confirm the reference, select numeric features, resolve expected directions, and review the three-signal evidence.</p>
+          <p><strong className="block text-slate-800">End goal</strong>Raise a governed issue from a confirmed contextual finding when investigation or remediation is needed.</p>
+        </div>
+        <p className="mt-3 rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600"><strong>Pearson correlation is contextual only:</strong> it is displayed for comparison but does not determine the observed direction.</p>
+      </details>
+    </section>}
     {isFeatureTarget && !viewResults && <section className="mb-4 rounded-lg border border-slate-200 bg-white p-4" data-testid="feature-target-guide">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div>
@@ -574,13 +612,36 @@ function DiagnosticWorkflowPage({ item, runId, diagnosticName, initialManifest, 
         </div>
       </details>
     </section>}
-    {viewResults ? <DiagnosticResults itemId={item.item_id} runId={runId} onSelectRun={onSelectRun} />
+    {isRowCompleteness && !viewResults && <section className="mb-4 rounded-lg border border-slate-200 bg-white p-4" data-testid="row-completeness-guide">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="max-w-5xl">
+          <h2 className="text-sm font-semibold text-slate-900">Observed-span methodology</h2>
+          <p className="mt-1 text-xs leading-5 text-slate-600">Assess whether rows map to facility-period keys, the observed panel calendar is continuous, required rows are present and unique, and optional segment-period cells are complete. Expected periods run only from each applicable facility's first to last observed period.</p>
+        </div>
+        <span className="rounded-full bg-teal-50 px-2.5 py-1 text-[11px] font-semibold text-teal-700">5 steps</span>
+      </div>
+      <ol className="mt-3 flex flex-wrap gap-2">
+        {rowCompletenessSteps.map(([Icon, label], index) => <li key={label} className="flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700">
+          <span className="text-[10px] font-bold text-slate-400">{index + 1}</span><Icon className="h-3.5 w-3.5 text-teal-700" />{label}
+        </li>)}
+      </ol>
+      <details className="group mt-3 border-t border-slate-100 pt-3" data-testid="row-completeness-about">
+        <summary className="cursor-pointer list-none text-xs font-semibold text-slate-700">About this diagnostic</summary>
+        <div className="mt-3 grid gap-3 text-xs leading-5 text-slate-600 md:grid-cols-3">
+          <p><strong className="block text-slate-800">Objective</strong>Confirm that the observed panel is structurally complete enough for reliable downstream analysis.</p>
+          <p><strong className="block text-slate-800">What the UI supports</strong>Review DSC-informed roles and cadence, check the six deterministic tests, and inspect their evidence.</p>
+          <p><strong className="block text-slate-800">End goal</strong>Raise a governed issue from a confirmed finding when the evidence requires remediation.</p>
+        </div>
+        <p className="mt-3 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-900"><strong>Boundary:</strong> observed-span coverage cannot detect wholly absent facilities or rows missing outside a facility's observed endpoints.</p>
+      </details>
+    </section>}
+    <Suspense fallback={<WorkflowFallback />}>{viewResults ? <DiagnosticResults itemId={item.item_id} runId={runId} diagnosticId={diagnosticId} onSelectRun={onSelectRun} />
       : liveRun ? <RunConsole key={runId} runId={runId} onDone={onDone} />
-        : <RunTab key={runId} runId={runId} initialManifest={isFeatureTarget ? initialManifest : null} onRunStarted={onRunStarted} onDone={onDone} />}
+        : <RunTab key={runId} runId={runId} initialManifest={isFeatureTarget ? initialManifest : null} onRunStarted={onRunStarted} onDone={onDone} />}</Suspense>
   </main>;
 }
 
-function DiagnosticResults({ itemId, runId, onSelectRun }) {
+function DiagnosticResults({ itemId, runId, diagnosticId, onSelectRun }) {
   const [payload, setPayload] = useState(null);
   const [runHistory, setRunHistory] = useState([]);
   const [error, setError] = useState("");
@@ -591,10 +652,9 @@ function DiagnosticResults({ itemId, runId, onSelectRun }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { reload(); }, [itemId, runId]);
   useEffect(() => {
-    const diagnosticId = payload?.run?.diagnostic_id;
     if (diagnosticId == null) return;
     getDiagnosticRunHistoryV2(itemId, diagnosticId).then((history) => setRunHistory(history.runs || [])).catch(() => setRunHistory([]));
-  }, [itemId, payload?.run?.diagnostic_id]);
+  }, [diagnosticId, itemId]);
   const disposition = async (findingId, action, reason) => {
     await dispositionFindingV2(findingId, { action, reason });
     await reload();

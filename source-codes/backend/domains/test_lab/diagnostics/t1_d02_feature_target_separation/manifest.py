@@ -203,7 +203,10 @@ def build_manifest(item_id: str, actor: str = "system",
         from dq_diagnostics.register import get_diagnostic
         register_row = get_diagnostic(DIAGNOSTIC_ID)
 
-    table, target, scope_rows = _scope_rows(item_id)
+    # Data Sourcing owns profile publication. Test Lab consumes the retained
+    # immutable evidence and must not republish every column while a user is
+    # waiting for the scope gate to open.
+    table, target, scope_rows = _scope_rows(item_id, materialize_profiles=False)
     run_id = _id()
     now = db.now_ist()
     thresholds = {key: effective_threshold(DIAGNOSTIC_ID, key) for key in THRESHOLD_KEYS}
@@ -386,6 +389,31 @@ def freeze(run_id: str, actor: str = "system") -> dict[str, Any]:
     if not runnable:
         raise ManifestError(
             "Every selected feature already has a completed result for this snapshot and these analysis settings."
+        )
+    required_columns = {manifest["target"]["column"], *runnable}
+    repo = AnalysisArtifactRepository()
+    retained = {
+        metadata.feature: metadata
+        for metadata in repo.list(
+            snapshot_id=manifest["item_id"], artifact_type="column_profile", status="active",
+        )
+        if metadata.feature in required_columns
+        and metadata.identity.get("table") == manifest["scope"]["table"]
+    }
+    missing = sorted(required_columns - set(retained))
+    invalid = []
+    for column, metadata in retained.items():
+        try:
+            repo.get(metadata.artifact_id)
+        except (KeyError, OSError, ValueError):
+            invalid.append(column)
+    unavailable = sorted(set([*missing, *invalid]))
+    if unavailable:
+        shown = ", ".join(unavailable[:5])
+        suffix = f" and {len(unavailable) - 5} more" if len(unavailable) > 5 else ""
+        raise ManifestError(
+            "Current Data Sourcing profile evidence is missing or invalid for "
+            f"{shown}{suffix}. Return to Data Sourcing and refresh the dataset profile before running this diagnostic."
         )
     manifest["scope"]["execution_features"] = runnable
     now = db.now_ist()

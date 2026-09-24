@@ -66,7 +66,10 @@ function Detail({ knowledgeBaseId, onBack, onOpenSource }) {
 
 export default function KnowledgeBasesPanel({ selectedId, onSelect, onOpenSource }) {
   const [data, setData] = useState(null); const [error, setError] = useState("");
-  useEffect(() => { getKnowledgeLibraryV3().then(setData).catch((reason) => setError(reason.message)); }, []);
+  useEffect(() => {
+    if (selectedId) return;
+    getKnowledgeLibraryV3().then(setData).catch((reason) => setError(reason.message));
+  }, [selectedId]);
   if (selectedId) return <Detail knowledgeBaseId={selectedId} onBack={() => onSelect(null)} onOpenSource={onOpenSource} />;
   if (error) return <div className="rounded-md border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error}</div>;
   if (!data) return <div className="rounded-md border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">Loading Knowledge Base Library…</div>;

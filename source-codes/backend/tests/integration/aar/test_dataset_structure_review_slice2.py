@@ -211,7 +211,10 @@ def test_slice2_projection_is_private_idempotent_and_preserves_stale_draft(item,
     assert "art_private" not in encoded and "private-payload-hash" not in encoded and "private-dependency" not in encoded
     assert first["materialization"] == {"job_id": "dscj_safe", "status": "succeeded", "generation": 1,
                                         "freshness": "current", "retry_after_ms": None}
-    assert first["diagnostic_assistance"][0]["state"] == "not_adopted"
+    assert {(entry["diagnostic_id"], entry["state"])
+            for entry in first["diagnostic_assistance"]} == {
+        ("D06", "adopted"), ("D08", "adopted"), ("D11", "adopted"),
+    }
 
     body = {"draft_revision": 0, "evidence_fingerprint": first["draft"]["evidence_fingerprint"],
             "selections": {"tables": [{"table": "observations", "default_entity_candidate_id": "cand_entity"}]}}
@@ -400,6 +403,64 @@ def test_materializing_state_does_not_create_a_stale_revision_zero_draft(item, m
     after = review.review(item)
     assert after["draft"]["revision"] == 0 and after["draft"]["editable"] is True
     assert after["structure_review_state"] != "needs_reconfirmation"
+
+
+def test_first_governed_review_carries_matching_staged_choices_without_confirming(item, monkeypatch):
+    candidates = _candidates()
+    candidates["observations"]["entities"][0]["_value"] = {
+        "columns": [{"table": "observations", "column": "entity"}],
+    }
+    candidates["observations"]["temporals"][0]["_value"] = {
+        "columns": [{"table": "observations", "column": "period"}],
+        "temporal_type": "period",
+    }
+    candidates["observations"]["row_grains"][0]["_value"] = {
+        "key_columns": [
+            {"table": "observations", "column": "entity"},
+            {"table": "observations", "column": "period"},
+        ],
+    }
+    roles = [
+        {"table_name": "observations", "column_name": "entity", "role": "Identifier", "role_reviewed": True},
+        {"table_name": "observations", "column_name": "period", "role": "Period", "role_reviewed": True},
+    ]
+    staged_entity = review._staged_candidate_token("entity", "observations", ["entity"])
+    staged_temporal = review._staged_candidate_token("temporal", "observations", ["period"])
+    staged_grain = review._staged_candidate_token(
+        "grain", "observations", ["entity", "period"], ["identifier", "period"],
+    )
+    now = db.now_ist()
+    db.insert("dataset_structure_staged_reviews", {
+        "snapshot_id": item["item_id"], "tenant_id": "tenant-a", "revision": 1,
+        "evidence_fingerprint": "staged-evidence-current", "reviewed_roles_json": roles,
+        "selections_json": {"tables": [{
+            "table": "observations",
+            "default_entity_candidate_id": staged_entity,
+            "default_temporal_candidate_id": staged_temporal,
+            "row_grain_candidate_id": staged_grain,
+            "expected_cadence": {"action": "confirm", "value": {"unit": "quarter", "step": 1}},
+        }]},
+        "state": "review_required", "review_contract_version": "2-staged",
+        "created_by": "reviewer", "created_at": now, "updated_at": now,
+    })
+    monkeypatch.setattr(review, "_artifacts", lambda _item: candidates)
+
+    current = review.review(item)
+
+    assert current["structure_review_state"] == "review_required"
+    assert current["draft"]["revision"] == 0
+    assert current["draft"]["selections"] == {"tables": [{
+        "table": "observations",
+        "default_entity_candidate_id": "cand_entity",
+        "default_temporal_candidate_id": "cand_temporal",
+        "row_grain_candidate_id": "cand_grain",
+        "expected_cadence": {
+            "action": "confirm", "axis_candidate_id": "cand_temporal",
+            "grouping_candidate_id": "cand_entity",
+            "value": {"unit": "quarter", "step": 1},
+        },
+    }]}
+    assert db.query("dataset_structure_review_decision_batches", snapshot_id=item["item_id"]) == []
 
 
 def test_metadata_correction_fences_review_preserves_full_draft_and_reconfirms_after_republication(item, monkeypatch):

@@ -13,7 +13,7 @@ import {
   boundedCandidates, candidateEvidenceSummary, createAutosaveCoordinator, draftPayload,
   canConfirmStructure, createDecisionCoordinator, decisionPayload, createMaterializationPoller, facetCandidates, initialStructureSelections, insufficientAssistance,
   draftSaveFailureMessage, emptyCandidateMessage, mergeCandidatePage, REVIEWABLE_MATERIALIZATION_STATUSES, reviewNeedsReconfirmation,
-  safeWarningLabel, selectionMessage, shouldShowCandidateDiscovery, testLabPathAfterStructureConfirmation,
+  safeWarningLabel, selectionMessage, shouldShowCandidateDiscovery,
 } from "./datasetStructureReview.js";
 
 const FACETS = [
@@ -187,14 +187,14 @@ export default function DatasetStructureReview({ itemId, onReturnToColumns, onRe
         setReconfirmation(reviewNeedsReconfirmation(next, response.status));
         const completion = autosaveRef.current.finish(operation);
         if (completion.hasNewerEdits) setSaveAttempt((currentAttempt) => currentAttempt + 1);
-        else setDirty(false);
+        else { setDirty(false); await loadReview(); }
       } catch (saveFailure) {
         autosaveRef.current.finish(operation);
         setSaveError(draftSaveFailureMessage(saveFailure));
       } finally { setSaving(false); }
     }, 650);
     return () => window.clearTimeout(timer);
-  }, [dirty, itemId, review, saveAttempt, selections]);
+  }, [dirty, itemId, loadReview, review, saveAttempt, selections]);
 
   const assistance = useMemo(() => insufficientAssistance(review), [review]);
   const metadataIncompatible = review?.source_metadata_incompatible || (review?.tables || []).some((table) =>
@@ -219,16 +219,14 @@ export default function DatasetStructureReview({ itemId, onReturnToColumns, onRe
         setSelections(initialStructureSelections({ ...reviewRef.current, draft: { ...reviewRef.current.draft, selections: response.preserved_selections, revision: response.draft_revision, evidence_fingerprint: response.evidence_fingerprint } }));
         setReconfirmation(true); await loadReview();
       } else {
-        const testLabPath = testLabPathAfterStructureConfirmation(itemId, response);
-        if (testLabPath) navigate(testLabPath);
-        else await loadReview();
+        await loadReview();
       }
     } catch (failure) { setSaveError(`${failure.message || "Confirmation could not be saved."} Your selections remain on this screen; retrying uses the same confirmation request.`); }
     finally { setConfirming(false); }
   };
   const confirmEnabled = canConfirmStructure(review, selections, { saving: saving || confirming, dirty, metadataIncompatible });
 
-  return <StepCard step="6" title="Dataset Structure Review" subtitle="Review evidence-backed recommendations. Selections are autosaved as an unconfirmed draft." testId="upl-step-6">
+  return <StepCard step="7" title="Dataset Structure Review" subtitle="Review evidence-backed recommendations. Selections are autosaved as an unconfirmed draft." testId="upl-step-7">
     {loading && <p className="flex items-center gap-2 text-sm text-slate-500"><Loader2 className="h-4 w-4 animate-spin" />Loading structural evidence…</p>}
     {error && <div className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800" role="alert">{error}<Button className="ml-3" size="sm" variant="outline" onClick={loadReview}>Retry</Button></div>}
     {!loading && review && <>

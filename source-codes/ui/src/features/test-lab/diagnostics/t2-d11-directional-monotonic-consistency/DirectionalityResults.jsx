@@ -6,7 +6,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FindingActions, FindingStateBadge, IssueLifecycleActions, OverrideIssueAction } from "@/pages/testlab/FindingWorkflow";
 import { matchesFindingFilter } from "@/pages/testlab/findingWorkflowState";
-import { OBSERVED_COLUMNS, fmt, groupObserved } from "./directionalityWorkflow";
+import {
+  directionalityConsensusSummary, directionalityVoteDetails,
+  OBSERVED_COLUMNS, fmt, groupObserved,
+} from "./directionalityWorkflow";
 
 const WIDTH = 1000;
 const HEIGHT = 410;
@@ -144,20 +147,25 @@ function EvidenceStats({ evidence, parentEvidence }) {
   };
   const metrics = [
     ["Population", (row) => `${Number(row.n_paired || 0).toLocaleString()} usable`, populationDetails],
-    ["Spearman", (row) => fmt(row.spearman?.value), (row) => `p=${fmt(row.spearman?.p_value)}`],
-    ["Regression coefficient", (row) => fmt(row.regression?.value), (row) => `p=${fmt(row.regression?.p_value)}`],
+    ["Spearman", (row) => fmt(row.spearman?.value), (row) => directionalityVoteDetails(row).find((item) => item.key === "spearman")?.note],
+    ["Regression coefficient", (row) => fmt(row.regression?.value), (row) => directionalityVoteDetails(row).find((item) => item.key === "regression")?.note],
+    ["Binned trend", (row) => readableEnum(row.binned?.shape), (row) => directionalityVoteDetails(row).find((item) => item.key === "binned")?.note],
     ["Pearson · display only", (row) => fmt(row.pearson?.value), (row) => `p=${fmt(row.pearson?.p_value)}`],
   ];
-  return <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{metrics.map(([label, value, note]) => <div key={label} className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm"><small className="font-medium text-slate-500">{label}</small><div className={`mt-1 grid ${parentEvidence ? "grid-cols-2 divide-x divide-slate-200" : ""}`}>{scopes.map(([scope, row]) => <div key={scope || "scope"} className={scope === "Segment" ? "pl-2" : parentEvidence ? "pr-2" : ""}>{scope && <span className="block text-[10px] uppercase tracking-wide text-slate-400">{scope}</span>}<strong className="block text-sm text-slate-900">{value(row)}</strong><span className="block text-[10px] leading-4 text-slate-500">{note(row)}</span></div>)}</div></div>)}</div>;
+  return <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">{metrics.map(([label, value, note]) => <div key={label} className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm"><small className="font-medium text-slate-500">{label}</small><div className={`mt-1 grid ${parentEvidence ? "grid-cols-2 divide-x divide-slate-200" : ""}`}>{scopes.map(([scope, row]) => <div key={scope || "scope"} className={scope === "Segment" ? "pl-2" : parentEvidence ? "pr-2" : ""}>{scope && <span className="block text-[10px] uppercase tracking-wide text-slate-400">{scope}</span>}<strong className="block text-sm text-slate-900">{value(row)}</strong><span className="block text-[10px] leading-4 text-slate-500">{note(row)}</span></div>)}</div></div>)}</div>;
+}
+
+function binLabel(row) {
+  return `${fmt(row.lower_bound, 2)}–${fmt(row.upper_bound, 2)}`;
 }
 
 function BinEvidenceTable({ bins = [], title = "Bin averages" }) {
   if (!bins.length) return null;
   return <div className="overflow-hidden rounded-lg border border-slate-200">
-    <div className="flex items-center justify-between bg-rose-50/70 px-2.5 py-1"><h4 className="text-xs font-semibold text-slate-800">{title}</h4><span className="text-[10px] text-slate-500">Average · population</span></div>
+    <div className="bg-rose-50/70 px-2.5 py-1"><h4 className="text-xs font-semibold text-slate-800">{title}</h4></div>
     <table className="w-full text-left text-[11px] leading-4">
-      <thead className="border-y border-slate-200 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="px-2 py-0.5">Bin</th><th className="px-2 py-0.5 text-right">Average</th><th className="px-2 py-0.5 text-right">Population</th><th className="px-2 py-0.5 text-right">Feature range</th></tr></thead>
-      <tbody>{bins.map((row) => <tr key={row.bin_number} className="border-b border-slate-100 last:border-b-0"><td className="px-2 py-0.5 font-medium text-rose-700">{row.bin_number}</td><td className="px-2 py-0.5 text-right font-semibold text-slate-900">{fmt(row.reference_mean, 3)}</td><td className="px-2 py-0.5 text-right text-slate-600">{Number(row.n_observations || 0).toLocaleString()}</td><td className="px-2 py-0.5 text-right text-slate-500" title={`${fmt(row.lower_bound, 3)} to ${fmt(row.upper_bound, 3)}`}>{fmt(row.lower_bound, 2)}–{fmt(row.upper_bound, 2)}</td></tr>)}</tbody>
+      <thead className="border-y border-slate-200 bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500"><tr><th className="px-2 py-0.5">Bin number</th><th className="px-2 py-0.5">Bin label</th><th className="px-2 py-0.5 text-right">Pop count</th><th className="px-2 py-0.5 text-right">Target Avg</th></tr></thead>
+      <tbody>{bins.map((row) => <tr key={row.bin_number} className="border-b border-slate-100 last:border-b-0"><td className="px-2 py-0.5 font-medium text-rose-700">{row.bin_number}</td><td className="px-2 py-0.5 text-slate-600" title={`${fmt(row.lower_bound, 3)} to ${fmt(row.upper_bound, 3)}`}>{binLabel(row)}</td><td className="px-2 py-0.5 text-right text-slate-600">{Number(row.n_observations || 0).toLocaleString()}</td><td className="px-2 py-0.5 text-right font-semibold text-slate-900">{fmt(row.reference_mean, 3)}</td></tr>)}</tbody>
     </table>
   </div>;
 }
@@ -185,7 +193,7 @@ function ResultDetail({ metrics }) {
     ? `The parent uses the entire sample. The accepted segment contains ${Number(population?.baseline_count || evidence.n_paired || 0).toLocaleString()} rows; ${Number(population?.current_count || 0).toLocaleString()} complementary rows were retained as Not analysed.`
     : "This result uses the entire analysis sample; no segment split was applied.";
   return <div className="grid min-h-0 gap-3">
-    <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5 text-sm"><div className="flex flex-wrap items-center gap-x-1.5 gap-y-1"><strong>Expected {selected.comparison.expected_reference_direction}</strong><span className="text-slate-500">vs</span><strong>Observed {selected.comparison.observed_direction}</strong><span className="text-slate-500">with</span><strong className="text-indigo-800">{metrics.reference.column}</strong><span className="text-slate-400">—</span><Badge>{selected.comparison.conclusion}</Badge>{comparingSegment && <span className="text-xs font-medium text-teal-700">· Segment result</span>}</div><p className="mt-1 text-xs leading-4 text-slate-600">{evidence.status_reason}</p></div>
+    <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2.5 text-sm"><div className="flex flex-wrap items-center gap-x-1.5 gap-y-1"><strong>Expected {selected.comparison.expected_reference_direction}</strong><span className="text-slate-500">vs</span><strong>Observed {selected.comparison.observed_direction}</strong><span className="text-slate-500">with</span><strong className="text-indigo-800">{metrics.reference.column}</strong><span className="text-slate-400">—</span><Badge>{selected.comparison.conclusion}</Badge>{comparingSegment && <span className="text-xs font-medium text-teal-700">· Segment result</span>}</div><p className="mt-1 text-xs leading-4 text-slate-600">{directionalityConsensusSummary(evidence)}</p></div>
     <EvidenceStats evidence={evidence} parentEvidence={parentEvidence} />
     <div className="grid gap-3 xl:grid-cols-[minmax(18rem,35fr)_minmax(0,65fr)] xl:items-start">
     <aside className="grid content-start gap-2" aria-label="Evidence scope and bin averages">

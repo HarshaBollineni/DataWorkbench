@@ -2,9 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  FLOOR_RULES, roleSourceLabel, rowCompletenessReviewCount,
+  FLOOR_RULES, hasMultipleTableOptions, roleSourceLabel, rowCompletenessReviewCount,
   rowCompletenessValidation, tableOptionSummary,
 } from "../../../../../src/features/test-lab/diagnostics/t2-d06-row-completeness/rowCompletenessWorkflow.js";
+
+test("table selection is shown only when the user has a real choice", () => {
+  assert.equal(hasMultipleTableOptions({ table_options: [{ table: "Data" }] }), false);
+  assert.equal(hasMultipleTableOptions({ table_options: [{ table: "Data" }, { table: "Lookup" }] }), true);
+  assert.equal(hasMultipleTableOptions({}), false);
+});
 
 function manifest(overrides = {}) {
   return {

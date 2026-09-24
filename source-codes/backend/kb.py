@@ -183,14 +183,22 @@ def require_document(tenant_id: str, document_id: str) -> dict:
 def list_documents(tenant_id: str, include_synthetic: bool = False) -> list[dict]:
     docs = [d for d in s.query("kb_documents", order_by="created_at DESC", tenant_id=tenant_id)
            if include_synthetic or not d.get("is_synthetic")]
+    document_ids = {document["document_id"] for document in docs}
+    versions_by_document: dict[str, list[dict]] = {document_id: [] for document_id in document_ids}
+    for version in s.query("kb_document_versions", order_by="version_seq DESC"):
+        if version["document_id"] in versions_by_document:
+            versions_by_document[version["document_id"]].append(version)
+    published_candidate_versions = {
+        rule["version_id"] for rule in s.query("kb_rules", tenant_id=tenant_id)
+        if rule.get("lifecycle_state") == "published"
+    }
     out = []
     for d in docs:
-        versions = s.query("kb_document_versions", order_by="version_seq DESC", document_id=d["document_id"])
+        versions = versions_by_document[d["document_id"]]
         latest = versions[0] if versions else None
         report = (latest or {}).get("conversion_report_json") or {}
         if report.get("source") in LEARNING_CANDIDATE_SOURCES:
-            candidate_rules, _ = _rules_for_version(latest["version_id"])
-            if not any(rule.get("lifecycle_state") == "published" for rule in candidate_rules):
+            if latest["version_id"] not in published_candidate_versions:
                 continue
         out.append({**d, "version_count": len(versions),
                    "latest_review_state": (latest or {}).get("review_state")})
@@ -215,30 +223,44 @@ def learning_candidate_version_ids(tenant_id: str, pending_only: bool = False) -
 
 
 def list_learning_candidates(tenant_id: str) -> list[dict]:
+    candidate_version_ids = learning_candidate_version_ids(tenant_id)
+    versions = {row["version_id"]: row for row in s.query("kb_document_versions")
+                if row["version_id"] in candidate_version_ids}
+    documents = {row["document_id"]: row for row in s.query("kb_documents", tenant_id=tenant_id)}
+    rules = [row for row in s.query("kb_rules", tenant_id=tenant_id)
+             if row.get("version_id") in candidate_version_ids]
+    rule_ids = {rule["rule_id"] for rule in rules}
+    evidence_by_rule: dict[str, list[dict]] = {rule_id: [] for rule_id in rule_ids}
+    for evidence in s.query("kb_rule_proposal_evidence", order_by="created_at DESC"):
+        if evidence["rule_id"] in evidence_by_rule:
+            evidence_by_rule[evidence["rule_id"]].append(evidence)
     candidates = []
-    for version_id in learning_candidate_version_ids(tenant_id):
-        version = s.query_one("kb_document_versions", version_id=version_id)
-        document = require_document(tenant_id, version["document_id"])
+    for rule in rules:
+        version_id = rule["version_id"]
+        version = versions[version_id]
+        document = documents[version["document_id"]]
         report = version.get("conversion_report_json") or {}
-        rules, _ = _rules_for_version(version_id)
-        for rule in rules:
-            proposal_evidence = s.query(
-                "kb_rule_proposal_evidence", rule_id=rule["rule_id"],
-                order_by="created_at DESC",
-            )
-            candidates.append({
-                "candidate_id": rule["rule_id"], "case_id": report.get("case_id"),
-                "proposal": report.get("proposal") or {}, "document_id": document["document_id"],
-                "title": document["title"], "version_id": version_id,
-                "rule_text": rule["rule_text"], "category": rule["category"],
-                "lifecycle_state": rule["lifecycle_state"],
-                "binding_status": rule.get("binding_status"),
-                "related_tables": rule.get("related_tables_json") or [],
-                "proposal_evidence": proposal_evidence,
-                "created_by": version.get("created_by"), "created_at": version.get("created_at"),
-            })
+        candidates.append({
+            "candidate_id": rule["rule_id"], "case_id": report.get("case_id"),
+            "proposal": report.get("proposal") or {}, "document_id": document["document_id"],
+            "title": document["title"], "version_id": version_id,
+            "rule_text": rule["rule_text"], "category": rule["category"],
+            "lifecycle_state": rule["lifecycle_state"],
+            "binding_status": rule.get("binding_status"),
+            "related_tables": rule.get("related_tables_json") or [],
+            "proposal_evidence": evidence_by_rule[rule["rule_id"]],
+            "created_by": version.get("created_by"), "created_at": version.get("created_at"),
+        })
     candidates.sort(key=lambda row: row.get("created_at") or "", reverse=True)
     return candidates
+
+
+def learning_candidate_count(tenant_id: str) -> int:
+    version_ids = learning_candidate_version_ids(tenant_id)
+    return sum(
+        row.get("version_id") in version_ids
+        for row in s.query("kb_rules", tenant_id=tenant_id)
+    )
 
 
 def get_document(tenant_id: str, document_id: str) -> dict:
@@ -253,9 +275,7 @@ def get_version_preview(tenant_id: str, version_id: str) -> dict:
         raise KeyError("Unknown document version")
     require_document(tenant_id, version["document_id"])
     sections = s.query("kb_sections", order_by="order_seq", version_id=version_id)
-    rules = []
-    for sec in sections:
-        rules.extend(s.query("kb_rules", section_id=sec["section_id"]))
+    rules = s.query("kb_rules", version_id=version_id)
     return {**version, "sections": sections, "rules": rules}
 
 
@@ -1327,9 +1347,10 @@ def _reason_for_rule(rule: dict) -> str:
 def _rules_for_version(version_id: str) -> tuple[list[dict], dict[str, dict]]:
     sections = s.query("kb_sections", order_by="order_seq", version_id=version_id)
     sections_by_id = {sec["section_id"]: sec for sec in sections}
-    rules = []
-    for sec in sections:
-        rules.extend(s.query("kb_rules", section_id=sec["section_id"]))
+    section_order = {section["section_id"]: index for index, section in enumerate(sections)}
+    rules = s.query("kb_rules", version_id=version_id)
+    rules.sort(key=lambda rule: (section_order.get(rule["section_id"], len(section_order)),
+                                 rule.get("created_at") or "", rule["rule_id"]))
     return rules, sections_by_id
 
 

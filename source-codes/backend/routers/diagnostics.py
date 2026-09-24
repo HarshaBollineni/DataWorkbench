@@ -208,6 +208,16 @@ def _latest_diagnostic_draft(item_id: str, diagnostic_id: int,
     """Resolve the diagnostic-specific draft contract behind one shared API."""
     from domains.test_lab.shared import run_state
 
+    # The coverage board is a read-mostly surface. Avoid importing a complete
+    # diagnostic workflow (pandas, analytical engines, KB resources) merely to
+    # discover that this item has no saved setup. Diagnostic-specific logic is
+    # still used whenever a draft actually exists.
+    if not run_state.db.query_one(
+        "diag_runs", item_id=item_id, diagnostic_id=diagnostic_id,
+        status=run_state.DRAFT,
+    ):
+        return None
+
     if diagnostic_id in {8, 11}:
         from dq_diagnostics.dispatch import adapter
         manifest_mod = adapter(diagnostic_id)["manifest"]
@@ -535,7 +545,7 @@ def patch_diagnostic_manifest(
                 _require_d06_run_owner(run, principal)
             else:
                 _require_governed_tenant(run, principal)
-                actor = principal["username"]
+            actor = principal["username"]
         return adapter(run["diagnostic_id"])["manifest"].patch_manifest(
             run_id, body.model_dump(exclude_none=True), actor=actor)
     except Exception as exc:  # noqa: BLE001
@@ -570,19 +580,12 @@ def get_diagnostic_manifest(
         run["manifest_json"] = feature_manifest.refresh_draft_scope(
             run_id, materialize_profiles=False,
         )
+    if run["diagnostic_id"] == 6 and run["status"] == manifest_mod.DRAFT:
+        from domains.test_lab.diagnostics.t2_d06_row_completeness import manifest as row_manifest
+        run["manifest_json"] = row_manifest.refresh_draft_cadence(run_id)
     if run["diagnostic_id"] == 14 and run["status"] == manifest_mod.DRAFT:
         from domains.test_lab.diagnostics.t4_d14_population_stability import manifest as psi_manifest
         run["manifest_json"] = psi_manifest.refresh_draft_scope(run_id)
-    if run["diagnostic_id"] == 11 and run["status"] == manifest_mod.DRAFT:
-        from domains.test_lab.diagnostics.t2_d11_directional_monotonic_consistency import manifest as direction_manifest
-        run["manifest_json"] = direction_manifest.refresh_draft_scope(
-            run_id, actor=principal["username"], tenant_id=principal["tenant_id"],
-        )
-    if run["diagnostic_id"] == 8 and run["status"] == manifest_mod.DRAFT:
-        from domains.test_lab.diagnostics.t2_d08_value_semantics import manifest as semantics_manifest
-        run["manifest_json"] = semantics_manifest.refresh_draft_scope(
-            run_id, tenant_id=principal["tenant_id"],
-        )
     return {"run": {k: run[k] for k in ("run_id", "item_id", "diagnostic_id", "status",
                                         "created_at", "started_at", "finished_at")},
             "manifest": run["manifest_json"],
@@ -643,7 +646,10 @@ def run_diagnostic_manifest(
         if run["status"] == manifest_mod.DRAFT:
             if diagnostic_id == 2:
                 from domains.test_lab.diagnostics.t1_d02_feature_target_separation import manifest as feature_manifest
-                feature_manifest.refresh_draft_scope(run_id)
+                feature_manifest.refresh_draft_scope(run_id, materialize_profiles=False)
+            if diagnostic_id == 6:
+                from domains.test_lab.diagnostics.t2_d06_row_completeness import manifest as row_manifest
+                row_manifest.refresh_draft_cadence(run_id)
             if diagnostic_id == 11:
                 from domains.test_lab.diagnostics.t2_d11_directional_monotonic_consistency import manifest as direction_manifest
                 direction_manifest.refresh_draft_scope(

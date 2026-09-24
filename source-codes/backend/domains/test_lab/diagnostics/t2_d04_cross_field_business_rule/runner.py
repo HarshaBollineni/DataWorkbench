@@ -222,6 +222,7 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
             break
         yield {"phase": "progress", "agent": "cross_field_engine",
                "done": event["done"], "total": event["total"],
+               "task": event["rule_id"],
                "thought": f"[{event['done']}/{event['total']}] {event['rule_id']} "
                           f"[{event['severity']}] -> {event['outcome']}"}
 

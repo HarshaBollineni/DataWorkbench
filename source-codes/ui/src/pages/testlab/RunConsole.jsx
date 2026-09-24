@@ -37,6 +37,7 @@ function useProgressState(events, running) {
     const errorEvent = events.find((event) => event.phase === "error");
     const total = Number(prog?.total || start?.total || 0);
     const completed = Number(prog?.done || (doneEvent ? total : 0));
+    const remaining = Math.max(total - completed, 0);
     const percent = doneEvent ? 100 : total ? Math.round((completed / total) * 100) : 0;
     const featureRun = events.some((event) => event.agent === "feature_target_separation_engine");
     const rowCompletenessRun = events.some((event) => event.agent === "row_completeness_engine");
@@ -47,7 +48,7 @@ function useProgressState(events, running) {
     else if (prog?.stage === "binning") activeKey = "binning";
     else if (prog) activeKey = "rules";
     if (running && total > 0 && completed >= total) activeKey = "persist";
-    return { prog, total, completed, percent, stages, activeKey, doneEvent, errorEvent };
+    return { prog, total, completed, remaining, percent, stages, activeKey, doneEvent, errorEvent };
   }, [events, running]);
 }
 
@@ -69,12 +70,45 @@ function ProgressBar({ state, running }) {
           <strong className="text-2xl text-dq-purple">{state.percent}%</strong>
         </span>
       </div>
-      <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
+      <div className="mt-3 grid grid-cols-3 gap-2 text-center" data-testid="diagnostic-progress-summary">
+        <div className="rounded-md bg-emerald-50 px-2 py-2"><strong className="block text-sm text-emerald-800" data-testid="diagnostic-completed-count">{state.completed}</strong><span className="text-[10px] uppercase tracking-wide text-emerald-700">Completed</span></div>
+        <div className="rounded-md bg-slate-50 px-2 py-2"><strong className="block text-sm text-slate-800" data-testid="diagnostic-remaining-count">{state.remaining}</strong><span className="text-[10px] uppercase tracking-wide text-slate-500">Remaining</span></div>
+        <div className="rounded-md bg-purple-50 px-2 py-2"><strong className="block truncate text-sm text-dq-purple" data-testid="diagnostic-current-task" title={state.prog?.task || state.prog?.feature || state.prog?.rule_id || "Preparing"}>{state.prog?.task || state.prog?.feature || state.prog?.rule_id || "Preparing"}</strong><span className="text-[10px] uppercase tracking-wide text-purple-600">Current task</span></div>
+      </div>
+      <div className="mt-2 h-2.5 w-full overflow-hidden rounded-full bg-slate-100" role="progressbar"
+        aria-label="Diagnostic run progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow={state.percent}>
         <div className={`h-full rounded-full transition-all duration-300 ${state.errorEvent ? "bg-red-500" : "bg-dq-purple"}`}
           style={{ width: `${Math.max(running ? 3 : 0, state.percent)}%` }} />
       </div>
     </div>
   );
+}
+
+function CompletedWork({ events, state }) {
+  const completed = useMemo(() => events
+    .filter((event) => event.phase === "progress" && Number(event.done) > 0)
+    .map((event) => ({
+      key: `${event.done}:${event.stage || "task"}:${event.task || event.feature || event.rule_id || event.thought}`,
+      label: event.task || event.feature || event.rule_id || `Task ${event.done}`,
+      detail: event.stage === "roc" ? "ROC / AUC / Gini"
+        : event.stage === "iv" || event.stage === "binning" ? "IV / WOE binning"
+          : event.outcome || null,
+    }))
+    .slice(-8)
+    .reverse(), [events]);
+  if (!state.total) return null;
+  return <details className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2" open={state.completed > 0 && state.completed < state.total}>
+    <summary className="cursor-pointer text-xs font-semibold text-slate-700" data-testid="diagnostic-completed-work">
+      Completed work ({state.completed}) · Remaining ({state.remaining})
+    </summary>
+    <div className="mt-2 grid gap-1.5">
+      {completed.length ? completed.map((item) => <div key={item.key} className="flex items-center justify-between gap-3 rounded bg-white px-2.5 py-1.5 text-xs">
+        <span className="flex min-w-0 items-center gap-2 text-slate-700"><CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" /><span className="truncate">{item.label}</span></span>
+        {item.detail && <span className="shrink-0 text-[10px] text-slate-500">{item.detail}</span>}
+      </div>) : <p className="text-xs text-slate-500">No tasks completed yet. The current operation is still active.</p>}
+      {state.remaining > 0 && <p className="px-1 text-[11px] text-slate-500">{state.remaining} task{state.remaining === 1 ? "" : "s"} remain in this run.</p>}
+    </div>
+  </details>;
 }
 
 function ProgressPills({ state }) {
@@ -156,6 +190,7 @@ export default function RunConsole({ runId, onDone }) {
         <p className="text-xs text-slate-500">Read-only against the dataset; deterministic; nothing here is user-editable code.</p>
         <div className="mt-3">
           <ProgressBar state={progress} running={stream.running} />
+          <CompletedWork events={stream.events} state={progress} />
           <AgentConsole events={stream.events} running={stream.running} />
           <ProgressPills state={progress} />
         </div>

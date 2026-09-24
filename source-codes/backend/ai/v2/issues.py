@@ -259,7 +259,27 @@ def sync_diagnostic_issues(item_id: str, run_id: str) -> dict:
             "violations": len(findings)}
 
 
-def _present(row: dict, item: dict | None = None) -> dict:
+def _presentation_context(rows: list[dict]) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Batch related read models so issue lists do not query twice per row."""
+    tracked_ids = sorted({row.get("tracked_issue_id") for row in rows if row.get("tracked_issue_id")})
+    issue_ids = sorted({row["issue_row_id"] for row in rows})
+    tracked_rows = db.execute(
+        f"SELECT * FROM tracked_issues_v2 WHERE issue_id IN ({','.join('?' for _ in tracked_ids)})",
+        tracked_ids,
+    ) if tracked_ids else []
+    case_rows = db.execute(
+        f"SELECT * FROM rca_cases WHERE issue_row_id IN ({','.join('?' for _ in issue_ids)})",
+        issue_ids,
+    ) if issue_ids else []
+    return (
+        {row["issue_id"]: row for row in tracked_rows},
+        {row["issue_row_id"]: row for row in case_rows},
+    )
+
+
+def _present(row: dict, item: dict | None = None,
+             tracked_by_id: dict[str, dict] | None = None,
+             case_by_issue: dict[str, dict] | None = None) -> dict:
     out = dict(row)
     out["columns"] = _loads(out.pop("columns_json", None), [])
     out["thresholds"] = _loads(out.pop("threshold_json", None), None)
@@ -269,11 +289,15 @@ def _present(row: dict, item: dict | None = None) -> dict:
         out["item_kind"] = item.get("kind")
         out["use_case"] = item.get("use_case")
     if row.get("tracked_issue_id"):
-        tracked = db.query_one("tracked_issues_v2", issue_id=row["tracked_issue_id"])
+        tracked = ((tracked_by_id or {}).get(row["tracked_issue_id"])
+                   if tracked_by_id is not None
+                   else db.query_one("tracked_issues_v2", issue_id=row["tracked_issue_id"]))
         if tracked:
             out["tracked"] = {k: tracked.get(k) for k in
                               ("issue_id", "title", "owner", "priority", "target_date", "status")}
-    case = db.query_one("rca_cases", issue_row_id=row["issue_row_id"])
+    case = ((case_by_issue or {}).get(row["issue_row_id"])
+            if case_by_issue is not None
+            else db.query_one("rca_cases", issue_row_id=row["issue_row_id"]))
     if case:
         state = case.get("state")
         if state in {"created", "triage", "intake"}:
@@ -298,8 +322,10 @@ def list_issues(item_id: str) -> dict:
     item = service.require_item(item_id)
     sync_issues(item_id)
     _reconcile_feature_target_duplicates(item_id)
-    rows = [_present(r, item) for r in db.query("issues_v2", item_id=item_id)
-            if r.get("status") != "Superseded"]
+    source_rows = [r for r in db.query("issues_v2", item_id=item_id)
+                   if r.get("status") != "Superseded"]
+    tracked_by_id, case_by_issue = _presentation_context(source_rows)
+    rows = [_present(r, item, tracked_by_id, case_by_issue) for r in source_rows]
     rows.sort(key=_sort_key(item))
 
     # Review decisions belong to diagnostic findings, while Open/In RCA/Closed
@@ -311,12 +337,12 @@ def list_issues(item_id: str) -> dict:
         diagnostic_id = run.get("diagnostic_id")
         if run.get("status") == "done" and diagnostic_id not in latest_completed:
             latest_completed[diagnostic_id] = run
-    review_needed = sum(
-        1
-        for run in latest_completed.values()
-        for finding in db.query("diag_findings", run_id=run["run_id"])
-        if finding.get("review_state") == "open"
-    )
+    completed_run_ids = [run["run_id"] for run in latest_completed.values()]
+    review_needed = int(db.execute(
+        f"SELECT COUNT(*) AS n FROM diag_findings WHERE review_state='open' "
+        f"AND run_id IN ({','.join('?' for _ in completed_run_ids)})",
+        completed_run_ids,
+    )[0]["n"]) if completed_run_ids else 0
     issue_status = {
         "open": sum(row.get("status") == "Open" for row in rows),
         "in_review": sum(row.get("status") in {"In RCA", "Escalated"} for row in rows),
@@ -333,8 +359,11 @@ def list_issues(item_id: str) -> dict:
     ran = db.execute(
         "SELECT COUNT(*) AS n FROM results_v2 WHERE item_id=? AND scope IN ('framework','incremental') "
         "AND status IN ('pass','fail')", [item_id])[0]["n"]
+    passed = db.execute(
+        "SELECT COUNT(*) AS n FROM results_v2 WHERE item_id=? AND scope IN ('framework','incremental') "
+        "AND status='pass'", [item_id])[0]["n"]
     return {"issues": rows, "could_not_assess": could_not_assess,
-            "all_passed": bool(ran) and not rows,
+            "all_passed": bool(ran) and not rows, "passed_count": passed,
             "summary": {"review_needed": review_needed, **issue_status}}
 
 
@@ -342,13 +371,23 @@ def register(status: str | None = None, item_id: str | None = None,
              criticality: str | None = None) -> list[dict]:
     """Global register across all items (the Issue screen doubles as this)."""
     items = {i["item_id"]: i for i in db.query("dq_items")}
-    for iid in items:
+    # Legacy result rows are materialized lazily for compatibility. Only
+    # items with an actual failed legacy result can create or refresh an issue;
+    # scanning every inventory item makes an empty register slower as the
+    # catalogue grows.
+    failed_item_ids = {
+        row["item_id"] for row in db.execute(
+            "SELECT DISTINCT item_id FROM results_v2 "
+            "WHERE scope IN ('framework','incremental') AND status='fail'"
+        )
+    }
+    for iid in items.keys() & failed_item_ids:
         try:
             sync_issues(iid)
         except Exception:  # noqa: BLE001 — an item without results has nothing to sync
             continue
     _reconcile_feature_target_duplicates(item_id)
-    out = []
+    selected = []
     for row in db.query("issues_v2"):
         if row.get("status") == "Superseded":
             continue
@@ -358,9 +397,11 @@ def register(status: str | None = None, item_id: str | None = None,
             continue
         if criticality and row.get("criticality") != criticality:
             continue
-        item = items.get(row["item_id"])
-        if item:
-            out.append(_present(row, item))
+        if items.get(row["item_id"]):
+            selected.append(row)
+    tracked_by_id, case_by_issue = _presentation_context(selected)
+    out = [_present(row, items[row["item_id"]], tracked_by_id, case_by_issue)
+           for row in selected]
     out.sort(key=lambda r: (_CRIT_ORDER.get(r.get("criticality"), 3),
                             -(r.get("violation_count") or 0)))
     return out
@@ -422,10 +463,40 @@ def get_issue(issue_row_id: str) -> dict:
                 "run_id": diagnostic_result.get("run_id"),
                 "diagnostic_id": diagnostic_result.get("diagnostic_id"),
                 "decision_type": diagnostic_result.get("decision_type"),
+                "verdict": diagnostic_result.get("verdict"),
+                "na_reason": diagnostic_result.get("na_reason"),
+                "scope_counts": _loads(diagnostic_result.get("scope_counts_json"), {}),
                 "entity_or_table": diagnostic_result.get("entity_or_table"),
                 "metrics": diagnostic_metrics,
                 "finding": _present_finding_evidence(diagnostic_finding),
             }
+            # PSI runs may define baseline/current as two governed subsets of
+            # one immutable snapshot.  Retaining only the aggregate PSI bins
+            # prevents RCA from testing segment-specific explanations against
+            # the exact populations that produced the diagnostic.  Expose the
+            # bounded frozen definition (never the full mutable run manifest).
+            if diagnostic_result.get("diagnostic_id") == 14 and diagnostic_result.get("run_id"):
+                diagnostic_run = db.query_one("diag_runs", run_id=diagnostic_result["run_id"])
+                manifest = (diagnostic_run or {}).get("manifest_json") or {}
+                definition = manifest.get("population_definition") or {}
+                preview = manifest.get("population_preview") or {}
+                if definition:
+                    out["source_evidence"]["population_context"] = {
+                        "definition": {
+                            key: definition.get(key) for key in (
+                                "method", "split_feature", "expression", "null_policy",
+                                "special_values", "special_policy", "strategy",
+                                "profile_artifact_id",
+                            ) if definition.get(key) is not None
+                        },
+                        "preview": {
+                            key: preview.get(key) for key in (
+                                "baseline_count", "current_count", "excluded_count",
+                                "total_count", "population_fingerprint",
+                            ) if preview.get(key) is not None
+                        },
+                        "manifest_fingerprint": manifest.get("manifest_fingerprint"),
+                    }
             # Intake needs the retained shape of the affected feature as well
             # as the diagnostic verdict. Resolve the immutable column-profile
             # artifact by snapshot/table/feature and expose its bounded payload
@@ -464,6 +535,7 @@ def _present_finding_evidence(finding: dict) -> dict:
         "rule_text": finding.get("rule_text"), "outcome": finding.get("outcome"),
         "classification": finding.get("classification"), "rate": finding.get("rate"),
         "tolerance": finding.get("tolerance"), "violation_count": finding.get("violation_count"),
+        "na_reason": finding.get("na_reason"),
         "evidence": _loads(finding.get("evidence_json"), []),
     }
 

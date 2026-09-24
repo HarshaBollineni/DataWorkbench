@@ -35,6 +35,11 @@ matching experiment pack under `experiments/test-lab/_blueprints/` before enteri
 
 ## Release and RCA records
 
+Current RCA behavior is documented in the [domain guide](../backend/domains/rca/README.md)
+and [deployment requirements](rca/deployment.md). These describe the implemented
+feature-state contract, governed chat and retained continuation. Older workstream
+contracts below provide historical context where they differ.
+
 - [`0.5.0/`](0.5.0/) — 0.5.0 implementation contracts and release evidence.
 - [`0.4.0/`](0.4.0/) — 0.4.0 framework-transition contracts and decisions.
 - [`rca/`](rca/) — RCA contracts, traceability, and rollout records.

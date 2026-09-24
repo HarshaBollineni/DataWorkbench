@@ -8,9 +8,8 @@ const manifest = {
   configuration: { reporting_grain: { value: "monthly" }, continuity_floor: { value: 0.95 } },
 };
 
-test("DSC assist requires the D06 scope confirmation but manual fallback stays valid", () => {
-  assert.match(rowCompletenessValidation({ ...manifest, dsc_assist: { state: "available", scope_confirmed: false } }).join(" "), /Confirm the Dataset Structure/);
-  assert.deepEqual(rowCompletenessValidation({ ...manifest, dsc_assist: { state: "available", scope_confirmed: true } }), []);
+test("DSC assist is reviewed through the normal D06 scope without a separate acknowledgement", () => {
+  assert.deepEqual(rowCompletenessValidation({ ...manifest, dsc_assist: { state: "available", scope_confirmed: false } }), []);
   assert.deepEqual(rowCompletenessValidation({ ...manifest, dsc_assist: { state: "unavailable" } }), []);
   assert.equal(roleSourceLabel({ source: "dsc_assist" }), "Confirmed Dataset Structure suggestion");
 });

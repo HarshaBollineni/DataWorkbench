@@ -70,9 +70,9 @@ export function Summary({ kind, summaries }) {
   );
 }
 
-export function StepCard({ step, title, subtitle, children, testId, defaultOpen = true }) {
+export function StepCard({ step, title, subtitle, children, testId, anchor, defaultOpen = true }) {
   const [open, setOpen] = useState(defaultOpen);
-  return <details data-testid={testId} open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className="mt-5 overflow-hidden rounded-lg border border-slate-200 bg-white">
+  return <details id={anchor} data-testid={testId} open={open} onToggle={(event) => setOpen(event.currentTarget.open)} className="mt-5 scroll-mt-4 overflow-hidden rounded-lg border border-slate-200 bg-white">
     <summary className="flex cursor-pointer list-none items-center justify-between gap-4 p-5 hover:bg-slate-50"><span><strong className="block text-slate-950">STEP {step} — {title}</strong>{subtitle && <small className="mt-1 block text-slate-500">{subtitle}</small>}</span><ChevronDown className={`h-5 w-5 text-slate-500 transition-transform ${open ? "rotate-180" : ""}`} /></summary>
     <div className="border-t border-slate-200 p-5">{children}</div>
   </details>;

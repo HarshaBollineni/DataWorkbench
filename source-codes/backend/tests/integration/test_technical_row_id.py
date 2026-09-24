@@ -127,9 +127,14 @@ def test_structural_precheck_explains_duplicate_identifier_and_tests_identifier_
         {"table_name": "source", "column_name": "reporting_period", "role": "Period"},
     ])
     assert precheck["outcome"] == "credible_candidate"
-    single, pair = precheck["tables"][0]["candidates"]
+    candidates = precheck["tables"][0]["candidates"]
+    single = next(row for row in candidates if row["columns"] == ["user_id"])
+    pair = next(row for row in candidates if row["columns"] == ["user_id", "reporting_period"])
     assert single["columns"] == ["user_id"] and single["duplicate_excess_rows"] == 1 and not single["is_unique"]
     assert pair["columns"] == ["user_id", "reporting_period"] and pair["is_unique"]
+    assert pair["recommended"] and pair["rank"] == 1
+    assert precheck["candidate_limits"]["max_key_columns"] == 2
+    assert precheck["authority"] == "none"
     assert not precheck["offer_technical_row_id"]
 
 
@@ -140,6 +145,214 @@ def test_structural_precheck_offers_technical_id_when_selected_identifier_has_du
     assert precheck["outcome"] == "no_unique_candidate" and precheck["offer_technical_row_id"]
     candidate = precheck["tables"][0]["candidates"][0]
     assert candidate["distinct_key_count"] == 2 and candidate["duplicate_excess_rows"] == 1
+
+
+def test_structural_precheck_ranks_two_identifiers_and_classifies_exact_duplicates(staged_item):
+    rows = [{"account": f"A{index}", "sub_account": "main", "value": index}
+            for index in range(19)]
+    rows.extend([
+        {"account": "A0", "sub_account": "main", "value": 0},
+    ])
+    service._write_table(staged_item, "source", pd.DataFrame(rows))
+    precheck = service.staged_structural_precheck(staged_item, [
+        {"table_name": "source", "column_name": "account", "role": "Identifier"},
+        {"table_name": "source", "column_name": "sub_account", "role": "Identifier"},
+        {"table_name": "source", "column_name": "value", "role": "Feature"},
+    ])
+    pair = next(row for row in precheck["tables"][0]["candidates"]
+                if row["columns"] == ["account", "sub_account"])
+    assert pair["quality"] == "near_unique"
+    assert pair["uniqueness_ratio"] == 0.95
+    assert pair["exact_duplicate_groups"] == 1
+    assert pair["conflicting_duplicate_groups"] == 0
+    assert pair["deduplication_recommended"] is True
+
+
+def test_structural_precheck_does_not_recommend_dedup_for_conflicting_rows(staged_item):
+    rows = [{"account": f"A{index}", "period": "2025Q1", "value": index}
+            for index in range(19)]
+    rows.append({"account": "A0", "period": "2025Q1", "value": 999})
+    service._write_table(staged_item, "source", pd.DataFrame(rows))
+    precheck = service.staged_structural_precheck(staged_item, [
+        {"table_name": "source", "column_name": "account", "role": "Identifier"},
+        {"table_name": "source", "column_name": "period", "role": "Period"},
+        {"table_name": "source", "column_name": "value", "role": "Feature"},
+    ])
+    pair = next(row for row in precheck["tables"][0]["candidates"]
+                if row["columns"] == ["account", "period"])
+    assert pair["quality"] == "near_unique"
+    assert pair["conflicting_duplicate_groups"] == 1
+    assert pair["deduplication_recommended"] is False
+
+
+def test_staged_structure_review_starts_unselected_and_resumes_explicit_choice(staged_item):
+    service._write_table(staged_item, "source", pd.DataFrame({
+        "account": ["A1", "A1", "A2"], "period": ["2025Q1", "2025Q2", "2025Q1"],
+    }))
+    inventory = [
+        {"table_name": "source", "column_name": "account", "role": "Identifier", "role_reviewed": True},
+        {"table_name": "source", "column_name": "period", "role": "Period", "role_reviewed": True},
+    ]
+    precheck = service.staged_structural_precheck(staged_item, inventory)
+    recommended = next(candidate for candidate in precheck["tables"][0]["candidates"]
+                       if candidate["recommended"])
+    assert precheck["draft"] == {
+        "revision": 0, "state": "review_required", "stale": False,
+        "reviewed_roles": [], "selections": {"tables": []},
+    }
+
+    saved = service.save_staged_structure_review(
+        staged_item, inventory,
+        evidence_fingerprint=precheck["evidence_fingerprint"],
+        selections={"tables": [{
+            "table": "source", "row_grain_candidate_id": recommended["candidate_id"],
+        }]},
+        expected_revision=0, tenant_id="tenant-a", actor="user",
+    )
+    assert saved["draft"]["revision"] == 1
+    assert saved["draft"]["stale"] is False
+    assert saved["draft"]["selections"]["tables"] == [{
+        "table": "source", "default_entity_candidate_id": None,
+        "default_temporal_candidate_id": None,
+        "row_grain_candidate_id": recommended["candidate_id"],
+        "entity_acknowledged": False, "temporal_acknowledged": False,
+        "row_grain_acknowledged": False, "expected_cadence": None,
+    }]
+    assert db.query("dataset_structure_review_states", snapshot_id=staged_item) == []
+
+
+def test_structural_precheck_exposes_holistic_ranked_structure_evidence(staged_item):
+    service._write_table(staged_item, "source", pd.DataFrame({
+        "account": ["A1", "A1", "A1", "A1", "A2", "A2", "A2", "A2"],
+        "period": ["2025Q1", "2025Q2", "2025Q3", "2025Q4"] * 2,
+        "value": list(range(8)),
+    }))
+    precheck = service.staged_structural_precheck(staged_item, [
+        {"table_name": "source", "column_name": "account", "role": "Identifier", "role_reviewed": True},
+        {"table_name": "source", "column_name": "period", "role": "Period", "role_reviewed": True},
+        {"table_name": "source", "column_name": "value", "role": "Feature", "role_reviewed": True},
+    ])
+    table = precheck["tables"][0]
+    assert table["entities"][0] == {
+        "candidate_id": table["entities"][0]["candidate_id"], "column": "account", "role": "Identifier",
+        "total_rows": 8, "usable_rows": 8, "key_coverage": 1.0,
+        "distinct_key_count": 2, "duplicate_excess_rows": 6,
+        "uniqueness_ratio": 0.25, "rank": 1, "recommended": True,
+    }
+    assert table["temporals"][0]["column"] == "period"
+    assert table["temporals"][0]["role"] == "Period"
+    assert table["temporals"][0]["recommended"] is True
+    grain = next(row for row in table["candidates"] if row["columns"] == ["account", "period"])
+    assert grain["quality"] == "exact" and grain["recommended"] is True
+    cadence = table["cadences"][0]
+    assert cadence["entity_candidate_id"] == table["entities"][0]["candidate_id"]
+    assert cadence["temporal_candidate_id"] == table["temporals"][0]["candidate_id"]
+    assert cadence["cadence"] == "regular"
+    assert cadence["interval"] == {"unit": "quarter", "step": 1}
+    assert cadence["recommended"] is True
+    assert precheck["draft"]["selections"] == {"tables": []}
+    saved = service.save_staged_structure_review(
+        staged_item,
+        [
+            {"table_name": "source", "column_name": "account", "role": "Identifier", "role_reviewed": True},
+            {"table_name": "source", "column_name": "period", "role": "Period", "role_reviewed": True},
+            {"table_name": "source", "column_name": "value", "role": "Feature", "role_reviewed": True},
+        ],
+        evidence_fingerprint=precheck["evidence_fingerprint"],
+        selections={"tables": [{
+            "table": "source",
+            "default_entity_candidate_id": table["entities"][0]["candidate_id"],
+            "default_temporal_candidate_id": table["temporals"][0]["candidate_id"],
+            "row_grain_candidate_id": grain["candidate_id"],
+            "expected_cadence": {"action": "confirm", "value": {"unit": "quarter", "step": 1}},
+        }]},
+        expected_revision=0, tenant_id="tenant-a", actor="user",
+    )
+    selection = saved["draft"]["selections"]["tables"][0]
+    assert selection["default_entity_candidate_id"] == table["entities"][0]["candidate_id"]
+    assert selection["default_temporal_candidate_id"] == table["temporals"][0]["candidate_id"]
+    assert selection["row_grain_candidate_id"] == grain["candidate_id"]
+    assert selection["expected_cadence"] == {
+        "action": "confirm", "value": {"unit": "quarter", "step": 1},
+    }
+
+
+def test_exact_grain_skips_duplicate_group_iteration(monkeypatch):
+    frame = pd.DataFrame({"account": [f"A{index}" for index in range(100)]})
+    original_groupby = pd.DataFrame.groupby
+    monkeypatch.setattr(pd.DataFrame, "groupby", lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("exact candidates must not iterate singleton groups")))
+    try:
+        candidate = service._staged_grain_candidate(frame, ({
+            "table_name": "source", "column_name": "account", "role": "Identifier",
+        },))
+    finally:
+        monkeypatch.setattr(pd.DataFrame, "groupby", original_groupby)
+    assert candidate["quality"] == "exact"
+    assert candidate["duplicate_groups"] == 0
+
+
+def test_saving_staged_structure_review_scans_each_table_once(staged_item, monkeypatch):
+    inventory = [{"table_name": "source", "column_name": "value", "role": "Identifier"}]
+    precheck = service.staged_structural_precheck(staged_item, inventory)
+    original_read = service.read_snapshot_table
+    calls = []
+
+    def counted_read(*args, **kwargs):
+        calls.append(args[:2])
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(service, "read_snapshot_table", counted_read)
+    saved = service.save_staged_structure_review(
+        staged_item, inventory, evidence_fingerprint=precheck["evidence_fingerprint"],
+        selections={"tables": []}, expected_revision=0,
+        tenant_id="tenant-a", actor="user",
+    )
+    assert len(calls) == 1
+    assert saved["draft"]["revision"] == 1
+
+
+def test_staged_structure_review_rejects_stale_evidence_and_revision(staged_item):
+    inventory = [{"table_name": "source", "column_name": "value", "role": "Identifier"}]
+    precheck = service.staged_structural_precheck(staged_item, inventory)
+    candidate_id = precheck["tables"][0]["candidates"][0]["candidate_id"]
+
+    with pytest.raises(ValueError, match="evidence changed"):
+        service.save_staged_structure_review(
+            staged_item, inventory, evidence_fingerprint="staged-evidence-old",
+            selections={"tables": []}, expected_revision=0,
+            tenant_id="tenant-a", actor="user",
+        )
+    assert db.query_one("dataset_structure_staged_reviews", snapshot_id=staged_item) is None
+
+    service.save_staged_structure_review(
+        staged_item, inventory, evidence_fingerprint=precheck["evidence_fingerprint"],
+        selections={"tables": [{"table": "source", "row_grain_candidate_id": candidate_id}]},
+        expected_revision=0, tenant_id="tenant-a", actor="user",
+    )
+    with pytest.raises(ValueError, match="revision changed"):
+        service.save_staged_structure_review(
+            staged_item, inventory, evidence_fingerprint=precheck["evidence_fingerprint"],
+            selections={"tables": []}, expected_revision=0,
+            tenant_id="tenant-a", actor="user",
+        )
+
+
+def test_role_change_marks_saved_staged_structure_review_stale(staged_item):
+    inventory = [{"table_name": "source", "column_name": "value", "role": "Identifier"}]
+    precheck = service.staged_structural_precheck(staged_item, inventory)
+    service.save_staged_structure_review(
+        staged_item, inventory, evidence_fingerprint=precheck["evidence_fingerprint"],
+        selections={"tables": []}, expected_revision=0,
+        tenant_id="tenant-a", actor="user",
+    )
+
+    changed = service.staged_structural_precheck(staged_item, [
+        {"table_name": "source", "column_name": "value", "role": "Feature"},
+    ])
+    assert changed["evidence_fingerprint"] != precheck["evidence_fingerprint"]
+    assert changed["draft"]["revision"] == 1
+    assert changed["draft"]["state"] == "stale" and changed["draft"]["stale"] is True
 
 
 @pytest.mark.parametrize("finalized", ["ready", "processed"])

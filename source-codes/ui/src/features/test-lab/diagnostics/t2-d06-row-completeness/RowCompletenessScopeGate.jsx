@@ -1,13 +1,13 @@
 import { useState } from "react";
 import {
-  Bot, CalendarDays, CheckCircle2, Database, Info, KeyRound, Layers3, Lock,
-  Play, ShieldCheck, SlidersHorizontal, Table2,
+  Bot, CalendarDays, Database, KeyRound, Layers3,
+  Play, ShieldCheck,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  FLOOR_RULES, ROW_COMPLETENESS_RULE_HELP, roleSourceLabel,
+  FLOOR_RULES, ROW_COMPLETENESS_RULE_HELP, hasMultipleTableOptions, roleSourceLabel,
   rowCompletenessValidation, tableOptionSummary,
 } from "./rowCompletenessWorkflow";
 
@@ -68,6 +68,9 @@ function ContinuityFloor({ spec, label, help, frozen, busy, onSave, onDirtyChang
   const numeric = Number(value);
   const valid = Number.isFinite(numeric) && numeric >= 0 && numeric <= 100;
   const changed = valid && numeric / 100 !== Number(spec?.value);
+  const sourceLabel = String(spec?.source || "").startsWith("user-set")
+    ? "User-defined"
+    : spec?.source || "Governed diagnostic default";
   return <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-4">
     <label className="grid gap-1 text-xs font-medium text-slate-700" htmlFor="row-continuity-floor">{label || "Required row coverage"}</label>
     <div className="mt-2 flex items-center gap-2">
@@ -85,7 +88,7 @@ function ContinuityFloor({ spec, label, help, frozen, busy, onSave, onDirtyChang
         onClick={async () => { if (await onSave(numeric / 100)) onDirtyChange(false); }}>Save</Button>}
     </div>
     {!valid && <p className="mt-1 text-xs text-red-600">Enter a value from 0 to 100.</p>}
-    <p className="mt-2 text-[11px] text-slate-500">{spec?.source || "default"} · {help || "One floor is shared by all coverage-based rules."}</p>
+    <p className="mt-2 text-[11px] text-slate-500">{sourceLabel} · {help || "One floor is shared by all coverage-based rules."}</p>
   </div>;
 }
 
@@ -135,60 +138,22 @@ function AdvisoryRoleReview({ manifest, frozen, busy, onPatch }) {
   </Section>;
 }
 
-function DatasetStructureAssist({ manifest, frozen, busy, onPatch }) {
-  const assist = manifest.dsc_assist || {};
-  if (assist.state !== "available") return null;
-  const cadence = assist.expected_cadence;
-  return <Section title="Dataset Structure suggestions"
-    description="Confirmed Dataset Structure Context (DSC) supplies the structural starting point. D06 keeps ownership of its business rules and final run scope." icon={ShieldCheck}>
-    <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
-      <p className="font-semibold">Review these suggested facility and period fields before execution.</p>
-      <p className="mt-1">They are not an execution decision and do not change completed runs, D06 calculations, or reporting grain.</p>
-      {cadence && <p className="mt-2">DSC expected cadence: <strong>{cadence.step} {cadence.unit}{cadence.step === 1 ? "" : "s"}</strong>. When it maps to a supported D06 grain, that grain is proposed below and remains editable until the run is frozen.</p>}
-    </div>
-    {!frozen && <label className="mt-3 flex items-start gap-2 rounded-md border border-slate-200 p-3 text-xs text-slate-700">
-      <input type="checkbox" checked={Boolean(assist.scope_confirmed)} disabled={busy}
-        onChange={(event) => event.target.checked && onPatch({ kind: "dsc_assist_confirmation", confirmed: true })} />
-      <span>I reviewed the D06 scope. I accept these suggestions or the manual values currently selected.</span>
-    </label>}
-    {assist.scope_confirmed && <Badge className="mt-3" variant="success">D06 scope confirmation recorded</Badge>}
-  </Section>;
-}
-
 export default function RowCompletenessScopeGate({ run, manifest, busy, patch, runNow }) {
   const [floorDirty, setFloorDirty] = useState(false);
   const frozen = run.status !== "draft";
   const validationIssues = rowCompletenessValidation(manifest);
   const blockingIssues = floorDirty ? [...validationIssues, "Save the continuity floor change."] : validationIssues;
   const selectedTable = (manifest.table_options || []).find((option) => option.table === manifest.table);
+  const showTableSelection = hasMultipleTableOptions(manifest);
   const disclosure = manifest.inference_disclosure || {};
+  const reportingGrain = manifest.configuration?.reporting_grain || {};
+  const cadenceBacked = reportingGrain.source === "confirmed Dataset Structure expected cadence";
   const safePatch = (body) => patch(body).catch(() => null);
 
   return <div className="grid gap-4" data-testid="row-completeness-scope">
-    <div className="flex flex-wrap items-start justify-between gap-4 rounded-lg border border-slate-200 bg-white p-5">
-      <div>
-        <div className="flex flex-wrap items-center gap-2">
-          <h2 className="font-semibold text-slate-950">Row Completeness · configuration</h2>
-          <Badge variant={frozen ? "secondary" : "outline"} className="gap-1">
-            {frozen && <Lock className="h-3 w-3" />}{run.status}
-          </Badge>
-        </div>
-        <p className="mt-1 text-xs text-slate-500">{manifest.item_name} · immutable snapshot {manifest.snapshot?.snapshot_id} · run {manifest.run_id}</p>
-      </div>
-      <div className={`rounded-md px-3 py-2 text-xs font-medium ${validationIssues.length ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-800"}`}>
-        {blockingIssues.length ? `${blockingIssues.length} configuration item${blockingIssues.length === 1 ? "" : "s"} to resolve`
-          : <span className="flex items-center gap-1"><CheckCircle2 className="h-4 w-4" /> Configuration ready</span>}
-        <p className="mt-1 font-normal opacity-80">Configuration review slice · execution has not started.</p>
-      </div>
-    </div>
-
-    <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900">
-      <p className="flex items-center gap-2 font-semibold"><Info className="h-4 w-4" /> Observed-span methodology</p>
-      <p className="mt-1">{manifest.kb?.methodology_summary || "Required facility-period rows are inferred only between each facility's first and last observed reporting periods. This setup screen does not assume an external facility population."}</p>
-    </div>
-
-    <Section title="1. Select the table" description="The calculation runs against one immutable table. Role suggestions update when the table changes." icon={Table2}>
-      <div className="grid gap-3 lg:grid-cols-[minmax(260px,1fr)_2fr]">
+    <Section title="1. Confirm data structure and cadence"
+      description="Review the DSC-informed roles, reporting cadence, and coverage floor before execution." icon={KeyRound}>
+      {showTableSelection && <div className="mb-4 grid gap-3 border-b border-slate-100 pb-4 lg:grid-cols-[minmax(260px,1fr)_2fr]">
         <label className="grid gap-1 text-xs text-slate-600"><span>Table to assess</span>
           <select aria-label="Table to assess" value={manifest.table || ""} disabled={frozen || busy}
             onChange={(event) => safePatch({ kind: "table_selection", table: event.target.value })}
@@ -200,35 +165,27 @@ export default function RowCompletenessScopeGate({ run, manifest, busy, patch, r
           <div><p className="text-slate-400">Columns</p><p className="font-semibold text-slate-800">{selectedTable.column_count}</p></div>
           <div className="col-span-2"><p className="text-slate-400">Metadata signals</p><p className="font-medium text-slate-700">{tableOptionSummary(selectedTable)}</p></div>
         </div>}
-      </div>
-    </Section>
-
-    <Section title="2. Confirm semantic roles" description="Facility and period are required. Segment is optional and can be left unbound." icon={KeyRound}>
+      </div>}
       <div className="grid gap-3 lg:grid-cols-3">
         {Object.keys(ROLE_PRESENTATION).map((role) => <RoleControl key={role} role={role}
           binding={manifest.roles?.[role]} columns={manifest.available_columns || []}
           frozen={frozen} busy={busy}
           onChange={(column) => safePatch({ kind: "role_override", role, column })} />)}
       </div>
-    </Section>
-
-    <DatasetStructureAssist manifest={manifest} frozen={frozen} busy={busy} onPatch={safePatch} />
-
-    <AdvisoryRoleReview manifest={manifest} frozen={frozen} busy={busy} onPatch={safePatch} />
-
-    <Section title="3. Confirm time interpretation and the single floor"
-      description="The reporting grain controls period parsing. The continuity floor is used only by coverage rules." icon={SlidersHorizontal}>
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className="mt-4 grid gap-3 border-t border-slate-100 pt-4 md:grid-cols-2">
         <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-4">
           <label className="grid gap-1 text-xs font-medium text-slate-700"><span>Reporting grain</span>
-            <select aria-label="Reporting grain" value={manifest.configuration?.reporting_grain?.value || ""}
+            <select aria-label="Reporting grain" value={reportingGrain.value || ""}
               disabled={frozen || busy}
               onChange={(event) => safePatch({ kind: "parameter_tune", key: "reporting_grain", value: event.target.value })}
               className="mt-1 h-10 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-900">
               <option value="monthly">Monthly</option><option value="quarterly">Quarterly</option>
               <option value="semiannual">Semiannual</option><option value="annual">Annual</option>
             </select></label>
-          <p className="mt-2 text-[11px] text-slate-500">{manifest.configuration?.reporting_grain?.source} · confirm this visibly before execution.</p>
+          <div className="mt-3 border-t border-slate-200 pt-3 text-[11px] text-slate-500">
+            <p className="font-medium text-slate-700">{cadenceBacked ? "Confirmed Dataset Structure · 100% confidence" : reportingGrain.source || "Governed diagnostic default"}</p>
+            <p className="mt-1">{reportingGrain.reason || "No confirmed DSC expected cadence was available; review the governed default before running."}</p>
+          </div>
         </div>
         <ContinuityFloor key={manifest.configuration?.continuity_floor?.value} spec={manifest.configuration?.continuity_floor}
           label={manifest.kb?.configuration?.continuity_floor_label}
@@ -237,7 +194,9 @@ export default function RowCompletenessScopeGate({ run, manifest, busy, patch, r
       </div>
     </Section>
 
-    <Section title="4. Review the six fixed rules" description="Rules 1–5 always run. Rule 6 is included only when a segment role is bound." icon={ShieldCheck}>
+    <AdvisoryRoleReview manifest={manifest} frozen={frozen} busy={busy} onPatch={safePatch} />
+
+    <Section title="2. Review the six checks" description="Checks 1–5 always run. Check 6 is included only when a segment role is bound." icon={ShieldCheck}>
       <div className="grid gap-2 md:grid-cols-2">
         {(manifest.kb?.rules || []).map((rule, index) => {
           const segmentRule = rule.rule_id === "T2D6-06";

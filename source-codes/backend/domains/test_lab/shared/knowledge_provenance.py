@@ -122,7 +122,8 @@ def _effective_value(repo: AnalysisArtifactRepository,
 
 
 def resolve_dsc(*, item: dict[str, Any], table: str, consumer_id: str,
-                selectors: list[dict[str, Any]], actor: str) -> dict[str, Any]:
+                selectors: list[dict[str, Any]], actor: str,
+                observe_missing: bool = True) -> dict[str, Any]:
     """Resolve and pin a bounded DSC context without exposing raw data."""
     snapshot = {
         "asset_id": item.get("dataset_family_id"),
@@ -141,7 +142,7 @@ def resolve_dsc(*, item: dict[str, Any], table: str, consumer_id: str,
     }
     try:
         response = resolve_dataset_structure_context(
-            repo, request, created_by=actor,
+            repo, request, created_by=actor, observe_missing=observe_missing,
         )
     except DSCContractError as exc:
         return {

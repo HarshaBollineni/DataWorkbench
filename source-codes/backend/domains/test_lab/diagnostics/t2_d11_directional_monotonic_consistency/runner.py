@@ -242,12 +242,12 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
             findings += found
             complete += 1
             yield {"phase": "progress", "agent": AGENT, "run_id": run_id,
-                   "done": index, "total": len(selected), "feature": name,
+                   "done": index, "total": len(selected), "feature": name, "task": name,
                    "thought": f"[{index}/{len(selected)}] {name}: {evidence['observed_direction']}"}
         except Exception as exc:  # partial outcomes are preserved
             failed.append({"feature": name, "error": f"{type(exc).__name__}: {exc}"})
             yield {"phase": "progress", "agent": AGENT, "run_id": run_id,
-                   "done": index, "total": len(selected), "feature": name,
+                   "done": index, "total": len(selected), "feature": name, "task": name,
                    "thought": f"[{index}/{len(selected)}] {name}: evidence unavailable"}
     summary_id = _id("dres")
     rollup = {"features_selected": len(selected), "features_completed": complete,

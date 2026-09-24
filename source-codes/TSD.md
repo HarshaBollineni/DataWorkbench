@@ -179,6 +179,49 @@ source data or rerunning tests. The v3 RCA workflow stores cases, evidence,
 hypotheses, human decisions, proposed fixes, reruns, closure, and audit events.
 Executable proposals run only through the sandbox and human-approval gates.
 
+The current issue UI uses Intake, Initial Review, Investigate and Closure.
+`domains/rca/feature_states.py` supplies the shared feature-state contract for
+helpers, driver discovery and generated analyses. Cases freeze per-column
+confirmed metadata in `checklist_json.feature_state_snapshot`; physical missing
+and confirmed special populations are retained explicitly and excluded from
+regular numerical calculations. Legacy cases do not infer unconfirmed sentinels.
+
+`POST /api/v3/rca/cases/{case_id}/data-chat` accepts a question and returns the
+case bundle with `data_chat` state. Unlock counts two completed planned agent
+hypothesis tests with successful runtime outcomes. Each question uses retained
+evidence or one helper/generated calculation without creating a budgeted look.
+Scope classification is model-based. Runtime data access uses the active case.
+
+`run_investigation` coordinates a driver look and exactly one linked confirmation
+look under the original hypothesis. The parent claims the run to reject concurrent
+duplicates and retains `combined_run_state`; the child pins `combined_parent_look_id`.
+The parent costs one budget unit and the child zero. Chat credits the child once
+only when the parent run has completed. A `combined_hypothesis_run` AAR event
+retains the final assessment or stopping limitation; intermediate discovery is
+displayed as association evidence, not the final hypothesis assessment. Existing
+focused candidates from earlier runs retain their manual review path.
+
+`rca_evidence_event` artifacts retain turn evidence, method, model metadata,
+outcomes and failures. `rca_aar_links` provides the generation-specific ordered
+projection for reload. Large generated output is retained separately for download.
+Start afresh discards RCA-owned chat/evidence and captures a new metadata snapshot.
+See the [RCA domain guide](backend/domains/rca/README.md) for module ownership and
+[deployment requirements](docs/rca/deployment.md) for runtime/configuration limits.
+
+### Dataset Structure continuation and diagnostic adoption
+
+`dataset_structure_staged_reviews` stores pre-finalization selections, reviewed
+roles, evidence fingerprints and draft revisions. These are mutable sourcing
+drafts, not authoritative AAR assertions. Finalized materialization matches
+staged selections to governed candidates before seeding an unconfirmed review.
+Publication still requires consistent physical inventory and profile evidence.
+
+D06 refreshes compatible confirmed cadence into open scope drafts while preserving
+user-set grain and manual bindings. D08 refreshes DSC-derived bindings while
+preserving human decisions. D11 refreshes its structural exclusions and removes
+conflicting segment selections. Frozen runs remain historical evidence. KB list
+and candidate reads batch related records; this does not change publication authority.
+
 ### Knowledge base
 
 Knowledge documents are uploaded, versioned, converted, tagged, parsed into

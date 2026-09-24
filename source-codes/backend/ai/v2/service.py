@@ -198,10 +198,213 @@ def technical_row_id_eligibility(item_id: str) -> dict[str, Any]:
 _STRUCTURAL_PRECHECK_MAX_IDENTIFIER_CANDIDATES = 8
 _STRUCTURAL_PRECHECK_MAX_TEMPORAL_CANDIDATES = 8
 _STRUCTURAL_PRECHECK_MAX_COMBINATIONS = 32
+_STRUCTURAL_PRECHECK_NEAR_UNIQUE_FLOOR = 0.95
+
+
+def _staged_grain_candidate(frame: pd.DataFrame, candidate_rows: tuple[dict, ...]) -> dict[str, Any]:
+    """Measure one bounded staged grain candidate without publishing authority."""
+    columns = [str(row["column_name"]) for row in candidate_rows]
+    roles = [str(row.get("role") or "").strip().lower() for row in candidate_rows]
+    selected = frame.loc[:, columns]
+    unusable = selected.isna().any(axis=1)
+    for column, row in zip(columns, candidate_rows):
+        specials = row.get("missing_value_codes_json") or row.get("missing_value_codes") or []
+        if row.get("missing_codes_confirmed") and specials:
+            normalized = {str(value).strip() for value in specials}
+            unusable |= selected[column].map(lambda value: str(value).strip() in normalized if not pd.isna(value) else False)
+    usable = selected.loc[~unusable]
+    distinct = int(usable.drop_duplicates().shape[0])
+    usable_count = int(usable.shape[0])
+    total = int(frame.shape[0])
+    uniqueness = (distinct / usable_count) if usable_count else 0.0
+    coverage = (usable_count / total) if total else 0.0
+    duplicate_groups = exact_groups = conflicting_groups = surplus = 0
+    duplicate_excess = usable_count - distinct
+    if uniqueness >= _STRUCTURAL_PRECHECK_NEAR_UNIQUE_FLOOR and duplicate_excess:
+        # Do not iterate every singleton key. Exact candidates have no
+        # duplicates to classify, and a near-unique candidate needs only the
+        # repeated-key rows (bounded to a small share by the 95% threshold).
+        duplicate_mask = usable.duplicated(keep=False)
+        keyed = frame.loc[usable.index[duplicate_mask]].groupby(columns, dropna=False, sort=False)
+        for _key, group in keyed:
+            if len(group.index) < 2:
+                continue
+            duplicate_groups += 1
+            surplus += len(group.index) - 1
+            if len(group.drop_duplicates().index) == 1:
+                exact_groups += 1
+            else:
+                conflicting_groups += 1
+    quality = ("exact" if total and usable_count == total and distinct == total else
+               "near_unique" if uniqueness >= _STRUCTURAL_PRECHECK_NEAR_UNIQUE_FLOOR else "insufficient")
+    identity = {"columns": columns, "roles": roles}
+    return {
+        "candidate_id": "staged-grain-" + hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:16],
+        "columns": columns, "roles": roles,
+        "kind": "single" if len(columns) == 1 else "two_column",
+        "total_rows": total, "usable_rows": usable_count,
+        "null_or_missing_rows": total - usable_count,
+        "key_coverage": round(coverage, 6), "distinct_key_count": distinct,
+        "uniqueness_ratio": round(uniqueness, 6),
+        "duplicate_excess_rows": duplicate_excess,
+        "duplicate_groups": duplicate_groups, "exact_duplicate_groups": exact_groups,
+        "conflicting_duplicate_groups": conflicting_groups,
+        "deduplication_recommended": bool(quality == "near_unique" and duplicate_groups and not conflicting_groups),
+        "is_unique": quality == "exact", "quality": quality,
+    }
+
+
+def _staged_grain_rank(candidate: dict[str, Any]) -> tuple[Any, ...]:
+    roles = candidate["roles"]
+    return (
+        {"exact": 0, "near_unique": 1, "insufficient": 2}[candidate["quality"]],
+        -candidate["uniqueness_ratio"], -candidate["key_coverage"], len(candidate["columns"]),
+        0 if "identifier" in roles else 1,
+        0 if "period" in roles else 1 if "date" in roles else 2,
+        tuple(candidate["columns"]),
+    )
+
+
+def _staged_reviewed_roles(reviewed_rows: list[dict]) -> list[dict[str, Any]]:
+    """Retain only user-reviewed metadata needed by the eventual commit."""
+    fields = (
+        "table_name", "column_name", "role", "role_reviewed",
+        "missing_value_codes_json", "missing_codes_confirmed",
+    )
+    projected = [
+        {field: row.get(field) for field in fields if field in row}
+        for row in reviewed_rows
+        if isinstance(row, dict) and row.get("table_name") and row.get("column_name")
+    ]
+    return sorted(projected, key=lambda row: (str(row["table_name"]), str(row["column_name"])))
+
+
+def _staged_structure_fingerprint(results: list[dict], reviewed_rows: list[dict]) -> str:
+    evidence = {
+        "review_contract_version": "2-staged",
+        "tables": results,
+        "reviewed_roles": _staged_reviewed_roles(reviewed_rows),
+    }
+    digest = hashlib.sha256(json.dumps(
+        evidence, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode("utf-8")).hexdigest()
+    return f"staged-evidence-{digest}"
+
+
+def _staged_facet_id(prefix: str, table: str, columns: list[str]) -> str:
+    value = json.dumps({"table": table, "columns": columns}, sort_keys=True, separators=(",", ":"))
+    return f"staged-{prefix}-" + hashlib.sha256(value.encode()).hexdigest()[:16]
+
+
+def _staged_structure_facets(table: str, frame: pd.DataFrame, identifiers: list[dict],
+                             temporals: list[dict], grains: list[dict]) -> dict[str, list[dict]]:
+    singles = {candidate["columns"][0]: candidate for candidate in grains if candidate["kind"] == "single"}
+    entities = []
+    for row in identifiers:
+        column = str(row["column_name"])
+        evidence = singles.get(column)
+        if not evidence:
+            continue
+        entities.append({
+            "candidate_id": _staged_facet_id("entity", table, [column]),
+            "column": column, "role": "Identifier",
+            "total_rows": evidence["total_rows"], "usable_rows": evidence["usable_rows"],
+            "key_coverage": evidence["key_coverage"],
+            "distinct_key_count": evidence["distinct_key_count"],
+            "duplicate_excess_rows": evidence["duplicate_excess_rows"],
+            "uniqueness_ratio": evidence["uniqueness_ratio"],
+        })
+    entities.sort(key=lambda row: (-row["uniqueness_ratio"], -row["key_coverage"], row["column"]))
+    for index, candidate in enumerate(entities):
+        candidate.update(rank=index + 1, recommended=index == 0)
+
+    temporal_candidates = []
+    for row in temporals:
+        column = str(row["column_name"])
+        evidence = singles.get(column)
+        if not evidence:
+            continue
+        role = str(row.get("role") or "").title()
+        temporal_candidates.append({
+            "candidate_id": _staged_facet_id("temporal", table, [column]),
+            "column": column, "role": role,
+            "temporal_type": role.lower(),
+            "total_rows": evidence["total_rows"], "usable_rows": evidence["usable_rows"],
+            "key_coverage": evidence["key_coverage"], "distinct_value_count": evidence["distinct_key_count"],
+        })
+    temporal_candidates.sort(key=lambda row: (
+        0 if row["role"] == "Period" else 1, -row["key_coverage"], -row["distinct_value_count"], row["column"],
+    ))
+    for index, candidate in enumerate(temporal_candidates):
+        candidate.update(rank=index + 1, recommended=index == 0)
+
+    cadences: list[dict[str, Any]] = []
+    if entities and temporal_candidates:
+        from domains.aar.dataset_structure_producer import _cadence_scan_pairs  # noqa: PLC0415
+        identifier_by_column = {str(row["column_name"]): row for row in identifiers}
+        temporal_by_column = {str(row["column_name"]): row for row in temporals}
+        plans = []
+        for temporal in temporal_candidates:
+            axis_row = temporal_by_column[temporal["column"]]
+            axis_profile = {
+                "special_values": axis_row.get("missing_value_codes_json") or [],
+                "special_values_confirmed": bool(axis_row.get("missing_codes_confirmed")),
+            }
+            for entity in entities:
+                group_row = identifier_by_column[entity["column"]]
+                group_profile = {
+                    "special_values": group_row.get("missing_value_codes_json") or [],
+                    "special_values_confirmed": bool(group_row.get("missing_codes_confirmed")),
+                }
+                plans.append({
+                    "axis": {"column": temporal["column"], "temporal_type": temporal["temporal_type"],
+                             "profile": (None, axis_profile)},
+                    "group": {"column": entity["column"], "profile": (None, group_profile)},
+                    "table": (None, {"table": table}),
+                    "entity_candidate_id": entity["candidate_id"],
+                    "temporal_candidate_id": temporal["candidate_id"],
+                })
+        for plan, observation in zip(plans, _cadence_scan_pairs(frame, plans)):
+            interval = observation.get("interval")
+            candidate = {
+                "candidate_id": _staged_facet_id("cadence", table, [
+                    plan["group"]["column"], plan["axis"]["column"],
+                ]),
+                "entity_candidate_id": plan["entity_candidate_id"],
+                "temporal_candidate_id": plan["temporal_candidate_id"],
+                "entity_column": plan["group"]["column"], "temporal_column": plan["axis"]["column"],
+                "cadence": observation["cadence"],
+                "interval": ({"unit": interval[0], "step": interval[1]} if interval else None),
+                "basis": observation["basis"], "measurements": observation["measurements"],
+            }
+            candidate["recommended"] = bool(
+                plan["entity_candidate_id"] == entities[0]["candidate_id"]
+                and plan["temporal_candidate_id"] == temporal_candidates[0]["candidate_id"]
+                and candidate["cadence"] == "regular" and candidate["interval"]
+            )
+            cadences.append(candidate)
+    return {"entities": entities, "temporals": temporal_candidates, "cadences": cadences}
+
+
+def _staged_review_projection(item_id: str, evidence_fingerprint: str) -> dict[str, Any]:
+    saved = db.query_one("dataset_structure_staged_reviews", snapshot_id=item_id)
+    if not saved:
+        return {
+            "revision": 0, "state": "review_required", "stale": False,
+            "reviewed_roles": [], "selections": {"tables": []},
+        }
+    stale = saved["evidence_fingerprint"] != evidence_fingerprint
+    return {
+        "revision": int(saved["revision"]),
+        "state": "stale" if stale else saved["state"],
+        "stale": stale,
+        "reviewed_roles": saved.get("reviewed_roles_json") or [],
+        "selections": saved.get("selections_json") or {"tables": []},
+    }
 
 
 def staged_structural_precheck(item_id: str, reviewed_rows: list[dict] | None = None) -> dict[str, Any]:
-    """Measure selected identifiers and bounded identifier-period pairs pre-finalization.
+    """Measure role-bounded one/two-column row grains pre-finalization.
 
     This is a read-only staging aid, not a DSC assertion or a saved decision.
     It deliberately mirrors DSC's bounded candidate shape so the UI never
@@ -222,57 +425,161 @@ def staged_structural_precheck(item_id: str, reviewed_rows: list[dict] | None = 
     for table_row in source_tables:
         table = table_row["table_name"]
         metadata = by_table.get(table, {})
-        identifiers = [row for row in metadata.values()
-                       if str(row.get("role") or "").lower() == "identifier"]
-        temporals = [row for row in metadata.values()
-                     if str(row.get("role") or "").lower() in {"period", "date"}]
+        identifiers = sorted((row for row in metadata.values()
+                              if str(row.get("role") or "").lower() == "identifier"),
+                             key=lambda row: str(row["column_name"]))
+        temporals = sorted((row for row in metadata.values()
+                            if str(row.get("role") or "").lower() in {"period", "date"}),
+                           key=lambda row: (0 if str(row.get("role") or "").lower() == "period" else 1,
+                                            str(row["column_name"])))
+        combination_count = (len(identifiers) + len(temporals)
+                             + (len(identifiers) * (len(identifiers) - 1)) // 2
+                             + len(identifiers) * len(temporals))
         table_capped = (len(identifiers) > _STRUCTURAL_PRECHECK_MAX_IDENTIFIER_CANDIDATES
                         or len(temporals) > _STRUCTURAL_PRECHECK_MAX_TEMPORAL_CANDIDATES
-                        or len(identifiers) * len(temporals) > _STRUCTURAL_PRECHECK_MAX_COMBINATIONS)
+                        or combination_count > _STRUCTURAL_PRECHECK_MAX_COMBINATIONS)
         capped = capped or table_capped
         available = set(table_row.get("columns") or [])
         identifiers = [row for row in identifiers if row["column_name"] in available]
         temporals = [row for row in temporals if row["column_name"] in available]
         candidates: list[dict[str, Any]] = []
-        if not table_capped and identifiers:
-            frame = read_snapshot_table(item_id, table, columns=sorted({row["column_name"] for row in identifiers + temporals}))
-            pairs = [(row,) for row in identifiers] + [(identifier, temporal) for identifier in identifiers for temporal in temporals]
-            for candidate_rows in pairs:
-                columns = [row["column_name"] for row in candidate_rows]
-                selected = frame.loc[:, columns]
-                null_mask = selected.isna().any(axis=1)
-                usable = selected.loc[~null_mask]
-                distinct = int(usable.drop_duplicates().shape[0])
-                usable_count = int(usable.shape[0])
-                candidates.append({
-                    "columns": columns,
-                    "kind": "single" if len(columns) == 1 else "identifier_period",
-                    "total_rows": int(frame.shape[0]), "usable_rows": usable_count,
-                    "null_or_missing_rows": int(null_mask.sum()),
-                    "distinct_key_count": distinct,
-                    "duplicate_excess_rows": usable_count - distinct,
-                    "is_unique": bool(len(frame) and not null_mask.any() and distinct == len(frame)),
-                })
+        facets = {"entities": [], "temporals": [], "cadences": []}
+        if not table_capped and (identifiers or temporals):
+            # One table read supports all candidates and complete-row duplicate
+            # classification. Temporal-only pairs are deliberately excluded.
+            frame = read_snapshot_table(item_id, table)
+            identifier_pairs = [(left, right) for index, left in enumerate(identifiers)
+                                for right in identifiers[index + 1:]]
+            pairs = ([(row,) for row in identifiers]
+                     + [(identifier, temporal) for identifier in identifiers for temporal in temporals]
+                     + identifier_pairs + [(row,) for row in temporals])
+            candidates = sorted((_staged_grain_candidate(frame, pair) for pair in pairs), key=_staged_grain_rank)
+            for index, candidate in enumerate(candidates):
+                candidate["rank"] = index + 1
+                candidate["recommended"] = index == 0 and candidate["quality"] in {"exact", "near_unique"}
+            facets = _staged_structure_facets(table, frame, identifiers, temporals, candidates)
         results.append({"table": table, "identifier_columns": [row["column_name"] for row in identifiers],
                         "temporal_columns": [row["column_name"] for row in temporals],
-                        "capped": table_capped, "candidates": candidates})
+                        "capped": table_capped, "candidates": candidates, **facets})
 
     unique = [candidate for result in results for candidate in result["candidates"] if candidate["is_unique"]]
+    near_unique = [candidate for result in results for candidate in result["candidates"]
+                   if candidate["quality"] == "near_unique"]
     if capped:
         outcome = "inconclusive"
     elif unique:
         outcome = "credible_candidate"
+    elif near_unique:
+        outcome = "near_unique_candidate"
     elif any(result["identifier_columns"] for result in results):
         outcome = "no_unique_candidate"
     else:
         outcome = "no_identifier_candidates"
-    return {"outcome": outcome, "tables": results, "candidate_limits": {
+    evidence_fingerprint = _staged_structure_fingerprint(results, rows)
+    return {"review_contract_version": "2-staged", "authority": "none", "outcome": outcome,
+            "evidence_fingerprint": evidence_fingerprint,
+            "draft": _staged_review_projection(item_id, evidence_fingerprint),
+            "tables": results, "candidate_limits": {
         "identifiers": _STRUCTURAL_PRECHECK_MAX_IDENTIFIER_CANDIDATES,
         "temporals": _STRUCTURAL_PRECHECK_MAX_TEMPORAL_CANDIDATES,
-        "combinations": _STRUCTURAL_PRECHECK_MAX_COMBINATIONS,
+        "combinations": _STRUCTURAL_PRECHECK_MAX_COMBINATIONS, "max_key_columns": 2,
+        "eligible_roles": ["Identifier", "Period", "Date"],
+        "near_unique_floor": _STRUCTURAL_PRECHECK_NEAR_UNIQUE_FLOOR,
     }, "technical_row_id_eligible": eligibility["eligible"],
             "technical_row_id_reason": eligibility["reason"],
-            "offer_technical_row_id": bool(eligibility["eligible"] and outcome in {"no_unique_candidate", "no_identifier_candidates"})}
+            "offer_technical_row_id": bool(eligibility["eligible"] and outcome in {"no_unique_candidate", "no_identifier_candidates"}),
+            "progress": {"state": "done", "stage": "classify_duplicates", "percent": 100,
+                         "completed": 4, "total": 4}}
+
+
+def save_staged_structure_review(item_id: str, reviewed_rows: list[dict], *,
+                                 evidence_fingerprint: str, selections: dict,
+                                 expected_revision: int, tenant_id: str,
+                                 actor: str) -> dict[str, Any]:
+    """Save a non-authoritative, optimistic-concurrency-protected DSC draft."""
+    item = require_item(item_id)
+    if item.get("sourcing_draft_state") not in {"active", "recovery"}:
+        raise ValueError("Staged structure review is available only before snapshot finalization.")
+    if item.get("sourcing_tenant_id") != tenant_id:
+        raise ValueError("Unknown sourcing draft.")
+    if not isinstance(reviewed_rows, list) or not isinstance(selections, dict):
+        raise ValueError("Reviewed roles and selections are required.")
+
+    current = staged_structural_precheck(item_id, reviewed_rows)
+    if evidence_fingerprint != current["evidence_fingerprint"]:
+        raise ValueError("Staged structure evidence changed; review the current candidates.")
+
+    candidate_ids = {result["table"]: {
+        "default_entity_candidate_id": {candidate["candidate_id"] for candidate in result["entities"]},
+        "default_temporal_candidate_id": {candidate["candidate_id"] for candidate in result["temporals"]},
+        "row_grain_candidate_id": {candidate["candidate_id"] for candidate in result["candidates"]},
+    } for result in current["tables"]}
+    selection_rows = selections.get("tables")
+    if not isinstance(selection_rows, list):
+        raise ValueError("Selections must contain a tables list.")
+    normalized, seen = [], set()
+    for selection in selection_rows:
+        if not isinstance(selection, dict) or not selection.get("table"):
+            raise ValueError("Each structure selection requires a table.")
+        table = str(selection["table"])
+        if table not in candidate_ids or table in seen:
+            raise ValueError("Structure selections must reference each staged table at most once.")
+        selected_ids = {field: selection.get(field) for field in (
+            "default_entity_candidate_id", "default_temporal_candidate_id", "row_grain_candidate_id",
+        )}
+        for field, candidate_id in selected_ids.items():
+            if candidate_id is not None and candidate_id not in candidate_ids[table][field]:
+                raise ValueError(f"The selected {field.replace('_candidate_id', '').replace('_', ' ')} is not part of the current evidence.")
+        cadence = selection.get("expected_cadence")
+        if cadence is not None:
+            if not isinstance(cadence, dict) or cadence.get("action") not in {"confirm", "clear", "mark_not_applicable"}:
+                raise ValueError("Expected cadence requires a supported explicit action.")
+            if cadence["action"] == "confirm":
+                value = cadence.get("value") or {}
+                if (selected_ids["default_temporal_candidate_id"] is None
+                        or value.get("unit") not in {"day", "week", "month", "quarter", "year"}
+                        or not isinstance(value.get("step"), int) or value["step"] < 1):
+                    raise ValueError("Confirmed expected cadence requires a temporal selection, unit, and positive step.")
+        seen.add(table)
+        normalized.append({
+            "table": table,
+            **selected_ids,
+            "entity_acknowledged": bool(selection.get("entity_acknowledged", False)),
+            "temporal_acknowledged": bool(selection.get("temporal_acknowledged", False)),
+            "row_grain_acknowledged": bool(selection.get(
+                "row_grain_acknowledged", selection.get("limited_grain_acknowledged", False))),
+            "expected_cadence": cadence,
+        })
+    normalized.sort(key=lambda row: row["table"])
+
+    now = db.now_ist()
+    with db.get_conn() as conn:
+        saved = db.query_one("dataset_structure_staged_reviews", conn=conn, snapshot_id=item_id)
+        actual_revision = int(saved["revision"]) if saved else 0
+        if expected_revision != actual_revision:
+            raise ValueError("Staged structure draft revision changed; reload before saving.")
+        row = {
+            "snapshot_id": item_id, "tenant_id": tenant_id,
+            "revision": actual_revision + 1,
+            "evidence_fingerprint": evidence_fingerprint,
+            "reviewed_roles_json": _staged_reviewed_roles(reviewed_rows),
+            "selections_json": {"tables": normalized},
+            "state": "review_required", "review_contract_version": "2-staged",
+            "created_by": saved.get("created_by") if saved else actor,
+            "created_at": saved.get("created_at") if saved else now,
+            "updated_at": now,
+        }
+        if saved:
+            db.update("dataset_structure_staged_reviews", {"snapshot_id": item_id}, row, conn=conn)
+        else:
+            db.insert("dataset_structure_staged_reviews", row, conn=conn)
+        conn.commit()
+    current["draft"] = {
+        "revision": row["revision"], "state": row["state"], "stale": False,
+        "reviewed_roles": row["reviewed_roles_json"],
+        "selections": row["selections_json"],
+    }
+    return current
 
 
 def _technical_row_id_path(item_id: str, table: str) -> Path:
@@ -1780,23 +2087,41 @@ def discard_staged_upload(item_id: str, actor: str = "system") -> dict:
 
 def list_items(kind: str | None = None) -> list[dict]:
     rows = db.query("dq_items", order_by="created_at DESC", **({"kind": kind} if kind else {}))
+    item_ids = {row["item_id"] for row in rows}
+    scores = {
+        row["item_id"]: row.get("final")
+        for row in db.execute(
+            "SELECT items.item_id, (SELECT score.final FROM scores_v2 AS score "
+            "WHERE score.item_id=items.item_id AND score.scope='all' LIMIT 1) AS final "
+            "FROM dq_items AS items"
+        )
+        if row["item_id"] in item_ids
+    }
+    issue_counts = {
+        row["item_id"]: row["n"]
+        for row in db.execute(
+            "SELECT item_id, COUNT(*) AS n FROM issues_v2 "
+            "WHERE status IN ('Open','In RCA','Escalated') GROUP BY item_id"
+        )
+        if row["item_id"] in item_ids
+    }
+    target_descriptions = {
+        row["item_id"]: row.get("description") or ""
+        for row in db.execute(
+            "SELECT items.item_id, (SELECT inventory.description FROM variable_inventory AS inventory "
+            "WHERE inventory.item_id=items.item_id AND inventory.column_name=items.target_variable "
+            "LIMIT 1) AS description FROM dq_items AS items WHERE items.target_variable IS NOT NULL"
+        )
+        if row["item_id"] in item_ids
+    }
     for row in rows:
         row["id"] = row["item_id"]
         row["timestamps"] = {"created_at": row.get("created_at"), "updated_at": row.get("updated_at")}
         # Inventory columns (feedback 1.1/1.7): health score + open-issue count
         # from the workflows, and the target's business definition.
-        score_row = db.query_one("scores_v2", item_id=row["item_id"], scope="all")
-        row["health_score"] = score_row.get("final") if score_row else None
-        counted = db.execute(
-            "SELECT COUNT(*) AS n FROM issues_v2 WHERE item_id=? AND status IN ('Open','In RCA','Escalated')",
-            [row["item_id"]])
-        row["active_issues"] = counted[0]["n"] if counted else 0
-        row["target_description"] = ""
-        if row.get("target_variable"):
-            found = db.execute(
-                "SELECT description FROM variable_inventory WHERE item_id=? AND column_name=? LIMIT 1",
-                [row["item_id"], row["target_variable"]])
-            row["target_description"] = (found[0].get("description") or "") if found else ""
+        row["health_score"] = scores.get(row["item_id"])
+        row["active_issues"] = issue_counts.get(row["item_id"], 0)
+        row["target_description"] = target_descriptions.get(row["item_id"], "")
     return rows
 
 
@@ -2256,7 +2581,8 @@ def process_snapshot(item_id: str, *, intent: str | None = None, start_date: str
     if inventory_rows is not None:
         if not inventory_rows:
             raise ValueError("The reviewed column definitions cannot be empty.")
-        put_inventory(item_id, inventory_rows)
+        _put_inventory_transactional(
+            item_id, inventory_rows, target_variable_override=target_variable)
         item = require_item(item_id)
     unconfirmed_specials = [
         f"{row['table_name']}.{row['column_name']}"
@@ -2290,6 +2616,7 @@ def process_snapshot(item_id: str, *, intent: str | None = None, start_date: str
     from assets import service as assets_service
     committed = assets_service.finalize_staged_snapshot(
         asset_id, item_id, selected_intent, actor=uploaded_by,
+        refresh_derived_records=inventory_rows is None,
         start_date=start_date, end_date=end_date, snapshot_label=snapshot_label,
         period_column=period_column, column_type_map_json=incoming,
         target_variable=target_variable, use_case=use_case, product=product,
@@ -2378,7 +2705,13 @@ def put_inventory(item_id: str, rows: list[dict], table: str | None = None) -> l
     return _put_inventory_transactional(item_id, rows, table)
 
 
-def _put_inventory_transactional(item_id: str, rows: list[dict], table: str | None = None) -> list[dict]:
+def _put_inventory_transactional(
+    item_id: str,
+    rows: list[dict],
+    table: str | None = None,
+    *,
+    target_variable_override: str | None = None,
+) -> list[dict]:
     """Validate the complete column-review batch before one authoritative UoW.
 
     Profile reads, special-value validation and mapping lookup are all
@@ -2435,13 +2768,49 @@ def _put_inventory_transactional(item_id: str, rows: list[dict], table: str | No
                 next_role != current.get("role"), next_role_reviewed != int(current.get("role_reviewed") or 0),
                 special_values != current["missing_value_codes_json"], int(specials_confirmed) != int(current.get("missing_codes_confirmed") or 0))):
             dsc_metadata_changed = True
-        if table_name not in frame_cache:
-            frame_cache[table_name] = _read_table(item_id, table_name)
-        frame = frame_cache[table_name]
-        if col not in frame.columns:
-            raise ValueError(f"Reviewed column '{col}' is not present in table '{table_name}'.")
-        regular = _regular_values(frame[col], special_values, specials_confirmed)
-        next_row = {**current, "classification": next_classification, "data_type": str(frame[col].dtype),
+        current_profile = dict(current.get("profile_json") or {})
+        target_reclassification_needed = bool(
+            target_variable_override is not None
+            and target_variable_override != item.get("target_variable")
+            and col == item.get("target_variable")
+        )
+        profile_inputs_changed = (
+            next_classification != current.get("classification")
+            or special_values != current["missing_value_codes_json"]
+            or int(specials_confirmed) != int(current.get("missing_codes_confirmed") or 0)
+            or target_reclassification_needed
+            or current_profile.get("calculation_method") != "exact"
+        )
+        if profile_inputs_changed:
+            if table_name not in frame_cache:
+                frame_cache[table_name] = _read_table(item_id, table_name)
+            frame = frame_cache[table_name]
+            if col not in frame.columns:
+                raise ValueError(f"Reviewed column '{col}' is not present in table '{table_name}'.")
+            series = frame[col]
+            regular = _regular_values(series, special_values, specials_confirmed)
+            profile = {
+                **_column_profile(series, special_values, specials_confirmed, next_classification),
+                "inferred_type": _classify(
+                    col, regular,
+                    target_variable_override
+                    if target_variable_override is not None
+                    else item.get("target_variable"),
+                ),
+                "sample_values": [_jsonable(value) for value in regular.head(5).tolist()],
+            }
+            data_type = str(series.dtype)
+        else:
+            profile = current_profile
+            data_type = current.get("data_type", "")
+            effective_target = (
+                target_variable_override
+                if target_variable_override is not None
+                else item.get("target_variable")
+            )
+            if effective_target == col:
+                profile = {**profile, "inferred_type": "target"}
+        next_row = {**current, "classification": next_classification, "data_type": data_type,
                     "description": row.get("description", current.get("description", "")),
                     "discrepancies": row.get("discrepancies", current.get("discrepancies", [])),
                     "notes": row.get("notes", current.get("notes", "")), "role": next_role,
@@ -2450,9 +2819,7 @@ def _put_inventory_transactional(item_id: str, rows: list[dict], table: str | No
                     "business_context": row.get("business_context", current.get("business_context", "")),
                     "missing_value_codes_json": special_values, "missing_codes_confirmed": int(specials_confirmed),
                     "provisional": 0, "updated_at": db.now_ist()}
-        next_row["profile_json"] = {**_column_profile(frame[col], special_values, specials_confirmed, next_classification),
-                                    "inferred_type": _classify(col, regular, item.get("target_variable")),
-                                    "sample_values": [_jsonable(value) for value in regular.head(5).tolist()]}
+        next_row["profile_json"] = profile
         if protected_technical_row_id:
             next_row.update(_TECHNICAL_ROW_ID_PROVENANCE)
         prepared.append((next_row, mapping_update, row))

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import uuid
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -20,7 +21,7 @@ from domains.test_lab.diagnostics.t4_d14_population_stability import (
     runner as runner_population_stability,
 )
 import system_db as db
-from ai.v2 import service
+from ai.v2 import issues, service
 from dq_diagnostics import result_promotion, runner_feature_target
 from dq_diagnostics.register import seed_register
 from routers import v2
@@ -43,6 +44,31 @@ def frozen_categorical(**overrides):
         groups=[{"label": "A", "values": ["a"]}, {"label": "B", "values": ["b"]}],
         underflow_guard=False, overflow_guard=False)
     return {**value, **overrides}
+
+
+def test_runner_indexes_frozen_profiles_once_for_all_features():
+    calls = []
+    profiles = {
+        "profile-a": (SimpleNamespace(artifact_type="column_profile", feature="a",
+                                      identity={"table": "portfolio"}), {"column": "a"}),
+        "profile-b": (SimpleNamespace(artifact_type="column_profile", feature="b",
+                                      identity={"table": "portfolio"}), {"column": "b"}),
+        "profile-unused": (SimpleNamespace(artifact_type="column_profile", feature="unused",
+                                           identity={"table": "portfolio"}), {"column": "unused"}),
+    }
+
+    class Repository:
+        def get(self, artifact_id):
+            calls.append(artifact_id)
+            return profiles[artifact_id]
+
+    resolved = runner_population_stability._baseline_profiles(Repository(), {
+        "table": "portfolio",
+        "bindings": {"column_profile_artifact_ids": list(profiles)},
+    }, ["a", "b"])
+
+    assert set(resolved) == {"a", "b"}
+    assert calls == ["profile-a", "profile-b"]
 
 
 def test_numeric_psi_reconciles_missing_underflow_and_overflow():
@@ -272,6 +298,18 @@ def test_one_snapshot_manifest_bin_review_runner_artifact_and_contextual_handoff
     assert db.query_one("issues_v2", finding_id=finding["finding_id"]) is None
     issue_id = runner_population_stability.ensure_contextual_issue(finding["finding_id"], actor="reviewer")
     assert db.query_one("issues_v2", issue_row_id=issue_id)["diagnostic_id"] == 14
+    issue_detail = issues.get_issue(issue_id)
+    assert issue_detail["source_evidence"]["verdict"] is None
+    assert issue_detail["source_evidence"]["scope_counts"] == feature["scope_counts_json"]
+    assert issue_detail["source_evidence"]["na_reason"] == feature.get("na_reason")
+    assert issue_detail["source_evidence"]["finding"]["na_reason"] == finding.get("na_reason")
+    population_context = issue_detail["source_evidence"]["population_context"]
+    assert population_context["definition"] == {
+        key: value for key, value in db.query_one("diag_runs", run_id=run_id)["manifest_json"][
+            "population_definition"
+        ].items() if value is not None
+    }
+    assert population_context["preview"]["population_fingerprint"]
     report, report_artifact, reused = psi_reporting.report_payload(run_id)
     assert report["features"][0]["feature"] == "score"
     assert report["features"][0]["profile"]["total_count"] == 40

@@ -53,6 +53,9 @@ export default function IssueManagement() {
   const [register, setRegister] = useState([]);
   const [passed, setPassed] = useState([]);
   const [showPassed, setShowPassed] = useState(() => searchParams.get("passed") === "show");
+  const [passedLoading, setPassedLoading] = useState(() => Boolean(
+    searchParams.get("item") && searchParams.get("passed") === "show"
+  ));
   const [message, setMessage] = useState("");
 
   useEffect(() => { getItemsV2().then(setItems); }, []);
@@ -72,9 +75,6 @@ export default function IssueManagement() {
       getItemIssuesV2(itemId)
         .then((data) => { setPayload(data); setMessage(""); })
         .catch((e) => setMessage(e.message));
-      getResultsV2(itemId, "all")
-        .then((rows) => setPassed(rows.filter((r) => r.status === "pass")))
-        .catch(() => setPassed([]));
     } else {
       // Direct navigation must never dead-end on an API error (feedback 5.1):
       // fall back to an empty register with a friendly hint instead.
@@ -89,6 +89,16 @@ export default function IssueManagement() {
     }
   };
   useEffect(load, [itemId]);
+
+  useEffect(() => {
+    if (!itemId || !showPassed) return;
+    let active = true;
+    getResultsV2(itemId, "all")
+      .then((rows) => { if (active) setPassed(rows.filter((row) => row.status === "pass")); })
+      .catch(() => { if (active) setPassed([]); })
+      .finally(() => { if (active) setPassedLoading(false); });
+    return () => { active = false; };
+  }, [itemId, showPassed]);
 
   const item = items.find((r) => r.item_id === itemId);
   const reportReady = item && ["testlab_step4", "complete"].includes(item.status);
@@ -121,7 +131,11 @@ export default function IssueManagement() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <select className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={itemId} onChange={(e) => setItemId(e.target.value)}>
+          <select className="h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={itemId} onChange={(e) => {
+            setItemId(e.target.value);
+            setPassed([]);
+            setPassedLoading(Boolean(e.target.value && showPassed));
+          }}>
             <option value="">All items (register)</option>
             {items.map((row) => <option key={row.item_id} value={row.item_id}>{row.name}</option>)}
           </select>
@@ -226,14 +240,19 @@ export default function IssueManagement() {
         </details>
       )}
 
-      {itemId && passed.length > 0 && (
+      {itemId && Number(payload?.passed_count || 0) > 0 && (
         <div className="mt-5">
-          <Button variant="outline" size="sm" onClick={() => setShowPassed((v) => !v)}>
+          <Button variant="outline" size="sm" onClick={() => {
+            if (!showPassed) setPassedLoading(true);
+            setShowPassed((value) => !value);
+          }}>
             {showPassed ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-            {showPassed ? "Hide" : "Show"} Passed Tests ({passed.length})
+            {showPassed ? "Hide" : "Show"} Passed Tests ({payload.passed_count})
           </Button>
           {showPassed && (
             <div className="mt-3 overflow-hidden rounded-lg border border-slate-200 bg-white">
+              {passedLoading && <div className="p-4 text-sm text-slate-500">Loading passed tests…</div>}
+              {!passedLoading && <>
               <table className="w-full text-sm">
                 <thead className="bg-slate-100 text-left text-xs uppercase text-slate-500">
                   <tr><th className="px-3 py-2">Test</th><th className="px-3 py-2">Table</th><th className="px-3 py-2">Metric</th></tr>
@@ -248,6 +267,7 @@ export default function IssueManagement() {
                   ))}
                 </tbody>
               </table>
+              </>}
             </div>
           )}
         </div>

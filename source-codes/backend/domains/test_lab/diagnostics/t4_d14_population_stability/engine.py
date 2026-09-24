@@ -73,6 +73,17 @@ def _assign(series: pd.Series, bins: dict[str, Any]) -> pd.Series:
     return result
 
 
+def assign_feature_bins(series: pd.Series, bins: dict[str, Any]) -> pd.Series:
+    """Assign rows with the exact governed PSI bin contract.
+
+    RCA uses this public read-only seam when the dominant PSI symptom is a
+    non-missing bin. Keeping assignment here prevents a second, subtly
+    different interpretation of the frozen boundaries.
+    """
+    validate_bin_definition(bins)
+    return _assign(series, bins)
+
+
 def classify(psi: float, thresholds: dict[str, float]) -> str:
     if psi >= thresholds["investigate"]: return "investigate"
     if psi >= thresholds["watch"]: return "watch"

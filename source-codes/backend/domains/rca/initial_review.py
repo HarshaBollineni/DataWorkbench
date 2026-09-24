@@ -1,5 +1,6 @@
 """Structured LLM review of deterministic RCA opening evidence."""
 from __future__ import annotations
+from domains.rca import progress
 
 import json
 from typing import Any
@@ -11,8 +12,8 @@ from ai.model_runtime import ModelExecutionError, execute_with_fallback
 
 
 WORKLOAD = "rca_initial_review"
-PROMPT_VERSION = "rca_initial_review_v0_1"
-CONTRACT_VERSION = "rca_initial_review_contract_v0_1"
+PROMPT_VERSION = "rca_initial_review_v0_3"
+CONTRACT_VERSION = "rca_initial_review_contract_v0_2"
 
 
 class CandidateHypothesis(BaseModel):
@@ -41,6 +42,7 @@ def public_policy() -> dict[str, object]:
     return load_model_policy(WORKLOAD).public_metadata()
 
 
+@progress.phase("Interpreting initial evidence")
 def review(case_context: dict[str, Any], deterministic_result: dict[str, Any]) -> dict[str, Any]:
     """Review bounded metadata and aggregates; never send source rows."""
     policy = load_model_policy(WORKLOAD)
@@ -54,6 +56,7 @@ def review(case_context: dict[str, Any], deterministic_result: dict[str, Any]) -
             "metric": case_context.get("metric"),
             "threshold": case_context.get("threshold"),
             "violation_count": case_context.get("violation_count"),
+            "user_context": case_context.get("user_context") or [],
         },
         "deterministic_opening_result": deterministic_result,
     }
@@ -63,9 +66,14 @@ def review(case_context: dict[str, Any], deterministic_result: dict[str, Any]) -
             model=deployment.deployment,
             instructions=(
                 "You are the initial-review analyst in a governed data-quality RCA. "
-                "Use only the supplied aggregate evidence. Distinguish observations from "
-                "hypotheses, disclose limitations, and propose testable next steps. Do not "
-                "claim a root cause, invent source rows, or recommend modifying production data."
+                "Use only the supplied aggregate evidence. Treat governed AAR diagnostic "
+                "evidence as authoritative over raw fallback statistics. Respect confirmed "
+                "special-value handling and the declared population scope. For PSI, inspect "
+                "the supplied bin counts, shares, and contributions before proposing causes. "
+                "Distinguish observations from hypotheses, disclose genuine limitations, and "
+                "treat user context as attributed, unverified background, not measured evidence. "
+                "propose testable next steps. Do not claim a root cause, invent unavailable "
+                "evidence, expose drafting commentary, or recommend modifying production data."
             ),
             input=[{
                 "role": "user",

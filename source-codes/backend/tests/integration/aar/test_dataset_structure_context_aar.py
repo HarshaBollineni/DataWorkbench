@@ -16,6 +16,7 @@ from analysis_runtime.contracts import stable_fingerprint
 from analysis_runtime.dataset_structure_context import payload_hash, request_fingerprint, project_materialized_dataset_structure
 from analysis_runtime.dataset_structure_context import DSCContractError, ERROR_SNAPSHOT_MISMATCH
 import domains.aar.dataset_structure_producer as dsc_producer
+import domains.aar.dataset_structure_resolver as dsc_resolver
 from domains.aar.repository import AnalysisArtifactRepository
 from domains.aar import save_dataset_structure_assertion, save_dataset_structure_context
 from domains.aar import (
@@ -445,6 +446,18 @@ def test_profile_backed_schema_observer_and_resolver_are_atomic_and_reusable(aar
             for pin in response["selector_results"][0]["pins"]] == ["column:amount", "column:private_application_id"]
     repeated = resolve_dataset_structure_context(repo, request, clock=lambda: "2030-01-01T00:00:00+00:00")
     assert repeated["context_ref"] == response["context_ref"]
+    original_observe = dsc_resolver.observe_dataset_structure
+    monkeypatch.setattr(
+        dsc_resolver, "observe_dataset_structure",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("unexpected observation")),
+    )
+    retained = resolve_dataset_structure_context(
+        repo, request, clock=lambda: "2030-01-01T00:00:00+00:00",
+        observe_missing=False,
+    )
+    assert retained["overall_result"] == "fulfilled"
+    assert retained["context_ref"] == response["context_ref"]
+    monkeypatch.setattr(dsc_resolver, "observe_dataset_structure", original_observe)
 
     optional = {**request, "selectors": [{**selector, "requirement": "optional",
                                              "accepted_resolution_states": ["confirmed"]}]}
@@ -1240,6 +1253,39 @@ def test_phase_cadence_mixed_and_unknown_have_closed_evidence(frame, expected):
     assert result["cadence"] == expected
     assert result["basis"]["total_count"] == sum(result["basis"]["exclusions"].values()) + result["basis"]["usable_count"]
     assert "not-a-date" not in json.dumps(result)
+
+
+def test_phase_cadence_candidate_batch_normalizes_each_source_column_once(monkeypatch):
+    frame = pd.DataFrame({
+        "observed_on": ["2024-01-01", "2024-02-01", "2024-03-01", "2024-04-01"],
+        "legal_entity": ["a", "a", "a", "a"],
+        "account": ["x", "x", "x", "x"],
+    })
+    profile = {"special_values": []}
+    axis = {"column": "observed_on", "temporal_type": "date", "profile": (None, profile)}
+    candidates = [
+        {"axis": axis, "group": {"column": column, "profile": (None, profile)},
+         "table": (None, {"table": "orders"})}
+        for column in ("legal_entity", "account")
+    ]
+    expected = [dsc_producer._cadence_scan_pair(frame, candidate) for candidate in candidates]
+    calls = {"axis": 0, "group": 0}
+    strict_date_key = dsc_producer._strict_date_key
+    cadence_group_key = dsc_producer._cadence_group_key
+
+    def counted_date(value):
+        calls["axis"] += 1
+        return strict_date_key(value)
+
+    def counted_group(value):
+        calls["group"] += 1
+        return cadence_group_key(value)
+
+    monkeypatch.setattr(dsc_producer, "_strict_date_key", counted_date)
+    monkeypatch.setattr(dsc_producer, "_cadence_group_key", counted_group)
+
+    assert dsc_producer._cadence_scan_pairs(frame, candidates) == expected
+    assert calls == {"axis": len(frame), "group": len(frame) * 2}
 
 
 @pytest.mark.parametrize(("value", "accepted"), [

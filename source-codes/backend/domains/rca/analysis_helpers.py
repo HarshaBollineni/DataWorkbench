@@ -24,7 +24,7 @@ Does NOT belong in this module (Phase 2 / PLT-08 declutter):
   * LLM prompting — tool descriptions for the model live in ``ai/prompts.py``.
 
 The ``RCAHelper`` dataclass/``HELPERS`` dict below is this module's own richer
-metadata (supported_test_types, input_roles, param/output schema) for the 12
+metadata (supported_test_types, input_roles, param/output schema) for the 15
 probes; ``ai/test_kit.py`` imports ``HELPERS`` and wraps each into its own
 lightweight ``Helper`` so there is still exactly one catalogue platform-wide.
 """
@@ -239,6 +239,164 @@ def _psi_ks_decomposition(df: pd.DataFrame, params: dict[str, Any]) -> dict[str,
         ["Inspect source-system or policy changes affecting the top shifted ranges.",
          "Run segment_attribution to find which segment drives the shifted bins."],
     )
+
+
+def _psi_evidence_decomposition(df: pd.DataFrame, params: dict[str, Any]) -> dict[str, Any]:
+    """Explain an already-computed PSI from its retained baseline/current bins.
+
+    This helper deliberately does not reconstruct populations from ``df``.  It
+    is for diagnostic workflows whose immutable AAR evidence already contains
+    the exact bin counts, proportions, and contributions used by the PSI run.
+    """
+    del df
+    diagnostic = params.get("diagnostic") or {}
+    bins = diagnostic.get("bins") if isinstance(diagnostic, dict) else None
+    if diagnostic.get("psi") is None or not isinstance(bins, list) or not bins:
+        raise ValueError("Retained PSI diagnostic evidence with bins is required.")
+    rows = []
+    for source in bins:
+        if not isinstance(source, dict):
+            continue
+        rows.append({
+            key: source.get(key) for key in (
+                "bin", "bin_label", "baseline_count", "baseline_proportion",
+                "current_count", "current_proportion", "contribution",
+            )
+        })
+    rows.sort(key=lambda row: abs(float(row.get("contribution") or 0.0)), reverse=True)
+    total = sum(abs(float(row.get("contribution") or 0.0)) for row in rows)
+    dominant = rows[0] if rows else None
+    dominant_share = (
+        abs(float(dominant.get("contribution") or 0.0)) / total
+        if dominant and total else None
+    )
+    label = (dominant or {}).get("bin_label") or (dominant or {}).get("bin")
+    return _result(
+        f"PSI={float(diagnostic['psi']):.4f}; {label or 'the leading bin'} contributes "
+        f"{dominant_share:.1%} of absolute retained-bin contribution."
+        if dominant_share is not None else f"PSI={float(diagnostic['psi']):.4f}.",
+        {
+            "feature": diagnostic.get("feature"), "psi": diagnostic.get("psi"),
+            "classification": diagnostic.get("classification"),
+            "baseline_count": diagnostic.get("baseline_count"),
+            "current_count": diagnostic.get("current_count"),
+            "dominant_bin": label, "dominant_contribution_share": dominant_share,
+        },
+        rows,
+        ["The leading retained bin identifies the primary measured PSI driver.",
+         "A PSI contribution identifies where populations differ; it does not alone prove an upstream cause."],
+        ["Validate the selected hypothesis against the leading bin's baseline/current counts and declared missing-value treatment."],
+    )
+
+
+def _population_segment_missingness(df: pd.DataFrame, params: dict[str, Any]) -> dict[str, Any]:
+    """Cross-tab physical and declared-special missingness by exact PSI population and segment.
+
+    The runtime injects the immutable population definition from the source
+    diagnostic.  This avoids replacing a governed baseline/current predicate
+    with a guessed date split while still allowing a hypothesis to be tested
+    against quarter, source, eligibility, or another retained segment column.
+    """
+    column = params.get("column")
+    segment_col = params.get("segment_col")
+    context = params.get("population_context") or {}
+    definition = context.get("definition") or {}
+    if not column or column not in df:
+        raise ValueError("A known analysis column is required.")
+    if not segment_col or segment_col not in df:
+        raise ValueError("A known segment_col is required.")
+    if definition.get("method") != "split_snapshot":
+        raise ValueError("A frozen split_snapshot population definition is required.")
+
+    from domains.test_lab.diagnostics.t4_d14_population_stability.population import split_population
+
+    populations = split_population(
+        df, definition.get("split_feature"), definition.get("expression") or {},
+        null_policy=definition.get("null_policy", "baseline"),
+        special_values=definition.get("special_values") or [],
+        special_policy=definition.get("special_policy", "exclude"),
+    )
+    from domains.rca import feature_states
+
+    snapshot = params.get("feature_state_snapshot") or {}
+    governance = feature_states.column_governance(snapshot, column)
+    declared_values = governance["confirmed_special_values"]
+    if not (snapshot.get("columns") or {}):
+        declared_values = list(params.get("declared_special_values") or [])
+
+    def special_mask(series: pd.Series) -> pd.Series:
+        mask = pd.Series(False, index=series.index)
+        text = series.astype("string").str.strip()
+        numeric = pd.to_numeric(series, errors="coerce")
+        for raw in declared_values:
+            mask |= text.eq(str(raw).strip()).fillna(False)
+            try:
+                mask |= numeric.eq(float(raw)).fillna(False)
+            except (TypeError, ValueError):
+                pass
+        return mask & ~series.isna()
+
+    rows: list[dict[str, Any]] = []
+    totals: dict[str, dict[str, Any]] = {}
+    for population_name in ("baseline", "current"):
+        population = populations[population_name]
+        physical = population[column].isna()
+        special = special_mask(population[column])
+        totals[population_name] = {
+            "rows": int(len(population)),
+            "physical_null_count": int(physical.sum()),
+            "physical_null_rate": float(physical.mean()) if len(population) else 0.0,
+            "declared_special_count": int(special.sum()),
+            "declared_special_rate": float(special.mean()) if len(population) else 0.0,
+        }
+        segments = population[segment_col].astype("string").fillna("<missing>")
+        grouped = pd.DataFrame({"segment": segments, "physical": physical, "special": special})
+        for segment, group in grouped.groupby("segment", dropna=False, sort=True):
+            effective = group["physical"] | group["special"]
+            rows.append({
+                "population": population_name, "segment": str(segment),
+                "rows": int(len(group)),
+                "physical_null_count": int(group["physical"].sum()),
+                "physical_null_rate": float(group["physical"].mean()),
+                "declared_special_count": int(group["special"].sum()),
+                "declared_special_rate": float(group["special"].mean()),
+                "effective_missing_count": int(effective.sum()),
+                "effective_missing_rate": float(effective.mean()),
+            })
+    rows.sort(key=lambda row: (
+        -row["physical_null_count"], -row["declared_special_count"],
+        row["population"], row["segment"],
+    ))
+    baseline_null_segments = [
+        row["segment"] for row in rows
+        if row["population"] == "baseline" and row["physical_null_count"] > 0
+    ]
+    current_null_segments = [
+        row["segment"] for row in rows
+        if row["population"] == "current" and row["physical_null_count"] > 0
+    ]
+    result = _result(
+        f"Physical nulls in {column}: baseline {totals['baseline']['physical_null_count']:,} "
+        f"across {len(baseline_null_segments)} {segment_col} segment(s); current "
+        f"{totals['current']['physical_null_count']:,} across "
+        f"{len(current_null_segments)} segment(s).",
+        {
+            "column": column, "segment_col": segment_col,
+            "population_fingerprint": (context.get("preview") or {}).get("population_fingerprint"),
+            "baseline": totals["baseline"], "current": totals["current"],
+            "baseline_physical_null_segments": baseline_null_segments,
+            "current_physical_null_segments": current_null_segments,
+            "declared_special_values": declared_values,
+        },
+        rows,
+        ["Physical nulls and declared special values are reported separately.",
+         "The baseline/current allocation exactly reuses the frozen diagnostic predicate."],
+        ["If missingness is concentrated in named periods, inspect the upstream coverage or eligibility change for those periods."],
+    )
+    result["feature_state_reconciliation"] = feature_states.reconciliation(
+        df, snapshot, [column, segment_col]
+    )
+    return result
 
 
 def _segment_attribution(df: pd.DataFrame, params: dict[str, Any]) -> dict[str, Any]:
@@ -521,13 +679,20 @@ def _schema_type_anomaly(df: pd.DataFrame, params: dict[str, Any]) -> dict[str, 
     )
 
 
+def _greedy_driver_search(df: pd.DataFrame, params: dict[str, Any]) -> dict[str, Any]:
+    """Discover bounded candidate drivers for a governed row-level RCA target."""
+    from domains.rca.driver_search import run_driver_search
+
+    return run_driver_search(df, params)
+
+
 @dataclass(frozen=True)
 class RCAHelper:
     """Rich metadata for one RCA probe (this module's own catalogue row).
 
     ``ai/test_kit.py`` wraps every entry of :data:`HELPERS` into its own
     lightweight ``Helper`` for the single platform-wide catalogue; the extra
-    fields here (``supported_test_types``, ``input_roles``) are RCA-specific
+fields here (``supported_test_types``, ``input_roles``) are RCA-specific
     and stay local to this module.
     """
     helper_id: str
@@ -568,6 +733,24 @@ HELPERS: dict[str, RCAHelper] = {
                   ("psi", "ks"), ("date_col", "numeric_column"),
                   {"required": ["column"], "optional": ["date_col", "split_quantile", "bins"]}, OUTPUT_SCHEMA,
                   _psi_ks_decomposition),
+        RCAHelper("psi_evidence_decomposition", "Retained PSI evidence decomposition",
+                  "Explain PSI using the exact retained baseline/current bin evidence.",
+                  ("psi",), ("retained_psi_bins",),
+                  {"required": ["diagnostic"]}, OUTPUT_SCHEMA,
+                  _psi_evidence_decomposition),
+        RCAHelper("population_segment_missingness", "Population-segment missingness",
+                  "Compare physical and declared-special missingness by exact diagnostic population and segment.",
+                  ("psi", "missing"), ("diagnostic_population", "column", "segment_col"),
+                  {"required": ["column", "segment_col", "population_context"], "optional": []},
+                  OUTPUT_SCHEMA, _population_segment_missingness),
+        RCAHelper("greedy_driver_search", "Shallow driver search",
+                  "Find the strongest validated tabular separators for an LLM-defined governed target.",
+                  ("psi", "missing", "completeness", "rule", "outlier", "drift"),
+                  ("target_spec", "candidate_columns"),
+                  {"required": ["target_spec"],
+                   "optional": ["population_context", "declared_special_values",
+                                "feature_state_snapshot"]},
+                  OUTPUT_SCHEMA, _greedy_driver_search),
         RCAHelper("segment_attribution", "Segment attribution",
                   "Find segments with the largest early/recent metric deltas.",
                   ("psi", "ks", "missing", "outlier"), ("date_col", "numeric_column", "segment_col"),

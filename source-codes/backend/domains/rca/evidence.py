@@ -7,6 +7,7 @@ to discard it cleanly when the user explicitly starts afresh.
 from __future__ import annotations
 
 import uuid
+from time import perf_counter
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,9 @@ def build_case_context(case: dict, case_file: dict, issue: dict, item: dict) -> 
         "intake": {
             "checklist": case_file.get("checklist_json") or {},
             "schema_snapshot": case_file.get("schema_snapshot_json") or {},
+            "feature_state_snapshot": (
+                (case_file.get("checklist_json") or {}).get("feature_state_snapshot") or {}
+            ),
             "tag_snapshot": case_file.get("tags_snapshot_json") or [],
         },
     }
@@ -112,6 +116,11 @@ def _save_linked(case: dict, entry: dict, *, evidence_kind: str,
     generation = int(case.get("workflow_generation") or 1)
 
     def link(conn, artifacts) -> None:
+        if evidence_kind == "operation_progress":
+            current = conn.execute("SELECT workflow_generation FROM rca_cases WHERE case_id=?",
+                                   (case["case_id"],)).fetchone()
+            if current is None or int(current[0] or 1) != generation:
+                raise ValueError("RCA progress belongs to a superseded generation")
         artifact_id = artifacts[0].artifact_id
         existing = conn.execute(
             "SELECT 1 FROM rca_aar_links WHERE artifact_id=?", (artifact_id,)
@@ -131,7 +140,10 @@ def _save_linked(case: dict, entry: dict, *, evidence_kind: str,
              evidence_kind, stage, status, recorded_at),
         )
 
+    from domains.rca import progress
+    started = perf_counter()
     outcomes = AnalysisArtifactRepository().save_batch([entry], database_callback=link)
+    progress.persistence_elapsed(perf_counter() - started)
     return outcomes[0].artifact.artifact_id
 
 
@@ -156,6 +168,8 @@ def ensure_case_context(case: dict, case_file: dict, issue: dict, item: dict) ->
 def record_event(case: dict, *, evidence_kind: str, stage: str, status: str,
                  actor: str, details: dict[str, Any] | None = None,
                  source_artifact_ids: tuple[str, ...] = ()) -> str:
+    from domains.rca import progress
+    progress.observe_event(evidence_kind, status)
     generation = int(case.get("workflow_generation") or 1)
     recorded_at = s.now_ist()
     payload = {
@@ -184,13 +198,21 @@ def list_case_evidence(case_id: str, workflow_generation: int) -> list[dict]:
     for link in s.query("rca_aar_links", order_by="sequence_no", case_id=case_id,
                         workflow_generation=workflow_generation):
         metadata, payload = repository.get(link["artifact_id"])
+        details = (payload.get("details")
+                   if metadata.artifact_type == "rca_evidence_event" else None)
+        if str(link.get("evidence_kind") or "").endswith("sandbox_output"):
+            details = {
+                "look_id": (details or {}).get("look_id"),
+                "hypothesis_id": (details or {}).get("hypothesis_id"),
+                "download_artifact_id": metadata.artifact_id,
+                "download_format": "text",
+            }
         out.append({
             **link, "artifact_type": metadata.artifact_type,
             "payload_hash": metadata.payload_hash,
             "source_artifact_ids": list(metadata.source_artifact_ids),
             "summary": metadata.summary,
-            "details": (payload.get("details")
-                        if metadata.artifact_type == "rca_evidence_event" else None),
+            "details": details,
             "created_by": metadata.created_by,
             "integrity_status": metadata.integrity_status,
         })

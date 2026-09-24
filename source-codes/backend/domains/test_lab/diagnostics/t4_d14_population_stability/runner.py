@@ -81,6 +81,12 @@ def _bin(repo: AnalysisArtifactRepository, reference: dict[str, Any], feature: s
     return metadata, payload
 
 
+def load_frozen_bin_definition(reference: dict[str, Any], feature: str) -> dict[str, Any]:
+    """Resolve and validate the exact immutable PSI bin definition for read-only reuse."""
+    _metadata, payload = _bin(AnalysisArtifactRepository(), reference, feature)
+    return payload
+
+
 def _baseline_profile(repo: AnalysisArtifactRepository, manifest: dict[str, Any], feature: str):
     """Resolve the immutable Data Sourcing profile frozen into this run's bindings."""
     for artifact_id in (manifest.get("bindings") or {}).get("column_profile_artifact_ids") or []:
@@ -94,10 +100,32 @@ def _baseline_profile(repo: AnalysisArtifactRepository, manifest: dict[str, Any]
     return None
 
 
+def _baseline_profiles(repo: AnalysisArtifactRepository, manifest: dict[str, Any],
+                       features: list[str]) -> dict[str, tuple[Any, dict[str, Any]]]:
+    """Load each frozen baseline profile at most once for the whole run."""
+    wanted = set(features)
+    resolved: dict[str, tuple[Any, dict[str, Any]]] = {}
+    table = manifest.get("baseline_table") or manifest["table"]
+    for artifact_id in (manifest.get("bindings") or {}).get("column_profile_artifact_ids") or []:
+        if len(resolved) == len(wanted):
+            break
+        try:
+            metadata, payload = repo.get(artifact_id)
+        except (KeyError, OSError):
+            continue
+        if (metadata.artifact_type == "column_profile" and metadata.feature in wanted
+                and metadata.identity.get("table") == table):
+            resolved[metadata.feature] = (metadata, payload)
+    return resolved
+
+
 def _persist_feature(manifest: dict[str, Any], feature: str, result: dict[str, Any],
-                     bin_meta: Any, actor: str) -> tuple[str, str]:
-    repo = AnalysisArtifactRepository()
-    profile = _baseline_profile(repo, manifest, feature)
+                     bin_meta: Any, actor: str, *, repo: AnalysisArtifactRepository | None = None,
+                     profile: tuple[Any, dict[str, Any]] | None = None) -> tuple[str, str]:
+    resolve_profile = repo is None and profile is None
+    repo = repo or AnalysisArtifactRepository()
+    if resolve_profile:
+        profile = _baseline_profile(repo, manifest, feature)
     profile_meta, profile_payload = profile if profile else (None, None)
     payload = {**result, "feature": feature, "population_fingerprint": manifest["population_fingerprint"],
                "bin_artifact_id": bin_meta.artifact_id, "bin_payload_hash": bin_meta.payload_hash,
@@ -145,13 +173,17 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
     yield {"phase": "start", "agent": AGENT, "run_id": run_id, "total": len(features),
            "thought": f"Calculating frozen-bin PSI for {len(features)} feature(s)."}
     repo = AnalysisArtifactRepository(); complete, failed, findings, artifact_outcomes = [], [], [], []
+    profiles = _baseline_profiles(repo, manifest, features)
     for index, feature in enumerate(features, 1):
         preview: dict[str, Any]
         try:
             bin_meta, bins = _bin(repo, manifest["frozen_bins"][feature], feature)
             result = calculate_feature_psi(baseline[feature], current[feature], bins,
                                            epsilon=manifest["epsilon"], thresholds=manifest["thresholds"])
-            result_id, reuse = _persist_feature(manifest, feature, result, bin_meta, actor)
+            result_id, reuse = _persist_feature(
+                manifest, feature, result, bin_meta, actor,
+                repo=repo, profile=profiles.get(feature),
+            )
             complete.append(result_id); artifact_outcomes.append(reuse)
             preview = {"feature": feature, "status": "completed", "psi": result["psi"],
                        "classification": result["classification"],
@@ -176,7 +208,7 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
             failed.append({"feature": feature, "error": str(exc)})
             preview = {"feature": feature, "status": "failed", "error": str(exc)}
         yield {"phase": "progress", "agent": AGENT, "run_id": run_id, "done": index,
-               "total": len(features), "feature": feature, "preview": preview,
+               "total": len(features), "feature": feature, "task": feature, "preview": preview,
                "thought": f"[{index}/{len(features)}] {feature}"}
     status = "complete" if not failed else ("partial" if complete else "failed")
     summary_id = _id("dres"); rollup = {"features": len(features), "completed": len(complete),

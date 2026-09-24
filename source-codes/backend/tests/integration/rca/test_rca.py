@@ -183,7 +183,59 @@ def _drive_investigation_loop(case_id: str, actor: str, max_cycles: int = rca.LO
     raise AssertionError(f"Investigation loop did not stop within {max_cycles} cycles.")
 
 
+def _add_successful_agent_investigations(case_id: str, count: int = 2) -> None:
+    for index in range(count):
+        look_id = f"look_chat_unlock_{uuid.uuid4().hex[:8]}_{index}"
+        s.insert("rca_looks", {
+            "look_id": look_id, "case_id": case_id, "seq": 20 + index,
+            "kind": "planned", "proposed_by": "investigation_agent",
+            "fork_json": {
+                "kind": "agent_hypothesis_test", "agent_runtime": True,
+                "plan": {"question": f"Completed hypothesis test {index + 1}"},
+            },
+            "sql_or_helper_ref": "missingness_analysis", "budget_counted": 1,
+            "created_at": s.now_ist(),
+        })
+        s.insert("rca_look_executions", {
+            "execution_id": f"exec_chat_unlock_{uuid.uuid4().hex[:8]}_{index}",
+            "look_id": look_id, "status": "completed",
+            "summary_json": {
+                "found": True, "agent_runtime": True,
+                "runtime": {"status": "completed", "ok": True},
+                "result": {"summary": f"Retained result {index + 1}", "metrics": {"rows": 60}},
+            },
+            "crashed": 0, "retried": 0, "executed_at": s.now_ist(),
+        })
+
+
 class CaseCreationTests(unittest.TestCase):
+
+    def test_progress_retains_timings_and_isolates_start_afresh(self):
+        from domains.rca import progress
+        item = _build_fixture_item("rca-progress-fixture")
+        issue = _first_open_issue(item["item_id"])
+        case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
+        case_id = case["case_id"]
+        rca.run_opening_look(case_id, ACTOR)
+        snapshot = progress.read(rca.require_case(case_id, TENANT))
+        self.assertEqual(snapshot["operation"]["status"], "completed")
+        self.assertGreaterEqual(snapshot["operation"]["elapsed_seconds"], 0)
+        self.assertIsNotNone(snapshot["opening_result"])
+        self.assertTrue(snapshot["operation"]["phase_timings"])
+
+        @progress.action("Test delayed operation")
+        def delayed(case_id, actor, tenant_id=TENANT):
+            with progress.phase("Planning analysis"):
+                live = progress.read(rca.require_case(case_id, tenant_id))
+                self.assertEqual(live["operation"]["phase"], "Planning analysis")
+                self.assertEqual(live["operation"]["status"], "running")
+                rca.start_afresh(case_id, actor, confirmed=True, tenant_id=tenant_id)
+
+        delayed(case_id, ACTOR)
+        refreshed = progress.read(rca.require_case(case_id, TENANT))
+        self.assertGreater(refreshed["workflow_generation"], snapshot["workflow_generation"])
+        self.assertIsNone(refreshed["operation"])
+        self.assertIsNone(refreshed["opening_result"])
     @classmethod
     def setUpClass(cls):
         s.init_schema()
@@ -220,6 +272,34 @@ class CaseCreationTests(unittest.TestCase):
         self.assertEqual(context_payload["dataset"]["snapshot_id"], case["item_id"])
         self.assertEqual(context_payload["issue"]["issue_row_id"], self.issue["issue_row_id"])
         self.assertTrue(context["payload_hash"])
+
+    def test_feature_state_metadata_is_frozen_and_refreshed_only_on_start_afresh(self):
+        item = _build_fixture_item("rca-feature-state-snapshot")
+        s.update("variable_inventory", {
+            "item_id": item["item_id"], "table_name": "t1", "column_name": "amount",
+        }, {"missing_value_codes_json": [-999], "missing_codes_confirmed": 1})
+        issue = _first_open_issue(item["item_id"])
+        case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
+        case_file = s.query_one("rca_case_files", case_id=case["case_id"])
+        frozen = case_file["checklist_json"]["feature_state_snapshot"]["columns"]["amount"]
+        self.assertEqual(frozen["confirmed_special_values"], [-999])
+        self.assertTrue(frozen["special_values_confirmed"])
+
+        s.update("variable_inventory", {
+            "item_id": item["item_id"], "table_name": "t1", "column_name": "amount",
+        }, {"missing_value_codes_json": [-888], "missing_codes_confirmed": 0})
+        still_frozen = s.query_one(
+            "rca_case_files", case_id=case["case_id"]
+        )["checklist_json"]["feature_state_snapshot"]["columns"]["amount"]
+        self.assertEqual(still_frozen["confirmed_special_values"], [-999])
+
+        refreshed = rca.start_afresh(case["case_id"], ACTOR, confirmed=True)
+        refreshed_file = s.query_one("rca_case_files", case_id=case["case_id"])
+        amount_state = refreshed_file["checklist_json"]["feature_state_snapshot"]["columns"]["amount"]
+        self.assertEqual(refreshed["workflow_generation"], 2)
+        self.assertEqual(amount_state["confirmed_special_values"], [])
+        self.assertEqual(amount_state["proposed_special_values"], [-888])
+        self.assertFalse(amount_state["special_values_confirmed"])
 
     def test_start_afresh_requires_confirmation_and_discards_derived_work(self):
         item = _build_fixture_item("rca-start-afresh-fixture")
@@ -272,6 +352,10 @@ class CaseCreationTests(unittest.TestCase):
                     "statement": "A source segment may be omitting the value.",
                     "evidence_basis": "The deterministic profile confirms missing values.",
                     "testable_next_step": "Compare missingness by source segment.",
+                }, {
+                    "statement": "An upstream mapping may have changed.",
+                    "evidence_basis": "The retained evidence does not establish source lineage.",
+                    "testable_next_step": "Compare mappings across the affected delivery boundary.",
                 }],
                 "limitations": ["The opening profile does not establish causality."],
                 "recommended_next_steps": ["Run a segment breakdown."],
@@ -279,13 +363,13 @@ class CaseCreationTests(unittest.TestCase):
             "selected_model": model, "response_id": "resp-test-1",
             "response_model": "gpt-5.6-sol",
             "attempts": [{"attempt": 1, "status": "completed", **model}],
-            "prompt_version": "rca_initial_review_v0_1",
-            "contract_version": "rca_initial_review_contract_v0_1",
+            "prompt_version": "rca_initial_review_v0_2",
+            "contract_version": "rca_initial_review_contract_v0_2",
         }
         with patch("domains.rca.initial_review.enabled", return_value=True), patch(
             "domains.rca.initial_review.public_policy",
             return_value={"api_style": "azure_openai_v1", "primary": model},
-        ), patch("domains.rca.initial_review.review", return_value=review):
+        ), patch("domains.rca.initial_review.review", return_value=review) as review_mock:
             result = rca.run_opening_look(case["case_id"], ACTOR)
 
         self.assertEqual(result["llm_review"]["status"], "completed")
@@ -296,6 +380,569 @@ class CaseCreationTests(unittest.TestCase):
         self.assertEqual(
             llm_events[-1]["details"]["selected_model"]["model_version"], "2026-07-09"
         )
+        deterministic_input = review_mock.call_args.args[1]
+        self.assertEqual(deterministic_input["evidence_authority"], "raw_snapshot_fallback")
+        self.assertEqual(
+            llm_events[-1]["details"]["evidence_bundle_fingerprint"],
+            deterministic_input["evidence_bundle_fingerprint"],
+        )
+        context_id = evidence[0]["artifact_id"]
+        self.assertEqual(
+            llm_events[-1]["details"]["evidence_source_artifact_ids"][0], context_id
+        )
+        bundle = rca.get_case(case["case_id"])
+        candidates = bundle["hypothesis_candidates"]
+        self.assertEqual(len(candidates), 2)
+        self.assertEqual(bundle["hypotheses"], [])
+        self.assertEqual(candidates[0]["origin"], "llm_initial_review")
+        self.assertEqual(candidates[0]["lifecycle_status"], "candidate")
+        self.assertEqual(candidates[0]["source_evidence_id"], llm_events[-1]["artifact_id"])
+        self.assertEqual(
+            candidates[0]["proposed_test"], "Compare missingness by source segment."
+        )
+        with self.assertRaises(rca.TransitionError):
+            rca.continue_from_initial_review(case["case_id"], ACTOR)
+
+        rca.select_initial_review_hypothesis(
+            case["case_id"], candidates[0]["hypothesis_id"], ACTOR
+        )
+        reselection = rca.select_initial_review_hypothesis(
+            case["case_id"], candidates[1]["hypothesis_id"], ACTOR
+        )
+        selected = [row for row in reselection["hypothesis_candidates"]
+                    if row["lifecycle_status"] == "selected"]
+        self.assertEqual([row["hypothesis_id"] for row in selected], [
+            candidates[1]["hypothesis_id"]
+        ])
+        self.assertEqual(reselection["selected_initial_hypothesis"]["selected_by"], ACTOR)
+        continued = rca.continue_from_initial_review(case["case_id"], ACTOR)
+        self.assertEqual(continued["state"], "investigation_loop")
+        decisions = [row for row in continued["aar_evidence"]
+                     if row["evidence_kind"] == "human_decision"]
+        self.assertEqual(
+            [row["details"]["decision"] for row in decisions],
+            ["select_hypothesis", "select_hypothesis", "continue_to_investigation"],
+        )
+
+    def test_hypothesis_review_preserves_original_and_records_context(self):
+        item = _build_fixture_item("rca-hypothesis-review-fixture")
+        issue = _first_open_issue(item["item_id"])
+        case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
+        rca.run_opening_look(case["case_id"], ACTOR)
+        original_id = "hyp_review_original"
+        s.insert("rca_hypotheses", {
+            "hypothesis_id": original_id, "case_id": case["case_id"],
+            "suspect_id": None, "statement": "The failure may vary by segment.",
+            "label": "candidate", "tier": "unassessed", "evidence_look_ids_json": [],
+            "confirm_check_json": {"proposed_test": "Compare segments."},
+            "reject_condition_json": None, "owner": None, "created_at": s.now_ist(),
+            "origin": "llm_initial_review", "lifecycle_status": "candidate",
+            "evidence_basis": "The opening evidence shows a completeness gap.",
+            "proposed_test": "Compare segments.", "source_evidence_id": None,
+            "candidate_rank": 1, "selected_by": None, "selected_at": None,
+        })
+
+        reviewed = rca.review_hypothesis(case["case_id"], original_id, ACTOR, {
+            "comment": "Product B changed its feed during the review period.",
+            "statement": "The failure may be concentrated in product B.",
+            "evidence_basis": "The opening gap and domain context identify product B.",
+            "proposed_test": "Compare baseline/current completeness within each product.",
+        })
+
+        candidates = reviewed["hypothesis_candidates"]
+        self.assertEqual(len(candidates), 2)
+        original = next(row for row in candidates if row["hypothesis_id"] == original_id)
+        selected = reviewed["selected_initial_hypothesis"]
+        self.assertEqual(original["statement"], "The failure may vary by segment.")
+        self.assertNotEqual(selected["hypothesis_id"], original_id)
+        self.assertEqual(selected["label"], "human-refined candidate")
+        self.assertEqual(selected["statement"], "The failure may be concentrated in product B.")
+        self.assertEqual(reviewed["investigation_context"][-1]["answer"],
+                         "Product B changed its feed during the review period.")
+        decision = next(
+            row for row in reversed(reviewed["aar_evidence"])
+            if row["evidence_kind"] == "human_decision"
+        )
+        self.assertEqual(decision["details"]["decision"], "review_and_select_hypothesis")
+        self.assertEqual(decision["details"]["original_hypothesis_id"], original_id)
+        self.assertTrue(decision["details"]["revision_created"])
+
+    def test_selected_hypothesis_drives_library_first_agent_investigation(self):
+        item = _build_fixture_item("rca-agent-investigation-fixture")
+        issue = _first_open_issue(item["item_id"])
+        case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
+        rca.run_opening_look(case["case_id"], ACTOR)
+        hypothesis_id = "hyp_agent_selected"
+        s.insert("rca_hypotheses", {
+            "hypothesis_id": hypothesis_id, "case_id": case["case_id"],
+            "suspect_id": None, "statement": "Extreme values may be driving the failure.",
+            "label": None, "tier": None, "evidence_look_ids_json": [],
+            "confirm_check_json": None, "reject_condition_json": None, "owner": None,
+            "created_at": s.now_ist(), "origin": "llm_initial_review",
+            "lifecycle_status": "selected", "evidence_basis": "Opening profile",
+            "proposed_test": "Profile governed outliers.", "source_evidence_id": None,
+            "candidate_rank": 1, "selected_by": ACTOR, "selected_at": s.now_ist(),
+        })
+        rca.continue_from_initial_review(case["case_id"], ACTOR)
+        model = {"model_name": "gpt-5.6-sol", "model_version": "2026-07-09"}
+        plan = {
+            "output": {
+                "question": "Do extreme amount values explain the observed failure?",
+                "rationale": "Test the selected explanation against the retained snapshot.",
+                "analysis_kind": "outlier_profile",
+                "preferred_helper_ids": ["outlier_profile"],
+                "helper_params": {"column": "amount"},
+                "expected_output": ["outlier_rate"],
+                "supports_hypothesis_when": "The outlier rate is material.",
+                "rejects_hypothesis_when": "No material outliers are present.",
+            },
+            "selected_model": model, "attempts": [{"status": "completed"}],
+            "prompt_version": "rca_investigation_planner_v0_1",
+        }
+        reading = {
+            "output": {"assessment": "supported", "rationale": "Outliers are present.",
+                       "evidence_points": ["The governed helper returned an outlier rate."],
+                       "next_question": None},
+            "selected_model": model, "attempts": [{"status": "completed"}],
+        }
+        with patch("domains.rca.investigation_agent.plan", return_value=plan) as planner, patch(
+            "domains.rca.investigation_agent.generate_code"
+        ) as codegen, patch(
+            "domains.rca.investigation_agent.interpret", return_value=reading
+        ), patch(
+            "domains.rca.service._agent_propose_driver_search", return_value=None
+        ):
+            proposed = rca.planner_propose_look(case["case_id"], ACTOR)
+            executed = rca.runner_execute(proposed["look_id"], ACTOR)
+            interpreted = rca.reader_interpret(executed["execution_id"], ACTOR)
+
+        planner.assert_called_once()
+        self.assertEqual(planner.call_args.args[0]["investigation_history"], [])
+        codegen.assert_not_called()
+        self.assertEqual(proposed["fork"]["hypothesis_id"], hypothesis_id)
+        self.assertEqual(proposed["fork"]["execution_mode"], "approved_helper")
+        self.assertEqual(proposed["fork"]["library_search"]["selected_helper_id"], "outlier_profile")
+        self.assertEqual(proposed["fork"]["execution_artifact"]["helper_id"], "outlier_profile")
+        self.assertIn("def _outlier_profile", proposed["fork"]["execution_artifact"]["implementation_source"])
+        self.assertEqual(len(proposed["fork"]["execution_artifact"]["implementation_sha256"]), 64)
+        self.assertEqual(executed["summary"]["runtime"]["platform"], "approved_helper_runtime")
+        self.assertEqual(interpreted["interpretation"]["assessment"], "supported")
+        history = rca._agent_investigation_history(rca.require_case(case["case_id"]))
+        self.assertEqual(history[-1]["helper_id"], "outlier_profile")
+        self.assertEqual(history[-1]["assessment"], "supported")
+        self.assertEqual(history[-1]["result_summary"], executed["summary"]["result"]["summary"])
+        draft = rca.get_case(case["case_id"])["conclusion_draft"]
+        self.assertEqual(draft["conclusion_type"], "root_cause_identified")
+        self.assertIn("Extreme values may be driving the failure.", draft["root_cause"])
+        self.assertIn(executed["summary"]["result"]["summary"], draft["root_cause"])
+        self.assertIn("governed reader assessed", draft["approval_rationale"])
+        self.assertIn("does not by itself prove", draft["limiting_evidence"])
+        events = rca.get_case(case["case_id"])["aar_evidence"]
+        kinds = [row["evidence_kind"] for row in events]
+        self.assertIn("library_search", kinds)
+        self.assertIn("sandbox_execution", kinds)
+        self.assertIn("agent_interpretation", kinds)
+        self.assertNotIn("code_generation", kinds)
+        plan_event = next(row for row in events
+                          if row["evidence_kind"] == "agent_investigation_plan"
+                          and row["status"] == "completed")
+        self.assertEqual(
+            plan_event["details"]["execution_artifact"]["implementation_sha256"],
+            proposed["fork"]["execution_artifact"]["implementation_sha256"],
+        )
+
+    def test_diagnostic_feature_issue_resolves_physical_table_from_manifest(self):
+        with patch("domains.rca.service.s.query_one", return_value={
+            "manifest_json": {"table": "Data"}
+        }):
+            table = rca._diagnostic_analysis_table({
+                "run_id": "drun-test", "table_name": "months_on_book"
+            })
+
+        self.assertEqual(table, "Data")
+
+    def test_generated_analysis_allows_finite_parameter_iteration_in_sandbox(self):
+        item = _build_fixture_item("rca-generated-loop-fixture")
+        issue = _first_open_issue(item["item_id"])
+        case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
+        rca.run_opening_look(case["case_id"], ACTOR)
+        hypothesis_id = "hyp_generated_loop"
+        s.insert("rca_hypotheses", {
+            "hypothesis_id": hypothesis_id, "case_id": case["case_id"],
+            "suspect_id": None, "statement": "A custom bounded profile may explain the failure.",
+            "label": None, "tier": None, "evidence_look_ids_json": [],
+            "confirm_check_json": None, "reject_condition_json": None, "owner": None,
+            "created_at": s.now_ist(), "origin": "llm_initial_review",
+            "lifecycle_status": "selected", "evidence_basis": "Opening evidence",
+            "proposed_test": "Profile supplied columns.", "source_evidence_id": None,
+            "candidate_rank": 1, "selected_by": ACTOR, "selected_at": s.now_ist(),
+        })
+        rca.continue_from_initial_review(case["case_id"], ACTOR)
+        model = {"model_name": "gpt-5.6-sol", "model_version": "2026-07-09"}
+        plan = {"output": {
+            "question": "Profile the supplied columns?", "rationale": "No helper fits.",
+            "analysis_kind": "custom_profile", "preferred_helper_ids": ["not_in_catalog"],
+            "helper_params": {"columns": ["amount"]}, "expected_output": ["row count"],
+            "supports_hypothesis_when": "Rows are present.",
+            "rejects_hypothesis_when": "No rows are present.",
+        }, "selected_model": model, "attempts": [{"status": "completed"}],
+            "prompt_version": "rca_investigation_planner_v0_1"}
+        generated = {"output": {
+            "rationale": "Iterate over the explicitly supplied finite column list.",
+            "python_code": (
+                "rows = []\nfor name in params['analysis_params']['columns']:\n"
+                "    rows.append({'column': name, 'rows': int(len(df))})\n"
+                "result = {'summary': 'Bounded profile completed.', 'metrics': {'columns': len(rows)}, "
+                "'evidence_rows': rows, 'interpretation_hints': [], 'recommended_followups': []}"
+            ),
+            "expected_result_keys": ["summary", "metrics", "evidence_rows"],
+        }, "selected_model": model, "attempts": [{"status": "completed"}],
+            "prompt_version": "rca_code_generator_v0_1"}
+
+        with patch("domains.rca.investigation_agent.plan", return_value=plan), patch(
+            "domains.rca.investigation_agent.generate_code", return_value=generated
+        ), patch(
+            "domains.rca.service._agent_propose_driver_search", return_value=None
+        ):
+            proposed = rca.planner_propose_look(case["case_id"], ACTOR)
+            executed = rca.runner_execute(proposed["look_id"], ACTOR)
+
+        self.assertEqual(proposed["fork"]["execution_mode"], "generated_code_sandbox")
+        self.assertEqual(executed["summary"]["runtime"]["status"], "completed")
+        self.assertEqual(executed["summary"]["result"]["evidence_rows"][0]["column"], "amount")
+        output_artifact_id = executed["summary"]["result"]["download_artifact_id"]
+        metadata, output_payload = AnalysisArtifactRepository().get(output_artifact_id)
+        self.assertEqual(metadata.artifact_type, "rca_evidence_event")
+        self.assertEqual(output_payload["evidence_kind"], "sandbox_output")
+        self.assertEqual(output_payload["details"]["result"]["evidence_rows"][0]["column"], "amount")
+        output_event = next(
+            row for row in rca.get_case(case["case_id"])["aar_evidence"]
+            if row["artifact_id"] == output_artifact_id
+        )
+        self.assertNotIn("result", output_event["details"])
+        self.assertEqual(output_event["details"]["download_artifact_id"], output_artifact_id)
+
+        timeout_look_id = "look_generated_timeout"
+        timeout_fork = {
+            **proposed["fork"],
+            "generated_code": {"python_code": "result = {'rows': int(len(df))}"},
+        }
+        s.insert("rca_looks", {
+            "look_id": timeout_look_id, "case_id": case["case_id"], "seq": 3,
+            "kind": "planned", "proposed_by": "investigation_agent",
+            "fork_json": timeout_fork, "sql_or_helper_ref": "generated_code",
+            "budget_counted": 1, "created_at": s.now_ist(),
+        })
+        with patch("domains.rca.investigation_runtime.run_generated_code", return_value={
+            "status": "timed_out", "ok": False,
+            "error": "The generated analysis reached the sandbox's 15-second safety limit.",
+        }):
+            timed_out = rca.runner_execute(timeout_look_id, ACTOR)
+
+        self.assertEqual(timed_out["summary"]["runtime"]["status"], "timed_out")
+        self.assertFalse(timed_out["summary"]["found"])
+        timed_out_case = rca.get_case(case["case_id"])
+        self.assertEqual(timed_out_case["executions"][timeout_look_id]["status"], "timed_out")
+        timeout_event = next(
+            row for row in reversed(timed_out_case["aar_evidence"])
+            if row["evidence_kind"] == "sandbox_execution"
+            and row["details"].get("look_id") == timeout_look_id
+            and row["status"] != "started"
+        )
+        self.assertEqual(timeout_event["status"], "timed_out")
+
+    def test_first_agent_look_defines_target_and_runs_governed_driver_search(self):
+        item = _build_fixture_item(
+            "rca-driver-search-fixture", null_rate_a=0.05, null_rate_b=0.65,
+            rows_per_segment=100,
+        )
+        issue = _first_open_issue(item["item_id"])
+        case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
+        rca.run_opening_look(case["case_id"], ACTOR)
+        hypothesis_id = "hyp_driver_search"
+        s.insert("rca_hypotheses", {
+            "hypothesis_id": hypothesis_id, "case_id": case["case_id"],
+            "suspect_id": None,
+            "statement": "The completeness failure may be concentrated in a contextual population.",
+            "label": None, "tier": None, "evidence_look_ids_json": [],
+            "confirm_check_json": None, "reject_condition_json": None, "owner": None,
+            "created_at": s.now_ist(), "origin": "llm_initial_review",
+            "lifecycle_status": "selected", "evidence_basis": "Opening evidence",
+            "proposed_test": "Search eligible retained inputs for separation.",
+            "source_evidence_id": None, "candidate_rank": 1,
+            "selected_by": ACTOR, "selected_at": s.now_ist(),
+        })
+        rca.continue_from_initial_review(case["case_id"], ACTOR)
+        model = {"model_name": "gpt-5.6-sol", "model_version": "2026-07-09"}
+        target = {
+            "output": {
+                "problem_statement": "Which inputs separate missing amount rows from complete rows?",
+                "target_mode": "missingness", "affected_column": "amount",
+                "positive_class_definition": "amount is physically missing",
+                "candidate_columns": ["amount", "segment", "default_flag", "facility_id"],
+                "excluded_columns": ["amount"],
+                "rationale": "Use the observed completeness failure as a row-level target.",
+                "unavailable_reason": None,
+            },
+            "selected_model": model, "attempts": [{"status": "completed"}],
+            "prompt_version": "rca_driver_target_v0_1",
+        }
+        driver_reading = {
+            "output": {
+                "assessment": "inconclusive",
+                "rationale": "Segment is the strongest validated separator, but association is not root-cause proof.",
+                "evidence_points": ["Segment provides the highest held-out separation."],
+                "focused_hypothesis": "The completeness gap may be concentrated in segment B.",
+                "evidence_basis": "Segment was the strongest held-out separator.",
+                "proposed_test": "Compare completeness within segment B against comparable segment A rows.",
+                "next_question": "Does the completeness gap attenuate within segment A and segment B?",
+            },
+            "selected_model": model, "attempts": [{"status": "completed"}],
+        }
+
+        with patch("domains.rca.investigation_agent.define_driver_target", return_value=target), patch(
+            "domains.rca.investigation_agent.interpret_driver_search",
+            return_value=driver_reading,
+        ):
+            proposed = rca.planner_propose_look(case["case_id"], ACTOR)
+            executed = rca.runner_execute(proposed["look_id"], ACTOR)
+            interpreted = rca.reader_interpret(executed["execution_id"], ACTOR)
+
+        self.assertEqual(proposed["fork"]["kind"], "agent_driver_search")
+        self.assertEqual(proposed["fork"]["execution_mode"], "approved_helper")
+        self.assertEqual(proposed["fork"]["target_spec"]["candidate_columns"], [
+            "segment", "default_flag"
+        ])
+        self.assertEqual(executed["summary"]["runtime"]["status"], "completed")
+        self.assertEqual(executed["summary"]["result"]["metrics"]["top_feature"], "segment")
+        self.assertIsNone(interpreted["suspect"])
+        self.assertEqual(interpreted["interpretation"]["assessment"], "inconclusive")
+        focused = interpreted["focused_hypothesis_candidate"]
+        self.assertEqual(focused["statement"], "The completeness gap may be concentrated in segment B.")
+        selected_case = rca.review_hypothesis(
+            case["case_id"], focused["hypothesis_id"], ACTOR, {
+                "comment": "Use the governed segment definition.",
+                "statement": focused["statement"],
+                "evidence_basis": focused["evidence_basis"],
+                "proposed_test": focused["proposed_test"],
+            },
+        )
+        self.assertEqual(selected_case["selected_focused_hypothesis"]["hypothesis_id"],
+                         focused["hypothesis_id"])
+        focused_decision = next(
+            row for row in reversed(selected_case["aar_evidence"])
+            if row["evidence_kind"] == "human_decision"
+        )
+        self.assertFalse(focused_decision["details"]["revision_created"])
+        self.assertEqual(focused_decision["details"]["original_hypothesis_id"],
+                         focused["hypothesis_id"])
+        self.assertEqual(
+            rca._agent_investigation_history(rca.require_case(case["case_id"]))[-1]["next_question"],
+            "Does the completeness gap attenuate within segment A and segment B?",
+        )
+        evidence = rca.get_case(case["case_id"])["aar_evidence"]
+        target_event = next(row for row in evidence
+                            if row["evidence_kind"] == "driver_target_definition"
+                            and row["status"] == "completed")
+        self.assertEqual(target_event["details"]["target_spec"]["target_mode"], "missingness")
+
+    def test_user_context_is_retained_and_supersedes_an_unexecuted_plan(self):
+        item = _build_fixture_item(
+            "rca-context-replan-fixture", null_rate_a=0.05, null_rate_b=0.65,
+            rows_per_segment=60,
+        )
+        issue = _first_open_issue(item["item_id"])
+        case = rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
+        rca.run_opening_look(case["case_id"], ACTOR)
+        hypothesis_id = "hyp_context_replan"
+        s.insert("rca_hypotheses", {
+            "hypothesis_id": hypothesis_id, "case_id": case["case_id"],
+            "suspect_id": None, "statement": "The failure may vary by segment.",
+            "label": None, "tier": None, "evidence_look_ids_json": [],
+            "confirm_check_json": None, "reject_condition_json": None, "owner": None,
+            "created_at": s.now_ist(), "origin": "llm_initial_review",
+            "lifecycle_status": "selected", "evidence_basis": "Opening evidence",
+            "proposed_test": "Search retained inputs.", "source_evidence_id": None,
+            "candidate_rank": 1, "selected_by": ACTOR, "selected_at": s.now_ist(),
+        })
+        rca.continue_from_initial_review(case["case_id"], ACTOR)
+        target = {
+            "output": {
+                "problem_statement": "Which inputs separate missing amount rows?",
+                "target_mode": "missingness", "affected_column": "amount",
+                "positive_class_definition": "amount is physically missing",
+                "candidate_columns": ["segment", "default_flag"],
+                "excluded_columns": ["amount"],
+                "rationale": "Use missingness as the deterministic target.",
+                "unavailable_reason": None,
+            },
+            "selected_model": {"model_name": "gpt-5.6-sol"},
+            "attempts": [{"status": "completed"}],
+            "prompt_version": "rca_driver_target_v0_1",
+        }
+        with patch("domains.rca.investigation_agent.define_driver_target", return_value=target):
+            planned = rca.planner_propose_look(case["case_id"], ACTOR)
+
+        before = rca.get_case(case["case_id"])
+        with self.assertRaises(KeyError):
+            rca.add_investigation_context(case["case_id"], "Foreign", ACTOR,
+                                          tenant_id="other-tenant", hypothesis_id=hypothesis_id)
+        with self.assertRaises(KeyError):
+            rca.add_investigation_context(case["case_id"], "Unknown", ACTOR,
+                                          hypothesis_id="not-in-this-case")
+        fork = s.query_one("rca_looks", look_id=planned["look_id"])["fork_json"]
+        s.update("rca_looks", {"look_id": planned["look_id"]},
+                 {"fork_json": {**fork, "combined_run_state": "running"}})
+        with self.assertRaises(rca.TransitionError):
+            rca.add_investigation_context(case["case_id"], "While running", ACTOR,
+                                          hypothesis_id=hypothesis_id)
+        s.update("rca_looks", {"look_id": planned["look_id"]}, {"fork_json": fork})
+        updated = rca.add_investigation_context(
+            case["case_id"], "A policy change occurred in segment B during 2024-Q3.", ACTOR,
+            hypothesis_id=hypothesis_id,
+        )
+        cancelled = s.query_one("rca_look_executions", look_id=planned["look_id"])
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertTrue(cancelled["summary_json"]["cancelled"])
+        self.assertEqual(
+            s.query_one("rca_looks", look_id=planned["look_id"])["budget_counted"], 0
+        )
+        self.assertEqual(updated["investigation_context"][-1]["answer"],
+                         "A policy change occurred in segment B during 2024-Q3.")
+        kinds = [(row["evidence_kind"], row["status"])
+                 for row in updated["aar_evidence"]]
+        self.assertIn(("human_context", "recorded"), kinds)
+        self.assertIn(("investigation_plan_cancelled", "cancelled"), kinds)
+        event = next(row for row in updated["aar_evidence"] if row["evidence_kind"] == "human_context")
+        self.assertEqual(event["details"]["hypothesis_id"], hypothesis_id)
+        self.assertEqual(updated["hypothesis_catalog"], before["hypothesis_catalog"])
+        self.assertEqual(rca.get_case(case["case_id"])["hypothesis_catalog"], before["hypothesis_catalog"])
+        for look_id, execution in before["executions"].items():
+            self.assertEqual(updated["executions"][look_id], execution)
+        with self.assertRaisesRegex(rca.TransitionError, "superseded"):
+            rca.runner_execute(planned["look_id"], ACTOR)
+        plan = {"output": {"question": "Test the new source context", "rationale": "Use retained context",
+                           "analysis_kind": "outlier_profile", "preferred_helper_ids": ["outlier_profile"],
+                           "helper_params": {"column": "amount"}, "expected_output": ["outlier_rate"],
+                           "supports_hypothesis_when": "Outliers present", "rejects_hypothesis_when": "No outliers"},
+                "selected_model": {"model_name": "test"}, "attempts": [], "prompt_version": "test"}
+        with patch("domains.rca.service._agent_propose_driver_search", return_value=None), patch(
+            "domains.rca.investigation_agent.plan", return_value=plan
+        ) as planner:
+            replacement = rca.planner_propose_look(case["case_id"], ACTOR)
+        self.assertNotEqual(replacement["look_id"], planned["look_id"])
+        self.assertIn(hypothesis_id, planner.call_args.args[0]["user_context"][-1])
+        self.assertIn("2024-Q3", planner.call_args.args[0]["user_context"][-1])
+        legacy = rca.add_investigation_context(case["case_id"], "Case-wide context", ACTOR)
+        self.assertEqual(legacy["investigation_context"][-1]["answer"], "Case-wide context")
+
+    def test_direct_exploration_preserves_or_creates_hypothesis_identity(self):
+        item = _build_fixture_item("rca-direct-exploration")
+        case = rca.create_case_from_issue(_first_open_issue(item["item_id"])["issue_row_id"], ACTOR)
+        rca.run_opening_look(case["case_id"], ACTOR)
+        hypothesis_id = "hyp_direct_exploration"
+        s.insert("rca_hypotheses", {
+            "hypothesis_id": hypothesis_id, "case_id": case["case_id"], "suspect_id": None,
+            "statement": "Missingness varies by segment", "label": None, "tier": None,
+            "evidence_look_ids_json": [], "confirm_check_json": None,
+            "reject_condition_json": None, "owner": None, "created_at": s.now_ist(),
+            "origin": "llm_initial_review", "lifecycle_status": "selected",
+            "evidence_basis": "Opening evidence", "proposed_test": "Compare segments",
+            "source_evidence_id": None, "candidate_rank": 1, "selected_by": ACTOR,
+            "selected_at": s.now_ist(),
+        })
+        rca.continue_from_initial_review(case["case_id"], ACTOR)
+        alternative = {"output": {"statement": "Extreme regular values explain the deviation",
+            "evidence_basis": "A separate distribution mechanism is plausible",
+            "proposed_test": "Profile regular-value outliers", "distinction": "Distribution, not missingness"},
+            "selected_model": {"model_name": "test"}, "attempts": [], "prompt_version": "test"}
+        plan = {"output": {"question": "Profile outliers", "rationale": "Test distribution",
+            "analysis_kind": "outlier_profile", "preferred_helper_ids": ["outlier_profile"],
+            "helper_params": {"column": "amount"}, "expected_output": ["outlier_rate"],
+            "supports_hypothesis_when": "Outliers present", "rejects_hypothesis_when": "No outliers"},
+            "selected_model": {"model_name": "test"}, "attempts": [], "prompt_version": "test"}
+        with patch("domains.rca.service._agent_propose_driver_search", return_value=None), patch(
+            "domains.rca.investigation_agent.plan", return_value=plan
+        ), patch("domains.rca.investigation_agent.propose_alternative", return_value=alternative) as proposal:
+            first = rca.planner_propose_look(case["case_id"], ACTOR, exploration="follow_up")
+            self.assertEqual(first["fork"]["hypothesis_id"], hypothesis_id)
+            reused = rca.planner_propose_look(case["case_id"], ACTOR, exploration="follow_up")
+            self.assertEqual(reused["look_id"], first["look_id"])
+            proposal.assert_not_called()
+            with patch("domains.rca.service._effective_look_budget", return_value=1):
+                self.assertEqual(rca.planner_propose_look(case["case_id"], ACTOR,
+                    exploration="follow_up")["look_id"], first["look_id"])
+                self.assertTrue(rca.planner_propose_look(case["case_id"], ACTOR,
+                    exploration="alternative")["dead_end"])
+                proposal.assert_not_called()
+            second = rca.planner_propose_look(case["case_id"], ACTOR, exploration="alternative")
+            new_id = second["fork"]["hypothesis_id"]
+            self.assertNotEqual(new_id, hypothesis_id)
+            self.assertEqual(s.query_one("rca_look_executions", look_id=first["look_id"])["status"], "cancelled")
+            with self.assertRaisesRegex(rca.TransitionError, "superseded"):
+                rca.run_investigation(first["look_id"], ACTOR)
+            after = rca.get_case(case["case_id"])
+            self.assertEqual(after["active_investigation_hypothesis"]["hypothesis_id"], new_id)
+            self.assertEqual(len(after["hypothesis_catalog"]), 2)
+            self.assertEqual(after["data_chat"]["successful_investigation_count"], 0)
+            rca.add_investigation_context(case["case_id"], "Source context", ACTOR, hypothesis_id=new_id)
+            self.assertEqual(rca.get_case(case["case_id"])["active_investigation_hypothesis"]["hypothesis_id"], new_id)
+            with self.assertRaisesRegex(rca.RcaError, "duplicates"):
+                rca.planner_propose_look(case["case_id"], ACTOR, exploration="alternative")
+            self.assertEqual(len(rca.get_case(case["case_id"])["hypothesis_catalog"]), 2)
+            next_plan = rca.planner_propose_look(case["case_id"], ACTOR, exploration="follow_up")
+            self.assertEqual(next_plan["fork"]["hypothesis_id"], new_id)
+            interpretation = {"output": {"assessment": "inconclusive", "rationale": "Bounded evidence only",
+                "evidence_points": [], "next_question": None}, "selected_model": {"model_name": "test"},
+                "attempts": [], "prompt_version": "test"}
+            with patch("domains.rca.investigation_agent.interpret", return_value=interpretation):
+                completed = rca.run_investigation(next_plan["look_id"], ACTOR)
+                self.assertEqual(completed["data_chat"]["successful_investigation_count"], 1)
+                final_plan = rca.planner_propose_look(case["case_id"], ACTOR, exploration="follow_up")
+                final = rca.run_investigation(final_plan["look_id"], ACTOR)
+                self.assertEqual(final["data_chat"]["successful_investigation_count"], 2)
+                self.assertTrue(final["data_chat"]["unlocked"])
+                self.assertEqual(len(final["hypothesis_catalog"]), 2)
+            self.assertEqual(final["investigation_limit"], {"limit": 2, "used": 2, "remaining": 0, "reached": True})
+            for choice in (None, "follow_up", "alternative"):
+                with self.assertRaisesRegex(rca.TransitionError, "Two-run"):
+                    rca.planner_propose_look(case["case_id"], ACTOR, exploration=choice)
+            stale = dict(s.query_one("rca_looks", look_id=final_plan["look_id"]))
+            stale["look_id"] = "look_stale_third"
+            stale["seq"] += 1
+            stale["fork_json"].pop("execution_started", None)
+            s.insert("rca_looks", stale)
+            for run in (rca.runner_execute, rca.run_investigation):
+                with self.assertRaisesRegex(rca.TransitionError, "Two-run"):
+                    run(stale["look_id"], ACTOR)
+            self.assertEqual(len(rca.get_case(case["case_id"])["hypothesis_catalog"]), 2)
+        with self.assertRaises(KeyError):
+            rca.planner_propose_look(case["case_id"], ACTOR, tenant_id="foreign", exploration="alternative")
+
+    def test_intake_context_is_retained_and_supplied_to_initial_review(self):
+        item = _build_fixture_item("rca-intake-context")
+        case = rca.create_case_from_issue(_first_open_issue(item["item_id"])["issue_row_id"], ACTOR)
+        case = rca.get_case(case["case_id"])
+        with self.assertRaises(KeyError):
+            rca.add_investigation_context(case["case_id"], "Context", ACTOR, tenant_id="foreign")
+        with self.assertRaises(rca.TransitionError):
+            rca.add_investigation_context(case["case_id"], "Context", ACTOR, hypothesis_id="unknown")
+        saved = rca.add_investigation_context(case["case_id"], "The source changed last quarter.", ACTOR)
+        self.assertEqual(saved["state"], "intake")
+        self.assertEqual(saved["investigation_context"][-1]["answer"], "The source changed last quarter.")
+        self.assertEqual(saved["case_file"]["schema_snapshot_json"], case["case_file"]["schema_snapshot_json"])
+        event = next(row for row in saved["aar_evidence"] if row["evidence_kind"] == "human_context")
+        self.assertEqual(event["stage"], "intake")
+        reviewed = {"output": {"summary": "Evidence reviewed", "candidate_hypotheses": []},
+                    "selected_model": {"model_name": "test"}, "attempts": []}
+        with patch("domains.rca.initial_review.enabled", return_value=True), patch(
+            "domains.rca.initial_review.public_policy", return_value={}
+        ), patch("domains.rca.initial_review.review", return_value=reviewed) as review:
+            rca.run_opening_look(case["case_id"], ACTOR)
+        self.assertEqual(review.call_args.args[0]["user_context"], ["The source changed last quarter."])
+        self.assertEqual(rca.get_case(case["case_id"])["investigation_context"][-1]["answer"], "The source changed last quarter.")
+        reset = rca.start_afresh(case["case_id"], ACTOR, confirmed=True)
+        self.assertEqual(reset["investigation_context"], [])
 
     def test_illegal_transition_rejected(self):
         case = rca.create_case_from_issue(self.issue["issue_row_id"], ACTOR)
@@ -360,14 +1007,20 @@ class VerticalSliceHappyPathTests(unittest.TestCase):
         self.assertEqual(case["state"], "initial_review_complete")
         continued = rca.continue_from_initial_review(self.case["case_id"], ACTOR)
         self.assertEqual(continued["state"], "investigation_loop")
+        analytical_events = [row for row in continued["aar_evidence"]
+                             if row["evidence_kind"] != "operation_progress"]
+        timing_events = [row for row in continued["aar_evidence"]
+                         if row["evidence_kind"] == "operation_progress"]
+        self.assertEqual(timing_events[-1]["status"], "completed")
+        self.assertGreaterEqual(timing_events[-1]["details"]["elapsed_seconds"], 0)
         self.assertEqual(
-            [(row["evidence_kind"], row["status"]) for row in continued["aar_evidence"]],
+            [(row["evidence_kind"], row["status"]) for row in analytical_events],
             [("case_context_created", "recorded"),
              ("static_initial_review", "started"),
              ("static_initial_review", "completed"),
              ("human_decision", "accepted")],
         )
-        self.assertEqual(result["aar_evidence_id"], continued["aar_evidence"][2]["artifact_id"])
+        self.assertEqual(result["aar_evidence_id"], analytical_events[2]["artifact_id"])
 
     def test_02_planner_runner_reader_cycle_finds_concentrated_suspect(self):
         proposed = rca.planner_propose_look(self.case["case_id"], ACTOR)
@@ -1272,6 +1925,15 @@ class MvpConclusionApprovalTests(unittest.TestCase):
         self.assertEqual(s.query_one("issues_v2", issue_row_id=issue["issue_row_id"])["status"], "Closed")
         self.assertIsNone(completed["closure"]["knowledge_draft_id"])
 
+        from domains.rca.report import build_report
+        audit_before = len(completed["audit_events"])
+        pdf, filename = build_report(case["case_id"], TENANT)
+        self.assertTrue(pdf.startswith(b"%PDF"))
+        self.assertTrue(filename.endswith(".pdf"))
+        with self.assertRaises(KeyError):
+            build_report(case["case_id"], "foreign-tenant")
+        self.assertEqual(len(rca.get_case(case["case_id"])["audit_events"]), audit_before)
+
         proposed = rca.propose_reusable_knowledge(case["case_id"], ACTOR, {
             "reusable_lesson": "A segment-specific source process can create concentrated missingness.",
             "applicability_scope": "Datasets using the same segmented source process.",
@@ -1308,11 +1970,434 @@ class MvpConclusionApprovalTests(unittest.TestCase):
         })
         self.assertEqual(completed["closure"]["outcome"], "unresolved")
         self.assertIsNone(completed["closure"]["knowledge_draft_id"])
+        from domains.rca.report import build_report
+        text, filename = build_report(case["case_id"], TENANT, "text")
+        self.assertIn(b"No root cause was established", text)
+        self.assertTrue(filename.endswith(".txt"))
         with self.assertRaisesRegex(ValueError, "unresolved"):
             rca.propose_reusable_knowledge(case["case_id"], ACTOR, {
                 "reusable_lesson": "Unknown", "applicability_scope": "Any",
                 "generalization_reason": "None", "supporting_evidence_ids": evidence_ids,
             })
+
+
+class GovernedDataChatTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        s.init_schema()
+        seed_platform()
+        seed_taxonomy()
+
+    def _case(self, name: str) -> dict:
+        item = _build_fixture_item(name)
+        issue = _first_open_issue(item["item_id"])
+        return rca.create_case_from_issue(issue["issue_row_id"], ACTOR)
+
+    @staticmethod
+    def _plan(*, mode: str = "retained_evidence", scope: str = "in_scope",
+              preferred: list[str] | None = None) -> dict:
+        return {
+            "output": {
+                "scope_decision": scope,
+                "scope_reason": ("The question concerns this RCA."
+                                 if scope == "in_scope" else "It names an unrelated dataset."),
+                "response_mode": mode,
+                "question": "What does the retained evidence show?",
+                "rationale": "Use the narrowest governed evidence source.",
+                "analysis_kind": "missingness" if mode == "analysis" else None,
+                "preferred_helper_ids": preferred or [],
+                "helper_params": {"column": "amount"} if mode == "analysis" else {},
+                "expected_output": ["concise evidence"],
+            },
+            "selected_model": {"model_name": "gpt-test", "model_version": "1"},
+            "attempts": [{"status": "completed"}],
+            "prompt_version": "rca_data_chat_planner_v0_1",
+        }
+
+    @staticmethod
+    def _answer(text: str = "The retained evidence shows the measured pattern.") -> dict:
+        return {
+            "output": {"answer": text, "evidence_references": [],
+                       "limitations": ["Association does not establish causality."]},
+            "selected_model": {"model_name": "gpt-test", "model_version": "1"},
+            "attempts": [{"status": "completed"}],
+            "prompt_version": "rca_data_chat_answer_v0_1",
+        }
+
+    def test_chat_unlock_counts_only_two_successful_hypothesis_test_runs(self):
+        case = self._case("rca-chat-lock")
+        _add_successful_agent_investigations(case["case_id"], 1)
+        driver_id = f"look_driver_{uuid.uuid4().hex[:8]}"
+        s.insert("rca_looks", {
+            "look_id": driver_id, "case_id": case["case_id"], "seq": 30,
+            "kind": "planned", "proposed_by": "investigation_agent",
+            "fork_json": {"kind": "agent_driver_search", "agent_runtime": True},
+            "sql_or_helper_ref": "greedy_driver_search", "budget_counted": 1,
+            "created_at": s.now_ist(),
+        })
+        s.insert("rca_look_executions", {
+            "execution_id": f"exec_{uuid.uuid4().hex[:8]}", "look_id": driver_id,
+            "status": "completed", "summary_json": {"runtime": {"ok": True}},
+            "crashed": 0, "retried": 0, "executed_at": s.now_ist(),
+        })
+        for index, status in enumerate(("failed", "cancelled"), start=31):
+            look_id = f"look_chat_{status}_{uuid.uuid4().hex[:8]}"
+            s.insert("rca_looks", {
+                "look_id": look_id, "case_id": case["case_id"], "seq": index,
+                "kind": "planned", "proposed_by": "investigation_agent",
+                "fork_json": {"kind": "agent_hypothesis_test", "agent_runtime": True},
+                "sql_or_helper_ref": "outlier_profile", "budget_counted": 1,
+                "created_at": s.now_ist(),
+            })
+            s.insert("rca_look_executions", {
+                "execution_id": f"exec_{uuid.uuid4().hex[:8]}", "look_id": look_id,
+                "status": status, "summary_json": {"runtime": {"ok": False}},
+                "crashed": int(status == "failed"), "retried": 0,
+                "executed_at": s.now_ist(),
+            })
+        bundle = rca.get_case(case["case_id"])
+        self.assertFalse(bundle["data_chat"]["unlocked"])
+        self.assertEqual(bundle["data_chat"]["successful_investigation_count"], 1)
+        with self.assertRaises(rca.TransitionError):
+            rca.ask_data_chat(case["case_id"], "What happened?", ACTOR)
+
+    def test_retained_evidence_chat_is_restored_and_start_afresh_removes_it(self):
+        case = self._case("rca-chat-retained")
+        _add_successful_agent_investigations(case["case_id"])
+        hypotheses_before = len(s.query("rca_hypotheses", case_id=case["case_id"]))
+        with patch("domains.rca.data_chat.plan", return_value=self._plan()), patch(
+            "domains.rca.data_chat.answer", return_value=self._answer()
+        ):
+            answered = rca.ask_data_chat(
+                case["case_id"], "What does the retained evidence show?", ACTOR
+            )
+        chat = answered["data_chat"]
+        self.assertTrue(chat["unlocked"])
+        self.assertEqual(len(chat["turns"]), 1)
+        self.assertEqual(chat["turns"][0]["status"], "completed")
+        self.assertEqual(chat["turns"][0]["library_search"]["decision"],
+                         "not_required_retained_evidence")
+        self.assertEqual(len(s.query("rca_hypotheses", case_id=case["case_id"])),
+                         hypotheses_before)
+        self.assertEqual(rca.get_case(case["case_id"])["data_chat"]["turns"][0]["answer"],
+                         "The retained evidence shows the measured pattern.")
+        reset = rca.start_afresh(case["case_id"], ACTOR, confirmed=True)
+        self.assertEqual(reset["data_chat"]["turns"], [])
+        self.assertFalse(reset["data_chat"]["unlocked"])
+        self.assertEqual(reset["investigation_limit"]["used"], 0)
+
+    def test_chat_searches_library_and_runs_exactly_one_governed_analysis(self):
+        case = self._case("rca-chat-helper")
+        _add_successful_agent_investigations(case["case_id"])
+        looks_before = len(s.query("rca_looks", case_id=case["case_id"]))
+        hypotheses_before = len(s.query("rca_hypotheses", case_id=case["case_id"]))
+        with patch(
+            "domains.rca.data_chat.plan",
+            return_value=self._plan(mode="analysis", preferred=["outlier_profile"]),
+        ), patch("domains.rca.data_chat.answer", return_value=self._answer(
+            "The governed missingness calculation completed."
+        )):
+            answered = rca.ask_data_chat(
+                case["case_id"], "Calculate the missingness of amount.", ACTOR
+            )
+        turn = answered["data_chat"]["turns"][0]
+        self.assertEqual(turn["library_search"]["decision"], "reuse_existing_helper")
+        self.assertEqual(turn["library_search"]["selected_helper_id"], "outlier_profile")
+        self.assertEqual(turn["execution"]["status"], "completed")
+        events = [event for event in answered["aar_evidence"]
+                  if (event.get("details") or {}).get("turn_id") == turn["turn_id"]]
+        executions = [event for event in events
+                      if event["evidence_kind"] in {
+                          "data_chat_analysis_execution", "data_chat_sandbox_execution",
+                      }]
+        self.assertEqual(len(executions), 1)
+        self.assertFalse(any(event["evidence_kind"] == "data_chat_code_generation"
+                             for event in events))
+        self.assertEqual(len(s.query("rca_looks", case_id=case["case_id"])), looks_before)
+        self.assertEqual(len(s.query("rca_hypotheses", case_id=case["case_id"])),
+                         hypotheses_before)
+
+    def test_chat_generates_once_in_sandbox_and_retains_downloadable_output(self):
+        case = self._case("rca-chat-generated")
+        _add_successful_agent_investigations(case["case_id"])
+        model = {"model_name": "gpt-test", "model_version": "1"}
+        generated = {
+            "output": {
+                "rationale": "No compatible approved helper fits this bounded calculation.",
+                "python_code": (
+                    "result = {'summary': 'Custom bounded calculation completed.', "
+                    "'metrics': {'rows': int(len(df))}, "
+                    "'evidence_rows': [{'population': 'full', 'rows': int(len(df))}]}"
+                ),
+                "expected_result_keys": ["summary", "metrics", "evidence_rows"],
+            },
+            "selected_model": model, "attempts": [{"status": "completed"}],
+            "prompt_version": "rca_code_generator_v0_1",
+        }
+        with patch(
+            "domains.rca.data_chat.plan",
+            return_value=self._plan(mode="analysis", preferred=["not_in_catalog"]),
+        ), patch(
+            "domains.rca.investigation_agent.generate_code", return_value=generated,
+        ), patch("domains.rca.data_chat.answer", return_value=self._answer(
+            "The custom bounded calculation completed."
+        )):
+            answered = rca.ask_data_chat(
+                case["case_id"], "Run the bounded custom row calculation.", ACTOR
+            )
+
+        turn = answered["data_chat"]["turns"][0]
+        self.assertEqual(turn["library_search"]["decision"], "generate_fresh_code")
+        self.assertEqual(turn["execution"]["status"], "completed")
+        self.assertIn("python_code", turn["generated_code"])
+        output_id = turn["execution"]["download_artifact_id"]
+        self.assertTrue(output_id)
+        metadata, payload = AnalysisArtifactRepository().get(output_id)
+        self.assertEqual(metadata.artifact_type, "rca_evidence_event")
+        self.assertEqual(payload["evidence_kind"], "data_chat_sandbox_output")
+        self.assertEqual(payload["details"]["result"]["metrics"]["rows"], 60)
+        events = [event for event in answered["aar_evidence"]
+                  if (event.get("details") or {}).get("turn_id") == turn["turn_id"]]
+        self.assertEqual(sum(event["evidence_kind"] == "data_chat_code_generation"
+                             for event in events), 1)
+        self.assertEqual(sum(event["evidence_kind"] == "data_chat_sandbox_execution"
+                             for event in events), 1)
+        execution = next(event for event in events
+                         if event["evidence_kind"] == "data_chat_sandbox_execution")
+        self.assertIn("runtime_environment", execution["details"])
+        self.assertIn("sandbox_contract_version", execution["details"])
+
+    def test_chat_rejected_code_and_environment_survive_reload(self):
+        case = self._case("rca-chat-rejected-code")
+        _add_successful_agent_investigations(case["case_id"])
+        code = "result = undefined_value"
+        generated = {
+            "output": {"python_code": code}, "selected_model": {"model_name": "test"},
+            "attempts": [], "prompt_version": "test",
+        }
+        with patch("domains.rca.data_chat.plan", return_value=self._plan(
+            mode="analysis", preferred=["not_in_catalog"]
+        )), patch("domains.rca.investigation_agent.generate_code", return_value=generated):
+            with self.assertRaises(rca.RcaError):
+                rca.ask_data_chat(case["case_id"], "Run a custom calculation.", ACTOR)
+        events = rca.get_case(case["case_id"])["aar_evidence"]
+        generation = next(event for event in events
+                          if event["evidence_kind"] == "data_chat_code_generation")
+        self.assertEqual(generation["details"]["generated_code"]["python_code"], code)
+        self.assertIn("sandbox_contract", generation["details"])
+        execution = next(event for event in events
+                         if event["evidence_kind"] == "data_chat_sandbox_execution")
+        self.assertEqual(execution["status"], "rejected")
+        self.assertIn("runtime_environment", execution["details"])
+        self.assertIn("sandbox_contract_version", execution["details"])
+        self.assertIn("undefined_value", str(execution["details"]["error"]))
+
+    def test_chat_answer_failure_is_retained_for_continuation(self):
+        case = self._case("rca-chat-answer-failure")
+        _add_successful_agent_investigations(case["case_id"])
+        with patch("domains.rca.data_chat.plan", return_value=self._plan()), patch(
+            "domains.rca.data_chat.answer", side_effect=RuntimeError("answer unavailable")
+        ):
+            with self.assertRaises(rca.RcaAgentUnavailable):
+                rca.ask_data_chat(case["case_id"], "Summarize the evidence.", ACTOR)
+
+        restored = rca.get_case(case["case_id"])["data_chat"]["turns"]
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(restored[0]["status"], "failed")
+        self.assertIn("no response was accepted", restored[0]["answer"])
+        self.assertIn("answer unavailable", restored[0]["limitations"])
+
+    def test_chat_planning_failure_retains_the_complete_failed_turn(self):
+        case = self._case("rca-chat-plan-failure")
+        _add_successful_agent_investigations(case["case_id"])
+        with patch(
+            "domains.rca.data_chat.plan", side_effect=RuntimeError("planner unavailable")
+        ):
+            with self.assertRaises(rca.RcaAgentUnavailable):
+                rca.ask_data_chat(case["case_id"], "Summarize the evidence.", ACTOR)
+
+        restored = rca.get_case(case["case_id"])["data_chat"]["turns"]
+        self.assertEqual(len(restored), 1)
+        self.assertEqual(restored[0]["question"], "Summarize the evidence.")
+        self.assertEqual(restored[0]["status"], "failed")
+        self.assertIn("no response was accepted", restored[0]["answer"])
+        self.assertEqual([event["kind"] for event in restored[0]["events"]], [
+            "data_chat_user_message", "data_chat_plan", "data_chat_assistant_message",
+        ])
+
+    def test_out_of_scope_chat_is_rejected_without_analysis(self):
+        case = self._case("rca-chat-scope")
+        _add_successful_agent_investigations(case["case_id"])
+        with patch("domains.rca.data_chat.plan", return_value=self._plan(
+            scope="out_of_scope"
+        )):
+            answered = rca.ask_data_chat(
+                case["case_id"], "Tell me about a different customer dataset.", ACTOR
+            )
+        turn = answered["data_chat"]["turns"][0]
+        self.assertEqual(turn["status"], "rejected")
+        self.assertEqual(turn["library_search"]["decision"], "not_searched_out_of_scope")
+        self.assertNotIn("execution", turn)
+
+
+class CombinedHypothesisRunTests(unittest.TestCase):
+    _case = GovernedDataChatTests._case
+    _plan = staticmethod(GovernedDataChatTests._plan)
+
+    def test_run_limit_counts_roots_and_failures_not_cancelled_or_pending_plans(self):
+        looks = [{"look_id": key, "kind": "planned", "fork_json": {"agent_runtime": True}}
+                 for key in ("root", "child", "failed", "cancelled", "pending")]
+        looks[0]["fork_json"]["combined_run_state"] = "completed"
+        looks[1]["fork_json"]["combined_parent_look_id"] = "root"
+        executions = {key: {"status": status} for key, status in
+                      (("root", "completed"), ("child", "completed"),
+                       ("failed", "failed"), ("cancelled", "cancelled"))}
+        self.assertEqual(rca._investigation_limit(looks, executions),
+                         {"limit": 2, "used": 2, "remaining": 0, "reached": True})
+        self.assertFalse(rca._investigation_limit([], {})["reached"])
+
+    def test_second_combined_run_can_confirm_but_third_cannot_start(self):
+        case, look_id, _ = self._combined_case()
+        _add_successful_agent_investigations(case["case_id"], 1)
+        bundle, calls, _ = self._run_combined(look_id)
+        self.assertEqual(calls, 2)
+        self.assertEqual(bundle["investigation_limit"]["used"], 2)
+        third = dict(s.query_one("rca_looks", look_id=look_id))
+        third["look_id"] = f"look_{uuid.uuid4().hex[:12]}"
+        third["seq"] += 10
+        third["fork_json"].pop("combined_run_state", None)
+        s.insert("rca_looks", third)
+        with self.assertRaisesRegex(rca.TransitionError, "Two-run"):
+            rca.run_investigation(third["look_id"], ACTOR)
+
+    def test_started_runs_reserve_slots_before_loading_data(self):
+        case, look_id, _ = self._combined_case()
+        with patch("domains.rca.service._read_analysis_table", side_effect=RuntimeError("loading interrupted")) as loader:
+            with self.assertRaisesRegex(RuntimeError, "loading interrupted"):
+                rca.runner_execute(look_id, ACTOR)
+            with self.assertRaisesRegex(rca.TransitionError, "already started"):
+                rca.runner_execute(look_id, ACTOR)
+            _add_successful_agent_investigations(case["case_id"], 1)
+            pending = dict(s.query_one("rca_looks", look_id=look_id))
+            pending["look_id"] = f"look_{uuid.uuid4().hex[:12]}"
+            pending["seq"] += 10
+            pending["fork_json"].pop("execution_started", None)
+            s.insert("rca_looks", pending)
+            with self.assertRaisesRegex(rca.TransitionError, "Two-run"):
+                rca.runner_execute(pending["look_id"], ACTOR)
+            self.assertEqual(loader.call_count, 1)
+
+    @classmethod
+    def setUpClass(cls):
+        s.init_schema()
+        seed_platform()
+        seed_taxonomy()
+
+    def _combined_case(self):
+        case = self._case("rca-combined")
+        s.update("rca_cases", {"case_id": case["case_id"]}, {"state": "investigation_loop"})
+        hypothesis_id = f"hyp_{uuid.uuid4().hex[:12]}"
+        s.insert("rca_hypotheses", {
+            "hypothesis_id": hypothesis_id, "case_id": case["case_id"],
+            "statement": "The population composition explains missingness.",
+            "origin": "llm_initial_review", "lifecycle_status": "selected",
+            "evidence_basis": "Retained population evidence.",
+            "proposed_test": "Compare missingness within populations.",
+            "created_at": s.now_ist(), "candidate_rank": 1,
+        })
+        look_id = f"look_{uuid.uuid4().hex[:12]}"
+        s.insert("rca_looks", {
+            "look_id": look_id, "case_id": case["case_id"], "seq": 2,
+            "kind": "planned", "proposed_by": "investigation_agent",
+            "sql_or_helper_ref": "greedy_driver_search", "budget_counted": 1,
+            "created_at": s.now_ist(), "fork_json": {
+                "kind": "agent_driver_search", "agent_runtime": True,
+                "execution_mode": "approved_helper", "hypothesis_id": hypothesis_id,
+                "plan": {"question": "Find an associated separator"},
+            },
+        })
+        return case, look_id, hypothesis_id
+
+    def _run_combined(self, look_id, *, no_separator=False, failed_confirmation=False,
+                      missing_information=False, reader_failure=False):
+        model = {"model_name": "test", "model_version": "1"}
+        discovery = {"output": {
+            "assessment": "inconclusive", "rationale": "Association only.",
+            "focused_hypothesis": "Segment B may explain the gap.",
+            "evidence_basis": "Strong separation.", "proposed_test": "Condition on segment.",
+            "next_question": "Does the within-segment gap attenuate?",
+        }, "selected_model": model, "attempts": []}
+        plan = self._plan(mode="analysis", preferred=["outlier_profile"])
+        plan["output"]["confirmation_possible"] = not missing_information
+        results = [{"summary": "Discovery", "metrics": {
+            "top_feature": None if no_separator else "segment"}},
+            RuntimeError("confirmation timed out") if failed_confirmation else
+            {"summary": "Confirmation", "metrics": {"rows": 60}}]
+        with patch("domains.rca.investigation_runtime.run_helper", side_effect=results) as helper, patch(
+            "domains.rca.investigation_agent.interpret_driver_search", return_value=discovery
+        ), patch("domains.rca.investigation_agent.plan", return_value=plan) as planner, patch(
+            "domains.rca.investigation_agent.interpret",
+            side_effect=RuntimeError("reader unavailable") if reader_failure else None,
+            return_value={"output": {"assessment": "supported", "rationale": "The composition explains the gap."},
+                          "selected_model": model, "attempts": []},
+        ):
+            from routers import v3
+            with patch.object(v3, "_principal", return_value={"username": ACTOR, "tenant_id": BOOTSTRAP_TENANT}):
+                bundle = v3.run_rca_look(look_id)
+        return bundle, helper.call_count, planner
+
+    def test_combined_run_confirms_original_hypothesis_once_and_counts_once(self):
+        case, look_id, hypothesis_id = self._combined_case()
+        bundle, calls, planner = self._run_combined(look_id)
+        self.assertEqual(calls, 2)
+        self.assertEqual(planner.call_count, 1)
+        self.assertEqual(planner.call_args.args[0]["selected_hypothesis"]["hypothesis_id"], hypothesis_id)
+        self.assertIn("discovery_confirmation", planner.call_args.args[0])
+        self.assertEqual(bundle["focused_hypothesis_candidates"], [])
+        self.assertEqual(rca._budget_spent(case["case_id"]), 1)
+        self.assertEqual(bundle["data_chat"]["successful_investigation_count"], 1)
+        self.assertFalse(bundle["data_chat"]["unlocked"])
+        event = next(e for e in bundle["aar_evidence"] if e["evidence_kind"] == "combined_hypothesis_run")
+        self.assertEqual(event["details"]["interpretation"]["assessment"], "supported")
+        self.assertEqual(event["details"]["hypothesis_id"], hypothesis_id)
+        before = len(bundle["executions"])
+        with patch("domains.rca.investigation_runtime.run_helper") as helper:
+            restored = rca.run_investigation(look_id, ACTOR)
+        helper.assert_not_called()
+        self.assertEqual(len(restored["executions"]), before)
+        _add_successful_agent_investigations(case["case_id"], 1)
+        self.assertTrue(rca.get_case(case["case_id"])["data_chat"]["unlocked"])
+
+    def test_no_separator_stops_without_confirmation(self):
+        case, look_id, _ = self._combined_case()
+        bundle, calls, planner = self._run_combined(look_id, no_separator=True)
+        self.assertEqual(calls, 1)
+        planner.assert_not_called()
+        self.assertEqual(bundle["data_chat"]["successful_investigation_count"], 0)
+        self.assertEqual(rca._budget_spent(case["case_id"]), 1)
+        self.assertEqual(bundle["focused_hypothesis_candidates"], [])
+
+    def test_missing_information_stops_without_confirmation(self):
+        _, look_id, _ = self._combined_case()
+        bundle, calls, _ = self._run_combined(look_id, missing_information=True)
+        self.assertEqual(calls, 1)
+        event = next(e for e in bundle["aar_evidence"] if e["evidence_kind"] == "combined_hypothesis_run")
+        self.assertEqual(event["status"], "failed")
+        self.assertIn("additional information", event["details"]["interpretation"]["rationale"])
+
+    def test_confirmation_failure_stops_without_retry_or_chat_credit(self):
+        _, look_id, _ = self._combined_case()
+        bundle, calls, _ = self._run_combined(look_id, failed_confirmation=True)
+        self.assertEqual(calls, 2)
+        self.assertEqual(bundle["data_chat"]["successful_investigation_count"], 0)
+        self.assertEqual(bundle["focused_hypothesis_candidates"], [])
+        self.assertEqual(bundle["looks"][0]["fork_json"]["combined_run_state"], "failed")
+
+    def test_interpretation_failure_does_not_unlock_chat(self):
+        _, look_id, _ = self._combined_case()
+        bundle, calls, _ = self._run_combined(look_id, reader_failure=True)
+        self.assertEqual(calls, 2)
+        self.assertEqual(bundle["data_chat"]["successful_investigation_count"], 0)
 
 
 class StaticSafetyTests(unittest.TestCase):

@@ -80,6 +80,10 @@ export const getStructuralPrecheckV2 = (snapshotId, inventoryRows) =>
   req(`/v2/items/${encodeURIComponent(snapshotId)}/structural-precheck`, {
     method: "POST", body: JSON.stringify({ inventory_rows: inventoryRows }),
   });
+export const saveStagedStructureReviewV2 = (snapshotId, body) =>
+  req(`/v2/items/${encodeURIComponent(snapshotId)}/dataset-structure/staged-draft`, {
+    method: "PATCH", body: JSON.stringify(body),
+  });
 export const createTechnicalRowIdV2 = (snapshotId, body, idempotencyKey) =>
   req(`/v2/items/${encodeURIComponent(snapshotId)}/technical-row-id`, {
     method: "POST", body: JSON.stringify(body), headers: { "Idempotency-Key": idempotencyKey },
@@ -429,6 +433,18 @@ export async function downloadAnalysisArtifactV2(artifactId) {
   }
   return res.blob();
 }
+export async function downloadRcaReport(caseId, format = "pdf") {
+  const res = await fetch(`${API_BASE}/v3/rca/cases/${encodeURIComponent(caseId)}/report?fmt=${encodeURIComponent(format)}`, {
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(await readErrorDetail(res));
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = format === "text" ? "rca-completion-report.txt" : "rca-completion-report.pdf";
+  link.click();
+  URL.revokeObjectURL(url);
+}
 export const getAnalysisArtifactLineageV2 = (artifactId) => req(`/v2/analysis-artifacts/${encodeURIComponent(artifactId)}/lineage`);
 export const getAnalysisArtifactTypesV2 = () => req("/v2/analysis-artifacts/types");
 export const getAnalysisArtifactRunsV2 = (snapshotId, capabilityId) =>
@@ -581,12 +597,48 @@ export const runRcaOpeningLook = (caseId) =>
   req(`/v3/rca/cases/${encodeURIComponent(caseId)}/opening-look`, { method: "POST" });
 export const continueRcaFromInitialReview = (caseId) =>
   req(`/v3/rca/cases/${encodeURIComponent(caseId)}/initial-review/continue`, { method: "POST" });
+export const selectRcaInitialReviewHypothesis = (caseId, hypothesisId) =>
+  req(`/v3/rca/cases/${encodeURIComponent(caseId)}/initial-review/hypothesis-selection`, {
+    method: "POST", body: JSON.stringify({ hypothesis_id: hypothesisId }),
+  });
+export const selectRcaFocusedHypothesis = (caseId, hypothesisId) =>
+  req(`/v3/rca/cases/${encodeURIComponent(caseId)}/investigation/focused-hypothesis-selection`, {
+    method: "POST", body: JSON.stringify({ hypothesis_id: hypothesisId }),
+  });
+export const addRcaInvestigationContext = (caseId, comment, hypothesisId = null) =>
+  req(`/v3/rca/cases/${encodeURIComponent(caseId)}/investigation/context`, {
+    method: "POST", body: JSON.stringify({ comment, hypothesis_id: hypothesisId }),
+  });
+export const askRcaDataChat = (caseId, question) =>
+  req(`/v3/rca/cases/${encodeURIComponent(caseId)}/data-chat`, {
+    method: "POST", body: JSON.stringify({ question }),
+  });
+export const reviewRcaHypothesis = (caseId, hypothesisId, body) =>
+  req(`/v3/rca/cases/${encodeURIComponent(caseId)}/hypotheses/${encodeURIComponent(hypothesisId)}/review`, {
+    method: "POST", body: JSON.stringify(body),
+  });
 export const runRcaPlannerLook = (caseId, killTargetSuspectId) =>
   req(`/v3/rca/cases/${encodeURIComponent(caseId)}/planner-look`
      + (killTargetSuspectId ? `?kill_target_suspect_id=${encodeURIComponent(killTargetSuspectId)}` : ""),
      { method: "POST" });
 export const runRcaLook = (lookId) =>
   req(`/v3/rca/looks/${encodeURIComponent(lookId)}/run`, { method: "POST" });
+export const exploreRcaHypothesis = async (caseId, choice) => {
+  try {
+    const next = await req(`/v3/rca/cases/${encodeURIComponent(caseId)}/planner-look?exploration=${encodeURIComponent(choice)}`, { method: "POST" });
+    if (next.state !== "investigation_loop") return next;
+    const pending = [...(next.looks || [])].reverse().find((look) => look.kind === "planned"
+      && !look.fork_json?.combined_parent_look_id && !next.executions?.[look.look_id]);
+    return pending ? await runRcaLook(pending.look_id) : next;
+  } catch (error) {
+    // Planning may have saved a new hypothesis before a later model/runtime failure.
+    try { error.rcaCase = await getRcaCase(caseId); }
+    catch { /* Preserve the original action error when refresh is also unavailable. */ }
+    throw error;
+  }
+};
+export const getRcaProgress = (caseId, signal) =>
+  req(`/v3/rca/cases/${encodeURIComponent(caseId)}/progress`, { signal, cache: "no-store" });
 export const composeRcaHypothesis = (caseId) =>
   req(`/v3/rca/cases/${encodeURIComponent(caseId)}/compose`, { method: "POST" });
 export const runRcaConfirmationCheck = (checkId) =>

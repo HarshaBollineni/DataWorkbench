@@ -198,7 +198,8 @@ def run(run_id: str, actor: str = "system", *, tenant_id: str | None = None) -> 
     artifact, payload, reused = _reconcile(manifest, actor)
     for done, rule in enumerate(payload.rules, start=1):
         yield {"phase": "progress", "agent": "row_completeness_engine", "done": done,
-               "total": len(payload.rules), "rule_id": rule.rule_id, "outcome": rule.outcome,
+               "total": len(payload.rules), "rule_id": rule.rule_id, "task": rule.rule_id,
+               "outcome": rule.outcome,
                "thought": f"[{done}/{len(payload.rules)}] {rule.rule_id} -> {rule.outcome}"}
     summary = _persist(manifest, payload, artifact, reused)
     db.update("diag_runs", {"run_id": run_id}, {"status": DONE, "finished_at": db.now_ist()})

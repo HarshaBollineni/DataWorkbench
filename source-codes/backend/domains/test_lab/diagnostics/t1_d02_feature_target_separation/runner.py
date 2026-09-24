@@ -225,7 +225,8 @@ def run(run_id: str, actor: str = "system") -> Generator[dict[str, Any], None, N
     events: queue.Queue[tuple[str, Any]] = queue.Queue()
 
     def progress(done: int, count: int, feature: str, stage: str) -> None:
-        events.put(("progress", {"done": done, "total": count, "feature": feature, "stage": stage}))
+        events.put(("progress", {"done": done, "total": count, "feature": feature,
+                                 "task": feature, "stage": stage}))
 
     def feature_preview(preview: dict[str, Any]) -> None:
         events.put(("feature_result", preview))

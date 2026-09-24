@@ -1,7 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "./support/test-fixture";
-import { confirmDatasetStructure } from "./support/dataset-structure";
+import { confirmDatasetStructure, saveStagedStructure } from "./support/dataset-structure";
 import { selectPopoverOption } from "./support/select";
 
 // 0.5.0 ADM-06/07 (plan Step 3c) — Admin's asset version-history view:
@@ -60,7 +60,8 @@ test("admin version history: pick an asset, see its version/snapshot timeline in
   await selectPopoverOption(page, "Use case");
   await selectPopoverOption(page, "Product");
   await page.getByLabel(/I confirm this target/).check();
-  await page.getByTestId("upl-step-5").getByRole("button", { name: "Save and Proceed" }).click();
+  await saveStagedStructure(page);
+  await page.getByTestId("upl-step-6").getByRole("button", { name: "Save and Proceed" }).click();
   await confirmDatasetStructure(page);
 
   await page.getByRole("link", { name: "Admin" }).click();

@@ -158,6 +158,13 @@ class LegacyRcaTableUpgradeTests(unittest.TestCase):
         try:
             new_cols = {r[1] for r in conn.execute('PRAGMA table_info("rca_cases")')}
             self.assertIn("issue_row_id", new_cols)
+            hypothesis_cols = {
+                r[1] for r in conn.execute('PRAGMA table_info("rca_hypotheses")')
+            }
+            self.assertTrue({
+                "origin", "lifecycle_status", "evidence_basis", "proposed_test",
+                "source_evidence_id", "candidate_rank", "selected_by", "selected_at",
+            }.issubset(hypothesis_cols))
 
             legacy_row = conn.execute(
                 "SELECT case_id, title FROM rca_cases_legacy_v1"

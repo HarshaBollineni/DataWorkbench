@@ -43,7 +43,8 @@ export default function ScopeGate({ runId, initialManifest = null, onRunStarted 
     setBusy(true);
     try {
       const updated = await patchDiagnosticManifestV2(runId, body);
-      if (manifest.manifest_kind === "population_stability_index" && updated?.manifest_kind) {
+      if (["population_stability_index", "row_completeness", "directional_monotonic_consistency"].includes(manifest.manifest_kind)
+          && updated?.manifest_kind) {
         setManifest(updated);
         setError("");
       } else {

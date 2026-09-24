@@ -304,7 +304,9 @@ def add_snapshot(asset_id: str, intent: str, actor: str | None = None,
 
 
 def finalize_staged_snapshot(asset_id: str, snapshot_id: str, intent: str,
-                             actor: str | None = None, **fields: Any) -> dict[str, Any]:
+                             actor: str | None = None,
+                             refresh_derived_records: bool = True,
+                             **fields: Any) -> dict[str, Any]:
     """Commit the metadata decisions made after S4a profiling.
 
     S4a creates a staged ``dq_items`` row so the file can be uploaded and
@@ -421,8 +423,9 @@ def finalize_staged_snapshot(asset_id: str, snapshot_id: str, intent: str,
                  actor=actor, version_no=version_no, snapshot_id=snapshot_id,
                  detail={"intent": intent, "superseded": superseded,
                          "period_column": fields.get("period_column")})
-    from .refresh import refresh_derived
-    refresh_derived(asset_id, actor=actor, reason=f"snapshot processed ({intent})")
+    if refresh_derived_records:
+        from .refresh import refresh_derived
+        refresh_derived(asset_id, actor=actor, reason=f"snapshot processed ({intent})")
     return {**s.query_one("dq_items", item_id=snapshot_id), "superseded": superseded}
 
 

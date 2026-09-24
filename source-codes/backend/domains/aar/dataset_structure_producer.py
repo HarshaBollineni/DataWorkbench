@@ -63,6 +63,7 @@ MAX_TEMPORAL_PARTNERS = 32
 MAX_COMPOSITE_CANDIDATES = 256
 MAX_KEY_COLUMNS = 2
 MAX_CADENCE_ROWS = 1_000_000
+MAX_CADENCE_CACHED_COLUMN_STATES = 2_000_000
 SUPPORTED_OBSERVER_PREDICATES = frozenset({_SCHEMA_PREDICATE, _ENTITY_PREDICATE, _GRAIN_PREDICATE,
                                            _TEMPORAL_PREDICATE, _CADENCE_PREDICATE})
 _EVIDENCE_PRIMARY_ROLE = {
@@ -1191,29 +1192,58 @@ def _interval_class(left: Any, right: Any, temporal_type: str) -> tuple[str, int
     return "day", days
 
 
-def _cadence_scan_pair(frame: pd.DataFrame, candidate: dict[str, Any]) -> dict[str, Any]:
-    axis_col, group_col = candidate["axis"]["column"], candidate["group"]["column"]
-    axis_profile, group_profile = candidate["axis"]["profile"][1], candidate["group"]["profile"][1]
-    numeric = {column: (pd.api.types.is_numeric_dtype(frame[column]) or pd.api.types.is_bool_dtype(frame[column]))
-               for column in (axis_col, group_col)}
-    special_columns = {axis_col: ({_special_key(item, numeric=numeric[axis_col]) for item in axis_profile.get("special_values", [])}
-                                  if axis_profile.get("special_values_confirmed") else set()),
-                       group_col: ({_special_key(item, numeric=numeric[group_col]) for item in group_profile.get("special_values", [])}
-                                   if group_profile.get("special_values_confirmed") else set())}
-    total = len(frame.index); physical = special = parse_failure = 0
-    entity_values: dict[tuple[str, str], dict[int, Any]] = {}
-    for axis_value, group_value in frame[[axis_col, group_col]].itertuples(index=False, name=None):
-        if _cadence_is_null(axis_value) or _cadence_is_null(group_value):
-            physical += 1; continue
-        if (_special_key(axis_value, numeric=numeric[axis_col]) in special_columns[axis_col]
-                or _special_key(group_value, numeric=numeric[group_col]) in special_columns[group_col]):
-            special += 1; continue
-        parsed = (_strict_date_key(axis_value) if candidate["axis"]["temporal_type"] == "date"
-                  else _strict_quarter_key(axis_value))
+def _cadence_axis_states(frame: pd.DataFrame, candidate: dict[str, Any]) -> list[tuple[int, Any, Any]]:
+    """Normalize one temporal axis once for every grouping candidate."""
+    column = candidate["axis"]["column"]
+    profile = candidate["axis"]["profile"][1]
+    numeric = pd.api.types.is_numeric_dtype(frame[column]) or pd.api.types.is_bool_dtype(frame[column])
+    specials = ({_special_key(item, numeric=numeric) for item in profile.get("special_values", [])}
+                if profile.get("special_values_confirmed") else set())
+    states: list[tuple[int, Any, Any]] = []
+    for value in frame[column].tolist():
+        if _cadence_is_null(value):
+            states.append((1, None, None)); continue
+        if _special_key(value, numeric=numeric) in specials:
+            states.append((2, None, None)); continue
+        parsed = (_strict_date_key(value) if candidate["axis"]["temporal_type"] == "date"
+                  else _strict_quarter_key(value))
         if parsed is None:
+            states.append((3, None, None)); continue
+        key, normalized = (parsed if candidate["axis"]["temporal_type"] == "date"
+                           else (parsed, parsed))
+        states.append((0, key, normalized))
+    return states
+
+
+def _cadence_group_states(frame: pd.DataFrame, candidate: dict[str, Any]) -> list[tuple[int, Any]]:
+    """Normalize one grouping column once for every temporal-axis candidate."""
+    column = candidate["group"]["column"]
+    profile = candidate["group"]["profile"][1]
+    numeric = pd.api.types.is_numeric_dtype(frame[column]) or pd.api.types.is_bool_dtype(frame[column])
+    specials = ({_special_key(item, numeric=numeric) for item in profile.get("special_values", [])}
+                if profile.get("special_values_confirmed") else set())
+    states: list[tuple[int, Any]] = []
+    for value in frame[column].tolist():
+        if _cadence_is_null(value):
+            states.append((1, None)); continue
+        if _special_key(value, numeric=numeric) in specials:
+            states.append((2, None)); continue
+        states.append((0, _cadence_group_key(value)))
+    return states
+
+
+def _cadence_result_from_states(candidate: dict[str, Any], axis_states: list[tuple[int, Any, Any]],
+                                group_states: list[tuple[int, Any]]) -> dict[str, Any]:
+    total = len(axis_states); physical = special = parse_failure = 0
+    entity_values: dict[tuple[str, str], dict[int, Any]] = {}
+    for axis_state, group_state in zip(axis_states, group_states):
+        if axis_state[0] == 1 or group_state[0] == 1:
+            physical += 1; continue
+        if axis_state[0] == 2 or group_state[0] == 2:
+            special += 1; continue
+        if axis_state[0] == 3:
             parse_failure += 1; continue
-        temporal_key, temporal_value = parsed if candidate["axis"]["temporal_type"] == "date" else (parsed, parsed)
-        entity_values.setdefault(_cadence_group_key(group_value), {})[temporal_key] = temporal_value
+        entity_values.setdefault(group_state[1], {})[axis_state[1]] = axis_state[2]
     usable = total - physical - special - parse_failure
     distinct = sum(len(values) for values in entity_values.values())
     duplicates = usable - distinct
@@ -1256,6 +1286,36 @@ def _cadence_scan_pair(frame: pd.DataFrame, candidate: dict[str, Any]) -> dict[s
             ] + ([{"name": "adequately_observed_entity_ratio", "numerator": adequate, "denominator": entities}] if entities else [])
               + ([{"name": "dominant_interval_ratio", "numerator": dominant, "denominator": d}] if d else []),
             "cadence": cadence, "interval": interval}
+
+
+def _cadence_scan_pairs(frame: pd.DataFrame, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Scan candidates by axis, bounding memory while parsing each axis once."""
+    by_axis: dict[tuple[str, str, int], list[tuple[int, dict[str, Any]]]] = {}
+    group_candidates: dict[tuple[str, int], dict[str, Any]] = {}
+    for index, candidate in enumerate(candidates):
+        axis_profile = candidate["axis"]["profile"][1]
+        group_profile = candidate["group"]["profile"][1]
+        axis_key = (candidate["axis"]["column"], candidate["axis"]["temporal_type"], id(axis_profile))
+        by_axis.setdefault(axis_key, []).append((index, candidate))
+        group_candidates.setdefault(
+            (candidate["group"]["column"], id(group_profile)), candidate)
+    cache_groups = len(frame.index) * len(group_candidates) <= MAX_CADENCE_CACHED_COLUMN_STATES
+    group_cache = ({key: _cadence_group_states(frame, candidate)
+                    for key, candidate in group_candidates.items()} if cache_groups else {})
+    results: list[dict[str, Any] | None] = [None] * len(candidates)
+    for indexed_candidates in by_axis.values():
+        axis_states = _cadence_axis_states(frame, indexed_candidates[0][1])
+        for index, candidate in indexed_candidates:
+            group_profile = candidate["group"]["profile"][1]
+            group_key = (candidate["group"]["column"], id(group_profile))
+            group_states = (group_cache[group_key] if cache_groups
+                            else _cadence_group_states(frame, candidate))
+            results[index] = _cadence_result_from_states(candidate, axis_states, group_states)
+    return [result for result in results if result is not None]
+
+
+def _cadence_scan_pair(frame: pd.DataFrame, candidate: dict[str, Any]) -> dict[str, Any]:
+    return _cadence_scan_pairs(frame, [candidate])[0]
 
 
 def _cadence_payload(asset_id: str, snapshot_id: str, table: str, candidate: dict[str, Any],
@@ -1619,7 +1679,10 @@ def observe_dataset_structure(repo: Any, snapshot_id: str, *, tables: Iterable[s
                         _observation_failure("DSC_R_INSUFFICIENT_BASIS")
                     if list(frame.columns) != columns or len(frame.index) != _exact_count(table_payload.get("row_count")):
                         _observation_failure("DSC_R_SOURCE_INTEGRITY_FAILED")
-                    scanned = {candidate["instance_key"]: _cadence_scan_pair(frame, candidate) for candidate in missing}
+                    scanned = {
+                        candidate["instance_key"]: result
+                        for candidate, result in zip(missing, _cadence_scan_pairs(frame, missing))
+                    }
                     payloads = [_cadence_payload(reference.asset_id, snapshot_id, table, candidate,
                                                  scanned[candidate["instance_key"]]) for candidate in missing]
                     supersessions: list[dict[str, Any]] = [

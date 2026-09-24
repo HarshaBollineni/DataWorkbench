@@ -36,6 +36,7 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from unittest import mock
 
 _TMP_DB = Path(tempfile.gettempdir()) / "archimedes-test-testlab.db"
 _TMP_KB = Path(tempfile.gettempdir()) / "archimedes-test-testlab-kb"
@@ -188,7 +189,10 @@ def _make_item(name: str, use_case: str, frame: pd.DataFrame | None = None) -> s
     # existing scope assertions remain about diagnostic behaviour.
     s.update("dq_assets", {"asset_id": s.query_one("dq_items", item_id=item_id)["dataset_family_id"]},
              {"use_case": use_case})
-    s.update("dq_items", {"item_id": item_id}, {"use_case": use_case})
+    s.update("dq_items", {"item_id": item_id}, {
+        "use_case": use_case,
+        "sourcing_tenant_id": TENANT,
+    })
     return item_id
 
 
@@ -494,6 +498,13 @@ class CoverageBoardTests(unittest.TestCase):
         self.assertFalse(card["loading"])
         self.assertIn("chip", card)
         self.assertIn("recent_runs", card)
+
+    def test_no_run_card_does_not_import_its_workflow_adapter(self):
+        with mock.patch("dq_diagnostics.dispatch.adapter",
+                        side_effect=AssertionError("no-run card imported workflow adapter")):
+            card = v2.diagnostics_board_card(self.item_id, 14)
+        self.assertEqual(card["diagnostic_id"], 14)
+        self.assertIsNone(card["open_draft"])
 
     def test_each_card_exposes_latest_completed_and_full_immutable_run_history(self):
         item_id = _make_item(f"history-{uuid.uuid4().hex[:8]}", "IRB / Basel")

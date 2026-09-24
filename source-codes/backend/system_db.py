@@ -123,6 +123,7 @@ _JSON_COLS: dict[str, set[str]] = {
     # Dataset Structure review is a Data Sourcing-owned, mutable workflow.
     # It is intentionally separate from both AAR assertions and the generic
     # source-upload draft state on dq_items.
+    "dataset_structure_staged_reviews": {"reviewed_roles_json", "selections_json"},
     "dataset_structure_review_drafts": {"selections_json"},
     "dataset_structure_review_idempotency": {"response_json"},
     "dataset_structure_review_decision_batches": {"decision_assertion_refs_json"},
@@ -511,7 +512,11 @@ CREATE TABLE IF NOT EXISTS rca_hypotheses (
     hypothesis_id TEXT PRIMARY KEY, case_id TEXT NOT NULL, suspect_id TEXT,
     statement TEXT, label TEXT, tier TEXT,
     evidence_look_ids_json TEXT, confirm_check_json TEXT, reject_condition_json TEXT,
-    owner TEXT, created_at TEXT
+    owner TEXT, created_at TEXT,
+    origin TEXT NOT NULL DEFAULT 'composer',
+    lifecycle_status TEXT NOT NULL DEFAULT 'composed',
+    evidence_basis TEXT, proposed_test TEXT, source_evidence_id TEXT,
+    candidate_rank INTEGER, selected_by TEXT, selected_at TEXT
 );
 CREATE TABLE IF NOT EXISTS rca_confirmation_checks (
     check_id TEXT PRIMARY KEY, hypothesis_id TEXT NOT NULL, order_rank INTEGER,
@@ -910,6 +915,22 @@ CREATE TABLE IF NOT EXISTS dataset_structure_materialization_reconcile_cursor (
     last_snapshot_id TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+-- Pre-finalization structure review.  This is resumable Data Sourcing state,
+-- not an AAR assertion; final activation consumes it in a later transaction.
+CREATE TABLE IF NOT EXISTS dataset_structure_staged_reviews (
+    snapshot_id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 0,
+    evidence_fingerprint TEXT NOT NULL,
+    reviewed_roles_json TEXT NOT NULL DEFAULT '[]',
+    selections_json TEXT NOT NULL DEFAULT '{"tables":[]}',
+    state TEXT NOT NULL CHECK(state IN ('review_required','stale')) DEFAULT 'review_required',
+    review_contract_version TEXT NOT NULL DEFAULT '2-staged',
+    created_by TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(tenant_id, snapshot_id)
+);
 -- Slice 2's resumable review state.  These records never make an AAR
 -- assertion or decision: they contain only opaque candidate selections.
 CREATE TABLE IF NOT EXISTS dataset_structure_review_states (
@@ -1076,6 +1097,7 @@ _WORKPRODUCT_TABLES = [
     "dataset_structure_backfill_runs",
     "technical_row_id_transforms",
     "dataset_structure_materialization_reconcile_cursor",
+    "dataset_structure_staged_reviews",
     "dataset_structure_review_states",
     "dataset_structure_review_drafts",
     "dataset_structure_review_idempotency",
@@ -1444,6 +1466,16 @@ def _migrate_technical_row_id_publication_state(conn: sqlite3.Connection) -> Non
 _MIGRATIONS: dict[str, dict[str, str]] = {
     "rca_cases": {
         "workflow_generation": "INTEGER NOT NULL DEFAULT 1",
+    },
+    "rca_hypotheses": {
+        "origin": "TEXT NOT NULL DEFAULT 'composer'",
+        "lifecycle_status": "TEXT NOT NULL DEFAULT 'composed'",
+        "evidence_basis": "TEXT",
+        "proposed_test": "TEXT",
+        "source_evidence_id": "TEXT",
+        "candidate_rank": "INTEGER",
+        "selected_by": "TEXT",
+        "selected_at": "TEXT",
     },
     "dataset_structure_review_idempotency": {
         # Slice 2 originally shipped this tenant-keyed replay ledger without
@@ -2102,6 +2134,11 @@ def init_schema() -> None:
         conn.execute("CREATE INDEX IF NOT EXISTS ix_rca_suspects_case ON rca_suspects(case_id, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_rca_suspect_history_suspect ON rca_suspect_history(suspect_id, ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_rca_hypotheses_case ON rca_hypotheses(case_id)")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_rca_selected_initial_hypothesis "
+            "ON rca_hypotheses(case_id) WHERE origin='llm_initial_review' "
+            "AND lifecycle_status='selected'"
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS ix_rca_confirmation_checks_hyp ON rca_confirmation_checks(hypothesis_id, order_rank)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_rca_judge_decisions_check ON rca_judge_decisions(check_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS ix_rca_fix_proposals_hyp ON rca_fix_proposals(hypothesis_id)")
@@ -2795,6 +2832,9 @@ def wipe_development_artifacts() -> dict:
         )
         counts["technical_row_id_transforms"] = _delete_ids_any(
             conn, "technical_row_id_transforms", {"snapshot_id": item_ids}
+        )
+        counts["dataset_structure_staged_reviews"] = _delete_ids_any(
+            conn, "dataset_structure_staged_reviews", {"snapshot_id": item_ids}
         )
         counts["dataset_structure_review_idempotency"] = _delete_ids_any(
             conn, "dataset_structure_review_idempotency", {"snapshot_id": item_ids}

@@ -1,4 +1,5 @@
-import { BarChart3, ChevronDown } from "lucide-react";
+import { BarChart3, FileSearch, Info } from "lucide-react";
+import { intakePresentation } from "@/features/rca/intakePresentation";
 
 import { Badge } from "@/components/ui/badge";
 import { buildRaincloudModel, scaleRaincloudValue } from "@/lib/raincloud";
@@ -107,23 +108,30 @@ function GenericTechnical({ source }) {
   return <div className="space-y-4"><section><h4 className="text-sm font-semibold text-[#365a60]">Decision evidence</h4><p className="mt-1 text-xs text-slate-600">{finding.rule_text || "The diagnostic's retained decision inputs are shown below."}</p>{scalarMetrics.length > 0 && <div className="mt-3"><FactGrid facts={scalarMetrics.map(([key, item]) => [value(key), item])} columns="sm:grid-cols-3 xl:grid-cols-4" /></div>}</section>{evidence.length > 0 && <section><h4 className="mb-2 text-sm font-semibold text-[#365a60]">Supporting observations</h4><div className="max-h-72 overflow-auto rounded-lg border border-slate-200 bg-white"><table className="w-full text-left text-xs"><tbody>{evidence.map((item, index) => <tr key={index} className="border-t border-slate-100 first:border-0"><th className="w-40 p-2 text-slate-500">Observation {index + 1}</th><td className="p-2 text-slate-800">{typeof item === "object" ? Object.entries(item).map(([key, entry]) => `${value(key)}: ${value(entry)}`).join(" · ") : value(item)}</td></tr>)}</tbody></table></div></section>}</div>;
 }
 
-export default function RcaSourceEvidence({ issue }) {
-  const source = issue?.source_evidence;
-  if (!source) return null;
+export default function RcaSourceEvidence({ issue = {}, children }) {
+  const source = issue.source_evidence || {};
   const metric = source.metrics || {};
-  const isPsi = source.diagnostic_id === 14 || metric.result_kind === "psi_feature";
-  const isFeatureTarget = source.diagnostic_id === 2 || metric.result_kind === "feature";
-  const headline = isPsi ? `PSI ${value(metric.psi)} is classified as ${value(metric.classification)}.` : isFeatureTarget ? `Observed separation metric ${value(metric.auc ?? metric.metric ?? issue.metric)} requires contextual review.` : `${source.finding?.rule_text || issue.test_name} — observed value ${value(issue.metric)}.`;
-  const facts = isPsi
-    ? [["PSI", metric.psi ?? issue.metric], ["Classification", metric.classification], ["Watch boundary", metric.thresholds?.watch], ["Investigate boundary", metric.thresholds?.investigate]]
-    : isFeatureTarget
-      ? [["AUC", metric.auc ?? issue.metric], ["Gini", metric.gini ?? metric.roc_detail?.primary_gini], ["Information value", metric.iv], ["Classification", metric.classification]]
-      : [["Observed", issue.metric], ["Affected rows", source.finding?.violation_count], ["Tolerance", source.finding?.tolerance], ["Outcome", source.finding?.outcome]];
-  return <section className="rounded-lg border border-teal-200 bg-[#fffdf8] p-4" data-testid="rca-intake-evidence">
-    <div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-xs font-semibold uppercase tracking-wide text-teal-700">Intake · source diagnostic evidence</p><p className="mt-1 text-sm font-medium text-slate-900">{headline}</p><p className="mt-1 text-xs text-slate-500">The immutable diagnostic result and retained feature profile establish the RCA intake context.</p></div><Badge variant="outline" className="border-teal-200 text-[#365a60]">AAR result {source.result_id}</Badge></div>
-    <div className="mt-3 grid gap-2 rounded-md border border-slate-200 bg-white p-3 text-xs sm:grid-cols-4"><span><strong className="text-slate-700">Dataset:</strong> {issue.item_name || "Retained source"}</span><span><strong className="text-slate-700">Table:</strong> {issue.table_name || source.entity_or_table}</span><span><strong className="text-slate-700">Feature:</strong> {(issue.columns || []).join(", ") || "Not specified"}</span><span><strong className="text-slate-700">Metric:</strong> {value(issue.metric)}</span></div>
-    <DataProfile profile={source.data_profile} />
-    <div className="mt-3"><FactGrid facts={facts} /></div>
-    <details className="group mt-4 overflow-hidden rounded-lg border border-slate-200 bg-white"><summary className="flex cursor-pointer list-none items-center gap-2 bg-[#f2f4ef] p-3 text-sm font-semibold text-[#365a60]">Technical source evidence <ChevronDown className="ml-auto h-4 w-4 transition-transform group-open:rotate-180" /></summary><div className="border-t border-slate-200 p-4">{isFeatureTarget ? <FeatureTargetEvidence row={{ result_id: source.result_id, metrics_json: metric }} /> : isPsi ? <PsiPopulationProfile metric={metric} /> : <GenericTechnical source={source} />}</div></details>
+  const view = intakePresentation(issue);
+  return <section className="space-y-3" data-testid="rca-intake-evidence">
+    <section className="rounded-lg border border-teal-200 bg-teal-50/30 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="flex items-center gap-2 text-sm font-semibold text-slate-900"><FileSearch aria-hidden="true" className="h-4 w-4 text-teal-700" />What needs attention</h3><Badge variant={view.unavailable ? "warning" : "outline"}>{view.status}</Badge></div>
+      <p className="mt-2 text-sm font-medium text-slate-900" data-testid="rca-intake-summary">{view.summary}</p>
+      <dl className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-600">{view.scope.map(([label, item]) => <div key={label}><dt className="inline font-semibold">{label}: </dt><dd className="inline break-words">{value(item)}</dd></div>)}</dl>
+      {view.facts.length > 0 && <div className="mt-3" data-testid="rca-intake-key-evidence"><FactGrid facts={view.facts} columns="sm:grid-cols-3" /></div>}
+    </section>
+    <section className="rounded-lg border border-slate-200 bg-white p-3" data-testid="rca-intake-limitations">
+      <h4 className="flex items-center gap-2 text-xs font-semibold text-slate-700"><Info aria-hidden="true" className="h-4 w-4 text-teal-700" />What we know—and don’t</h4>
+      <p className="mt-1 text-xs text-slate-600">{view.causeNote}</p>
+      {view.limitations.length > 0 && <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-amber-900">{view.limitations.map((text) => <li key={text}>{text}</li>)}</ul>}
+    </section>
+    {children}
+    <details className="rounded-lg border border-slate-200 bg-white p-3" data-testid="rca-intake-profile"><summary className="cursor-pointer text-xs font-semibold text-slate-600">Data profile</summary><p className="mt-2 text-xs text-slate-500">Descriptive feature context; the profile may cover a different population from the diagnostic.</p><DataProfile profile={source.data_profile} /></details>
+    <details className="rounded-lg border border-slate-200 bg-white p-3" data-testid="rca-intake-diagnostic"><summary className="cursor-pointer text-xs font-semibold text-slate-600">Diagnostic evidence</summary><div className="mt-3">{view.isFeatureTarget ? <FeatureTargetEvidence row={{ result_id: source.result_id, metrics_json: metric }} /> : view.isPsi ? <PsiPopulationProfile metric={metric} /> : <GenericTechnical source={source} />}</div></details>
+    <details className="rounded-lg border border-slate-200 bg-white p-3" data-testid="rca-intake-provenance"><summary className="cursor-pointer text-xs font-semibold text-slate-600">Technical provenance</summary><dl className="mt-3 grid gap-2 text-xs text-slate-600 sm:grid-cols-2">{[
+      ["Diagnostic result", source.result_id], ["Diagnostic run", source.run_id], ["Diagnostic ID", source.diagnostic_id],
+      ["Snapshot", issue.item_id], ["Profile artifact", source.data_profile?.artifact_id],
+      ["Evidence artifact", metric.artifact_id || metric.reconciliation_artifact?.artifact_id],
+      ["Population fingerprint", source.population_context?.preview?.population_fingerprint],
+    ].filter(([, item]) => item != null).map(([label, item]) => <div key={label}><dt className="font-semibold">{label}</dt><dd className="break-all">{value(item)}</dd></div>)}</dl><p className="mt-2 text-xs text-slate-500">Available retained references only. No new calculation is performed on this page.</p></details>
   </section>;
 }

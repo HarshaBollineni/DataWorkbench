@@ -65,6 +65,14 @@ Dictionary files are optional unless the selected mapping requires one. Review
 all generated suggestions before commit. A staged upload can be resumed; Test
 Lab will not offer it until it reaches `ready` and its snapshot is active.
 
+Dataset Structure review includes entity, temporal axis, row grain and expected
+cadence. Before finalization, selections are saved against the staged evidence
+and can be resumed. Changed evidence requires review again. Staged choices are
+not published authority: matching choices seed the subsequent governed review,
+where confirmation is still required. Explicit no-selection decisions remain
+available when structure cannot be established. A technical row identifier,
+when offered, identifies rows; it is not a business entity or temporal key.
+
 ### Catalogue and restore
 
 The Asset Catalogue shows the immutable system ID, alias, kind, current
@@ -90,17 +98,48 @@ work rather than changing historical evidence. Supporting investigations in
 Test Lab can create reusable analytics artifacts; exact compatible artifacts
 may be reused, while near matches are not silently substituted.
 
+Confirmed Dataset Structure decisions assist D06, D08 and D11. D06 uses entity,
+period and compatible expected cadence in its normal scope review; it no longer
+requires a separate structure-acknowledgement step. D08 refreshes structural
+bindings in open drafts while preserving human decisions. D11 excludes the
+confirmed entity and temporal columns from analytical feature/segment choices.
+Manual diagnostic decisions and frozen historical runs retain their own scope.
+
 ## Manage findings and RCA
 
 Issue Management lists failed diagnostic results, with filters for asset,
 status, criticality, and table. Tracking or closing an issue records workflow
 state; it does not modify source data or rerun a diagnostic.
 
-Open an issue row to enter its RCA case. Review evidence and agent proposals,
-answer human questions, approve or reject proposed work, and record closure.
-AI-generated analysis can be incomplete. Executable fix proposals remain behind
-the sandbox and explicit human approval; approval does not imply an automatic
-change to the original source system.
+Open an issue row to enter the four-page RCA flow: Intake, Initial Review,
+Investigate and Closure. Select a proposed hypothesis, add relevant context,
+review the planned method and run the investigation. When discovery is planned,
+one Run action performs discovery and one confirmation of the original hypothesis.
+No intermediate input is required. The final assessment is supported, rejected or
+inconclusive; both stages remain visible in the evidence. Missing information or
+execution failure stops the run with a limitation. Older cases that already contain
+a driver-focused candidate retain their review step.
+Approve a supported conclusion or record an unresolved outcome at Closure.
+Approval does not confirm remediation; a tracked remediation handoff is separate.
+
+Numerical evidence distinguishes regular values from physical missing values
+and confirmed special categories. For example, `NOI regular <= 3050` excludes a
+confirmed `-999` sentinel, which appears as `NOI special: -999`. Unconfirmed
+proposals remain regular values. Metadata is frozen when RCA starts; use Start
+afresh when new metadata needs to be captured.
+
+**Ask about this data** unlocks after two successful planned hypothesis-test
+runs. A completed discovery-plus-confirmation pair counts once and consumes one
+budget unit. Opening reviews, standalone discovery, failed and cancelled runs do not count.
+Ask about retained RCA evidence or request one bounded calculation. Chat searches
+the governed helper library before using generated analysis and does not consume
+the normal hypothesis-test budget or silently revise hypotheses. Out-of-scope
+questions are rejected. Expand Evidence and method for the supporting references
+and use the download action when full generated output is available.
+
+Reloading restores retained case evidence and chat. Start afresh requires
+confirmation and removes the current RCA work, including chat, while retaining
+the source diagnostic evidence. This is a destructive restart, not a chat reset.
 
 ## Govern knowledge
 

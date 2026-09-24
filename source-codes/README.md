@@ -73,8 +73,8 @@ Workspace-wide documentation maintenance rules and validation are indexed by
 
 ## Prerequisites
 
-- Python 3.12+ (`python` on PATH)
-- Node 18+ (`npm` on PATH)
+- Python 3.12 (the backend container baseline; `python` on PATH)
+- Node matching Vite's engine requirement: `^20.19.0 || >=22.12.0` (`npm` on PATH)
 
 > If PowerShell blocks scripts, run this first in your terminal:
 > `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
@@ -97,6 +97,17 @@ AZURE_OPENAI_API_KEY=...
 AZURE_OPENAI_DEPLOYMENT=...
 AZURE_OPENAI_API_VERSION=...
 ```
+
+The governed RCA model registry additionally requires `AI_PRIMARY_MODEL_ID`,
+`AI_PRIMARY_PROVIDER_ID`, `AI_PRIMARY_DEPLOYMENT`, `AI_PRIMARY_MODEL_NAME`, and
+`AI_PRIMARY_MODEL_VERSION`. Configure `AI_RCA_LLM_ENABLED=true` for model-backed
+opening review. See [RCA deployment requirements](docs/rca/deployment.md) for
+fallback routing, analysis runtime, durable storage and template limitations.
+
+The current [RCA domain guide](backend/domains/rca/README.md) covers frozen
+feature-state handling, hypothesis investigations, governed data chat and AAR
+continuation. The [user guide](USER_GUIDE.md) also describes staged Dataset
+Structure review and its reuse by diagnostics.
 
 ## 3. Run
 

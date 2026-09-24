@@ -480,6 +480,101 @@ def _confirmed_authority(item: dict[str, Any]) -> dict[str, dict[str, str]]:
     return result
 
 
+def _staged_candidate_token(prefix: str, table: str, columns: list[str],
+                            roles: list[str] | None = None) -> str:
+    """Recreate a staged presentation token from materialized candidate identity."""
+    identity: dict[str, Any] = {"columns": columns}
+    if roles is None:
+        identity["table"] = table
+    else:
+        identity["roles"] = roles
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+    token_prefix = f"staged-{prefix}-" if roles is None else "staged-grain-"
+    return token_prefix + hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _candidate_columns(candidate: dict[str, Any]) -> list[str]:
+    value = candidate.get("_value") or {}
+    values = value.get("columns", value.get("key_columns", []))
+    return [str(column["column"]) for column in values
+            if isinstance(column, dict) and isinstance(column.get("column"), str)]
+
+
+def _staged_review_seed(item: dict[str, Any],
+                        candidates: dict[str, dict[str, list[dict[str, Any]]]]) -> dict[str, Any]:
+    """Carry the saved pre-finalization review into the governed review draft.
+
+    Staged IDs never become authority.  They are matched to the independently
+    materialized candidate set, and only matching choices are copied into the
+    still-unconfirmed revision-zero draft.
+    """
+    staged = db.query_one("dataset_structure_staged_reviews", snapshot_id=item["item_id"])
+    if staged is None or staged.get("state") == "stale":
+        return {"tables": []}
+    saved = staged.get("selections_json") or {}
+    saved_tables = saved.get("tables") if isinstance(saved, dict) else None
+    if not isinstance(saved_tables, list):
+        return {"tables": []}
+    reviewed_roles = {
+        (str(row.get("table_name")), str(row.get("column_name"))):
+            str(row.get("role") or "").strip().lower()
+        for row in (staged.get("reviewed_roles_json") or []) if isinstance(row, dict)
+    }
+    seeded: list[dict[str, Any]] = []
+    for selection in saved_tables:
+        if not isinstance(selection, dict) or not isinstance(selection.get("table"), str):
+            continue
+        table = selection["table"]
+        groups = candidates.get(table)
+        if not groups:
+            continue
+        maps: dict[str, dict[str, str]] = {field: {} for field in _FIELDS}
+        for field, kind in _FIELDS.items():
+            prefix = {"entities": "entity", "temporals": "temporal"}.get(kind)
+            for candidate in groups.get(kind, []):
+                columns = _candidate_columns(candidate)
+                if not columns:
+                    continue
+                roles = ([reviewed_roles.get((table, column), "") for column in columns]
+                         if kind == "row_grains" else None)
+                if roles is not None and any(not role for role in roles):
+                    continue
+                staged_id = _staged_candidate_token(prefix or "grain", table, columns, roles)
+                maps[field][staged_id] = candidate["candidate_id"]
+        carried: dict[str, Any] = {"table": table}
+        for field in _FIELDS:
+            staged_id = selection.get(field)
+            if isinstance(staged_id, str) and staged_id in maps[field]:
+                carried[field] = maps[field][staged_id]
+            elif staged_id is None and selection.get({
+                    "default_entity_candidate_id": "entity_acknowledged",
+                    "default_temporal_candidate_id": "temporal_acknowledged",
+                    "row_grain_candidate_id": "row_grain_acknowledged",
+            }[field]) is True:
+                carried[field] = None
+                carried[field + "_action"] = "mark_not_applicable"
+                carried[field + "_acknowledged"] = True
+        cadence = selection.get("expected_cadence")
+        if isinstance(cadence, dict):
+            action = cadence.get("action")
+            if action == "confirm" and isinstance(carried.get("default_temporal_candidate_id"), str):
+                value = cadence.get("value")
+                if (isinstance(value, dict) and value.get("unit") in
+                        {"day", "week", "month", "quarter", "year"}
+                        and isinstance(value.get("step"), int) and value["step"] > 0):
+                    carried["expected_cadence"] = {
+                        "action": "confirm",
+                        "axis_candidate_id": carried["default_temporal_candidate_id"],
+                        "grouping_candidate_id": carried.get("default_entity_candidate_id"),
+                        "value": {"unit": value["unit"], "step": value["step"]},
+                    }
+            elif action in {"clear", "mark_not_applicable"} and cadence.get("acknowledged") is True:
+                carried["expected_cadence"] = {"action": action, "acknowledged": True}
+        if len(carried) > 1:
+            seeded.append(carried)
+    return {"tables": sorted(seeded, key=lambda row: row["table"])}
+
+
 def review(item: dict[str, Any]) -> dict[str, Any]:
     materialization, generation = _materialization(item["item_id"])
     candidates = _artifacts(item)
@@ -492,6 +587,7 @@ def review(item: dict[str, Any]) -> dict[str, Any]:
     # transaction, with the unique (snapshot, revision) constraint as the
     # final fence.
     desired_state = _derive_state(materialization, candidates, set(table_names))
+    staged_seed = _staged_review_seed(item, candidates)
     now = _utc()
     with db.get_conn() as conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -522,7 +618,7 @@ def review(item: dict[str, Any]) -> dict[str, Any]:
             draft = conn.execute("SELECT * FROM dataset_structure_review_drafts WHERE draft_id=? AND snapshot_id=? AND tenant_id=?", (state["current_draft_id"], item["item_id"], item["sourcing_tenant_id"])).fetchone()
         if draft is None and editable:
             draft_id = "dscd_" + uuid.uuid4().hex
-            conn.execute("INSERT OR IGNORE INTO dataset_structure_review_drafts (draft_id,tenant_id,snapshot_id,revision,base_evidence_fingerprint,selections_json,state,superseded_by,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (draft_id, item["sourcing_tenant_id"], item["item_id"], 0, fingerprint, '{\"tables\":[]}', "active", None, None, now, now))
+            conn.execute("INSERT OR IGNORE INTO dataset_structure_review_drafts (draft_id,tenant_id,snapshot_id,revision,base_evidence_fingerprint,selections_json,state,superseded_by,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (draft_id, item["sourcing_tenant_id"], item["item_id"], 0, fingerprint, json.dumps(staged_seed, sort_keys=True, separators=(",", ":")), "active", None, "staged_structure_handoff" if staged_seed["tables"] else None, now, now))
             draft = conn.execute("SELECT * FROM dataset_structure_review_drafts WHERE snapshot_id=? AND revision=0", (item["item_id"],)).fetchone()
             conn.execute("UPDATE dataset_structure_review_states SET current_draft_id=? WHERE snapshot_id=? AND current_draft_id IS NULL", (draft["draft_id"], item["item_id"]))
             state = conn.execute("SELECT * FROM dataset_structure_review_states WHERE snapshot_id=?", (item["item_id"],)).fetchone()
@@ -581,8 +677,11 @@ def review(item: dict[str, Any]) -> dict[str, Any]:
     return {"review_contract_version": "1", "snapshot": {"snapshot_id": item["item_id"]},
             "structure_review_state": state["state"], "materialization": materialization,
             "draft": _public_draft(draft, fingerprint, editable=editable), "tables": public_tables,
-            "diagnostic_assistance": [{"diagnostic_id": "D06", "state": "not_adopted",
-                                         "message": "This diagnostic does not yet use Dataset Structure selections."}]}
+            "diagnostic_assistance": [
+                {"diagnostic_id": diagnostic_id, "state": "adopted",
+                 "message": "Confirmed Dataset Structure decisions are consumed by this diagnostic."}
+                for diagnostic_id in ("D06", "D08", "D11")
+            ]}
 
 
 def review_facet(item: dict[str, Any], *, table_id: str, facet: str, q: str | None = None,
